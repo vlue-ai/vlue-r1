@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""sdk.py — FL2.1 R1 클라이언트 SDK ([M-95] · E-2 · A-2/A-6).
+
+★커널 무임포트 — 외부 주체가 받는 것: 이 파일 + EXTERNAL_QUICKSTART.md. 서명·정준화·
+헤드 산식을 독립 재구현하고(골든-서명 테스트가 커널과 바이트-동일을 결박 —
+tests/test_sig_golden.py), 키는 클라이언트가 생성·보관한다(노드는 공개키만 받는다).
+
+라이트 검증(A-6): 로그 head-사슬 재계산 + 운영자 head_sig + 공동-서명 k-of-n — 전체
+상태-리플레이 검증은 커널 공개본으로(공개 시 동봉).
+
+의존: python3 표준 라이브러리 + cryptography(Ed25519).
+"""
+import base64
+import hashlib
+import json
+import os
+import urllib.request
+
+_CKPT = 50_000                       # 표본-검증 클래스의 체크포인트 간격(노드와 동일)
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey, Ed25519PublicKey)
+from cryptography.exceptions import InvalidSignature
+
+DOMAIN = b"FL21-v0.1" + b"\x00" * 7          # 커널 FL21_DOMAIN과 동일(골든 결박)
+
+
+def canon(obj) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode()
+
+
+def sig_msg(log_id: bytes, body: dict, nonce: int) -> bytes:
+    return DOMAIN + log_id + canon(body) + int(nonce).to_bytes(8, "big")
+
+
+def spec_norm(job: dict) -> dict:
+    """★H2([M-121]) — 스펙 정규형(노드 validate_spec과 동일 규칙 · 해시의 기준).
+    제출자·노드·외부 검증자가 같은 바이트를 해싱하기 위한 유일 정의."""
+    k = job.get("kind")
+    if k in ("sha256_chain", "sha256_chain_sampled"):
+        return {"kind": k, "seed": str(job.get("seed", "")).lower(),
+                "n": int(job.get("n"))}
+    if k == "pycheck":
+        return {"kind": "pycheck", "test_b64": job["test_b64"]}
+    spec = {"kind": "pyjudge", "checker_b64": job["checker_b64"]}
+    if job.get("input_b64"):
+        spec["input_b64"] = job["input_b64"]
+    return spec
+
+
+def spec_sha256(job: dict) -> str:
+    """REDEEM에 결박할 명세 해시 = sha256(canon(정규형 스펙))."""
+    return hashlib.sha256(canon(spec_norm(job))).hexdigest()
+
+
+def output_sha256(output) -> str:
+    """DELIVER에 결박할 산출 해시 = sha256(canon(output)) — 문자열·객체 형 공통."""
+    return hashlib.sha256(canon(output)).hexdigest()
+
+
+def _co_ok(co_pks, name, sig_hex, head_hex):
+    try:
+        co_pks[name].verify(bytes.fromhex(sig_hex),
+                            DOMAIN + bytes.fromhex(head_hex))
+        return True
+    except (KeyError, InvalidSignature, ValueError):
+        return False
+
+
+class Fl21Client:
+    """외부 참여자 클라이언트 — 키 자율 보관·서명·제출·라이트 검증."""
+
+    def __init__(self, base_url, principal, key_path):
+        self.url = base_url.rstrip("/")
+        self.p = principal
+        self.key_path = key_path
+        self.key = self._ensure_key()
+        self.meta = self._get("/meta")
+        self.log_id = bytes.fromhex(self.meta["log_id"])
+
+    # ── 키(클라이언트 보관 — 노드에 비밀이 가지 않는다) ──
+    def _ensure_key(self):
+        if os.path.exists(self.key_path):
+            raw = bytes.fromhex(open(self.key_path).read().strip())
+            return Ed25519PrivateKey.from_private_bytes(raw)
+        k = Ed25519PrivateKey.generate()
+        with open(self.key_path, "w") as fh:
+            fh.write(k.private_bytes_raw().hex())
+        os.chmod(self.key_path, 0o600)
+        return k
+
+    def pk_hex(self):
+        return self.key.public_key().public_bytes_raw().hex()
+
+    # ── HTTP ──
+    def _req(self, method, path, obj=None):
+        data = json.dumps(obj).encode() if obj is not None else None
+        r = urllib.request.Request(self.url + path, data=data, method=method,
+                                   headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            err = e.read().decode()[:300]
+            raise RuntimeError(f"HTTP {e.code}: {err}") from None
+
+    def _get(self, path):
+        return self._req("GET", path)
+
+    def _post(self, path, obj):
+        return self._req("POST", path, obj)
+
+    # ── 봉투 서명(커널과 바이트-동일 — 골든 결박) ──
+    def sign_env(self, typ, args):
+        st = self._get(f"/nonce/{self.p}")
+        body = {"typ": typ, "args": args, "p": self.p, "epoch": st["epoch"]}
+        sig = self.key.sign(sig_msg(self.log_id, body, st["nonce"]))
+        return {**body, "nonce": st["nonce"], "sig": sig.hex()}
+
+    # ── 참여 동작 ──
+    def join(self):
+        return self._post("/join", {"principal": self.p, "pk": self.pk_hex()})
+
+    def balance(self):
+        return self._get(f"/balance/{self.p}")["balance"]
+
+    def notes(self):
+        return self._get(f"/notes/{self.p}")["notes"]
+
+    def notes_of(self, color):
+        """특정 발행자(색)의 내 노트 — ★[M-103] 상환은 발행자에게만(색-일치)."""
+        return [n for n in self.notes() if n.get("color") == color]
+
+    def bootstrap(self, k=None):
+        """★[M-103] 상호 신용 교환: 내 자기-IOU k AU ↔ anchor0-IOU k AU(원자 스왑 ·
+        한도 = 노드 bootstrap_cap). join 직후 첫 유동성 — 일방 지급이 아니라 교환이다."""
+        k = k if k is not None else self.meta.get("bootstrap_cap", 8)
+        anchor0 = self.meta["genesis"][0]
+        mine = [n for n in self.notes_of(self.p)]
+        pick = next((n for n in mine if n["face"] == k), None)
+        if pick is None:
+            big = next((n for n in mine if n["face"] > k), None)
+            if big is None:
+                raise RuntimeError(f"자기-IOU {k} AU 부족")
+            self.split(big["nid"], [k, big["face"] - k])
+            pick = next(n for n in self.notes_of(self.p) if n["face"] == k)
+        leg = self.make_leg("XFER", {"frm": self.p, "to": anchor0,
+                                     "note": pick["nid"]})
+        return self._post("/bootstrap", {"leg": leg})
+
+    def issue(self, k):
+        """★회전-발행: 내 색 유통량이 한도 아래면 자기-IOU k AU 재발행([M-104] —
+        이행-소각이 부채를 지운 만큼 다시 발행 가능 · 요청은 서명-결박)."""
+        env = self.sign_env("TICKMARK", {"kind": "fl21.issue", "k": int(k)})
+        return self._post("/issue", {"env": env})
+
+    def split(self, nid, parts):
+        return self._post("/submit", {"env": self.sign_env(
+            "SPLIT", {"owner": self.p, "note": nid, "parts": parts})})
+
+    def merge(self, nids):
+        """노트 병합(파편화 역방향 — 커널 MERGE)."""
+        return self._post("/submit", {"env": self.sign_env(
+            "MERGE", {"owner": self.p, "notes": list(nids)})})
+
+    def xfer(self, to, nid):
+        return self._post("/submit", {"env": self.sign_env(
+            "XFER", {"frm": self.p, "to": to, "note": nid})})
+
+    def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain"):
+        job = {"kind": kind, "seed": seed, "n": n}
+        env = self.sign_env("REDEEM", {"holder": self.p, "note": nid,
+                                       "anchor": anchor,
+                                       "spec_sha256": spec_sha256(job)})  # ★H2 결박
+        return self._post("/job", {"env": env, "job": job})
+
+    def job(self, ref):
+        return self._get(f"/job/{ref}")
+
+    def state(self):
+        return self._get("/state")
+
+    def stats(self):
+        return self._get("/stats")
+
+    # ── ★이행자 역할(P-1) — 누구나 앵커가 될 수 있다 ──
+    def open_jobs(self):
+        """나를 앵커로 지명한 열린 작업들."""
+        return self._get(f"/jobs?anchor={self.p}")["jobs"]
+
+    @staticmethod
+    def compute_sha256(job):
+        """sha256 계열 로컬 계산(이행자용 — pycheck는 당신의 지능 몫)."""
+        h = bytes.fromhex(job["seed"])
+        if job["kind"] == "sha256_chain":
+            for _ in range(int(job["n"])):
+                h = hashlib.sha256(h).digest()
+            return h.hex()
+        ck = []
+        n = int(job["n"])
+        for i in range(0, n, _CKPT):
+            for _ in range(min(_CKPT, n - i)):
+                h = hashlib.sha256(h).digest()
+            ck.append(h.hex())
+        return {"final": h.hex(), "ckpts": ck}
+
+    def deliver_job(self, ref, output):
+        env = self.sign_env("DELIVER", {"anchor": self.p, "ref": ref,
+                                        "output_sha256": output_sha256(output)})
+        return self._post("/deliver", {"env": env, "output": output})  # ★H2 결박
+
+    def judge_job(self, judge_anchor, nid, target_ref, checker_b64):
+        """★판정-재귀 v0([M-120]) — target 잡의 산출을 입력으로 「판정」을 주문.
+        판정도 이행이다: 판정자(judge_anchor)는 input.txt(= target 산출)를 심사한
+        verdict를 산출로 전달하고, checker는 verdict의 형식만 검사한다(내용은 판정자
+        몫 — 그것이 상품). verdict는 /job으로 공개·H2로 대상·명세가 head-결박된다."""
+        tgt = self.job(target_ref)
+        t_out = tgt.get("output")
+        # 입력 규약: input.txt = 대상 산출의 canonical JSON(형 무관 — 판정자는 json 파싱)
+        ib = base64.b64encode(canon(t_out)).decode()
+        job = {"kind": "pyjudge", "checker_b64": checker_b64, "input_b64": ib}
+        env = self.sign_env("REDEEM", {"holder": self.p, "note": nid,
+                                       "anchor": judge_anchor,
+                                       "spec_sha256": spec_sha256(job),
+                                       "judges_ref": target_ref})  # 감사용 참조 결박
+        return self._post("/job", {"env": env, "job": job})
+
+    def work_pending(self):
+        """열린 sha256 계열 작업을 전부 계산·전달(pycheck는 건너뜀)."""
+        done = []
+        for ref, j in self.open_jobs().items():
+            if j["job"]["kind"].startswith("sha256"):
+                done.append(self.deliver_job(ref,
+                                             self.compute_sha256(j["job"])))
+        return done
+
+    # ── ★버전-경계 선언(P-10) — head-결박 공개 선언(요율이 분절을 안다) ──
+    def declare_version(self, v):
+        env = self.sign_env("TICKMARK", {"kind": "fl21.version",
+                                         "v": str(v)[:32]})
+        return self._post("/submit", {"env": env})
+
+    # ── ★원자 다자-거래 — 다리(서명 봉투) 교환 + /block 제출(all-or-nothing) ──
+    def make_leg(self, typ, args):
+        """원자 거래용 다리 — sign_env와 동일(상대와 교환해 submit_block으로)."""
+        return self.sign_env(typ, args)
+
+    def submit_block(self, legs):
+        """다리 목록을 원자 제출 — 하나라도 실패하면 전부 무효(커널 BLOCK 법)."""
+        return self._post("/block", {"legs": legs})
+
+    def suggest_prem(self, ref):
+        """공정 보험료 제안 = ⌈p̂ × exposure⌉ — /stats 공개 요율 원료.
+        ★버전-세탁 방어(완결성 점검 med): 현 세그먼트만 보면 앵커가 새 버전을 선언해
+        나쁜 손해 이력을 무비용 세탁한다. ⟹ **성숙 이력이 있는 세그먼트 중 최악 p̂**을
+        보수적으로 쓴다(무이력 신버전은 prior로 남되 과거 나쁨을 못 지운다).
+        ⚠️p̂×exposure는 총-기대손실 상한 — 인수자는 가해자-층 뒤 2차-손실이므로 실제
+        기대원가는 그 이하다(가격은 시장이 정한다 · 이건 상한-제안일 뿐)."""
+        j = self.job(ref)
+        st = self.stats()
+        a = st["anchors"].get(j["anchor"])
+        if not a or not a.get("segments"):
+            p_hat = 0.5                        # 무이력 = 라플라스 prior
+        else:
+            mature = [s["p_hat"] for s in a["segments"].values()
+                      if s.get("mature", 0) > 0]
+            cur = a["segments"].get(a.get("version") or "v0")
+            p_hat = max(mature) if mature else \
+                (cur or list(a["segments"].values())[-1])["p_hat"]
+        return max(1, -(-int(p_hat * j["exposure"] * 100) // 100))
+
+    # ── ★인수(P-4) — 남의 청구를 인수하기(담보 β≥1/2 · 기금 몫 자기적립) ──
+    def cover(self, ref, prem=1, force=False, submit=True):
+        j = self.job(ref)
+        exp = j["exposure"]
+        # ★기한-후 인수 가드(직접 재리뷰 RU-1): 기한 지난 열린 청구의 인수 = 즉시 손실
+        if not force and self.state()["epoch"] > j["deadline"]:
+            raise RuntimeError("기한 경과 청구 — 인수는 즉시 손실(force=True로 무시 가능)")
+        need = -(-exp // 2)                      # β_min = 1/2(정수-정확 상향)
+        ones = [n["nid"] for n in self.notes() if n["face"] == 1]
+        if len(ones) < need + 2:
+            big = max(self.notes(), key=lambda x: x["face"])
+            if big["face"] >= 2:
+                parts = [1] * min(big["face"], need + 4 - len(ones))
+                rest = big["face"] - len(parts)
+                if rest > 0:
+                    parts.append(rest)
+                self.split(big["nid"], parts)
+                ones = [n["nid"] for n in self.notes() if n["face"] == 1]
+        if len(ones) < need:
+            raise RuntimeError(f"담보 부족: 1-노트 {len(ones)} < {need}")
+        cov = ones[:need]
+        st = self.state()
+        g = self.meta["gen"]
+        prem_f = prem * g["uw_phi_num"] // g["uw_phi_den"]
+        cap = g["fq_mult"] * max(st["F_peak"], g["fq_base"])
+        if g["fq_mult"] > 0 and st["F_uw"] + prem_f > cap:
+            prem_f = 0                            # ★흡입-결박 미러(커널 v0.3 동형)
+        fund = ones[need:need + prem_f]
+        if len(fund) < prem_f:
+            raise RuntimeError("기금 노트 부족")
+        env = self.sign_env("UW", {"uw": self.p, "ref": ref,
+                                   "cov_notes": cov, "prem": prem,
+                                   "prem_fund_notes": fund})
+        if not submit:
+            return env                          # 원자 거래용 다리로 반환
+        return self._post("/submit", {"env": env})
+
+    # ── ★실적 증명(P-9) — 운영자-서명·전량-아니면-무 ──
+    def fetch_attest(self, principal):
+        return self._get(f"/attest/{principal}")
+
+    def verify_attest(self, att):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey as _PK)
+        doc = att["doc"]
+        if doc.get("complete") is not True:
+            return {"ok": False, "why": "부분 발췌 = 무효(전량-아니면-무)"}
+        pk = _PK.from_public_bytes(bytes.fromhex(self.meta["operator_pk"]))
+        try:
+            pk.verify(bytes.fromhex(att["operator_sig"]),
+                      DOMAIN + canon(doc))
+            return {"ok": True, "principal": doc["principal"],
+                    "upto_seq": doc["upto_seq"]}
+        except InvalidSignature:
+            return {"ok": False, "why": "서명 위조"}
+
+    # ── 라이트 검증(A-6 · R-6 봉합): 확정 높이까지 엄격 검증 + 미서명 최신 꼬리는 pending ──
+    def verify_chain(self, since=0, limit_batches=200):
+        """head 사슬·운영자 서명은 전량 엄격. 공동-서명(k-of-n)은 비동기 도착하므로
+        ★공동-서명이 아직 부족한 **최신 연속 꼬리**는 위반이 아니라 `pending`(확정 미도달).
+        블록체인 confirmation-depth 시맨틱 — 확정 prefix가 정합이면 ok(pending 별도 보고).
+        위반은 오직: head 불일치·사슬 단절·운영자 서명 위조·★확정된(공동서명 완비) 항목의
+        서명 실패(= 진짜 변조)."""
+        meta = self.meta
+        op_pk = Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(meta["operator_pk"]))
+        co_pks = {c: Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
+                  for c, h in meta["cosigners"].items()}
+        k_need = meta["cosign_k"]
+        # ★[M-115] 봉투-서명 전량 검증 원료(냉독 결함 1 봉합 — 문서 주장을 참으로):
+        # 참여자 pk = JOIN 항목에서 등록 · 창세 좌석 pk = /meta.genesis_pks · 운영자 = op_pk.
+        # 이로써 「악의 운영자가 사용자-행위를 위조해 끼워 넣는」 것까지 라이트 검증이 잡는다.
+        env_pks = {"operator": op_pk}
+        for a, h in (meta.get("genesis_pks") or {}).items():
+            env_pks[a] = Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
+        lid = bytes.fromhex(meta["log_id"])
+
+        def _env_ok(env):
+            p_ = env.get("p")
+            pk = env_pks.get(p_)
+            if pk is None:
+                return f"봉투 서명자 미지({p_})"
+            body = {"typ": env.get("typ"), "args": env.get("args"),
+                    "p": p_, "epoch": env.get("epoch")}
+            try:
+                pk.verify(bytes.fromhex(env["sig"]),
+                          sig_msg(lid, body, env["nonce"]))
+            except (InvalidSignature, ValueError, KeyError, TypeError):
+                return "봉투 서명 위조"
+            return None
+        cos = {}
+        s = since
+        for _ in range(limit_batches):
+            batch = self._get(f"/cosigs?since={s}")["cosigs"]
+            if not batch:
+                break
+            for r in batch:      # ★D-2 병합 — 분리 서명자의 부분-서명 줄들을 합친다
+                m = cos.setdefault(r["seq"], {"head": r["head"], "sigs": {}})
+                if r["head"] == m["head"]:
+                    for cnm, sg in r["sigs"].items():
+                        m["sigs"].setdefault(cnm, sg)
+            s = batch[-1]["seq"] + 1
+        entries = []
+        s = since
+        for _ in range(limit_batches):
+            page = self._get(f"/log?since={s}")["entries"]
+            if not page:
+                break
+            entries += page
+            s = page[-1]["seq"] + 1
+        prev = None
+        confirmed = 0
+        pending = 0
+        for e in entries:
+            base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
+            if "_force" in e:
+                base = base | {"_force": e["_force"]}
+            head = hashlib.sha256(e["prev"].encode() + canon(base)).hexdigest()
+            if head != e["head"]:
+                return {"ok": False, "why": f"head 불일치 seq {e['seq']}"}
+            if prev is not None and e["prev"] != prev:
+                return {"ok": False, "why": f"사슬 단절 seq {e['seq']}"}
+            prev = e["head"]
+            env = e["env"]
+            bad = _env_ok(env)                       # ★[M-115] 봉투 서명 검증
+            if bad is None and env.get("typ") == "BLOCK":
+                for lg in (env.get("args") or {}).get("legs") or []:
+                    bad = _env_ok(lg)                # 원자 블록의 다리도 각자 서명
+                    if bad:
+                        break
+            if bad:
+                return {"ok": False, "why": f"{bad} seq {e['seq']}"}
+            if env.get("typ") == "JOIN":             # 이후 봉투의 서명자 pk 등록
+                a_ = (env.get("args") or {})
+                env_pks[a_.get("principal")] = \
+                    Ed25519PublicKey.from_public_bytes(bytes.fromhex(a_["pk"]))
+            if "head_sig" in e:
+                try:
+                    op_pk.verify(bytes.fromhex(e["head_sig"]),
+                                 DOMAIN + bytes.fromhex(e["head"]))
+                except InvalidSignature:
+                    return {"ok": False, "why": f"운영자 서명 위조 seq {e['seq']}"}
+            r = cos.get(e["seq"])
+            good = 0
+            if r and r["head"] == e["head"]:
+                for c, sig in r["sigs"].items():
+                    try:
+                        co_pks[c].verify(bytes.fromhex(sig),
+                                         DOMAIN + bytes.fromhex(e["head"]))
+                        good += 1
+                    except (KeyError, InvalidSignature):
+                        pass
+            if good >= k_need:
+                confirmed += 1
+            else:
+                pending += 1
+        # ★pending은 최신 연속 꼬리에만 허용(확정된 것 뒤에 미확정이 오는 정상 성장) —
+        # 중간에 구멍(확정 사이 미확정)이 있으면 그건 변조/누락이다.
+        tail_ok = True
+        seen_pending = False
+        for e in entries:
+            r = cos.get(e["seq"])
+            good = sum(1 for c, sig in (r["sigs"].items() if r
+                                        and r["head"] == e["head"] else [])
+                       if _co_ok(co_pks, c, sig, e["head"]))
+            if good >= k_need:
+                if seen_pending:
+                    tail_ok = False       # 확정이 미확정 뒤에 옴 = 꼬리 아님
+                    break
+            else:
+                seen_pending = True
+        if not tail_ok:
+            return {"ok": False, "why": "공동-서명 구멍(확정 사이 미확정 — 변조 의심)"}
+        return {"ok": True, "confirmed": confirmed, "pending": pending,
+                "head": prev,
+                "note": ("pending = 최신 공동-서명 미도달 꼬리(정상 · ~1틱 후 확정)"
+                         if pending else "전량 확정")}

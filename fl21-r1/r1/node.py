@@ -1,0 +1,1009 @@
+#!/usr/bin/env python3
+"""node.py — R1 노드: FL2.1 캐논(FROZEN)을 감싸는 공개형 서비스 ([M-95] · E-1).
+
+지위: ★캐논 무접촉 — kernel21 v0.3을 읽기-전용 임포트(법 재구현 0 · lab과 같은 규율의
+제품판). 외부 주체는 HTTP API + SDK로 참여한다(키는 클라이언트가 보관 — 노드는 운영자
+키만). 영속 = append-only 대장(jsonl) + 기동 전체-리플레이(head 대조 · 파일럿 규율의
+서비스판 — A-3). 전 핸들러 예외-격리(비정규 입력 = 4xx · 노드 생존 — A-4). 헤드 k-of-n
+공동-서명 사이드카(A-6 — ⚠️v0은 키가 한 노드에 동거: 분산 보관은 배포 문제로 등재).
+
+★화폐 모델 v0([M-103] — D-4 확정 · 자유은행 (i)): 모든 노트에 **색(발행자)**이 있다 —
+JOIN 시 자기-IOU 발행(구매력 지급이 아니라 자기-약속 자본) · 상환은 **발행자에게만**
+(색-일치 라우팅) · 유입 유동성 = ★상호 신용 교환(/bootstrap — 신규자 자기-IOU ↔
+anchor0-IOU 원자 스왑 · 한도 결박 · WIR형) · 배상 노트 = 가해-앵커 색. 색은 로그-파생
+(리플레이 시 재구성 — 사이드카 없음). 데모-유입(무색 보조금)은 폐지.
+
+실행: python3 node.py --data DIR [--port 8788] [--auto-tick SEC] [--join-issue 20]
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import secrets as _secrets
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang21"))
+
+from kernel21 import (World, Fl21Error, derive_key, FL21_DOMAIN,   # noqa: E402
+                      _canon)
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
+    Ed25519PublicKey)
+import jobs as JOBS                                                # noqa: E402
+
+LABEL = "fl21-r1"
+# ★[M-105] D-3 프로덕션 GEN: fq_mult=1(★실측 보정표 n≤128→1 — RFRONT2 규모-의존) ·
+# identity_budget=128(전 인구가 보정-구역 안 · k-공존 대역 4배 여유 · 세계-사멸 방지)
+GEN = {"fq_mult": 1, "identity_budget": 128}
+GENESIS = ("anchor0",)               # 창세 앵커(워커 좌석) — 외부 주체는 JOIN
+COSIGNERS = ("cosign1", "cosign2", "cosign3")
+COSIGN_K = 2
+_PNAME = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
+BOOT_CAP = 8                         # ★[M-103] 상호-신용 스왑 상한(주체당 · anchor0-IOU)
+BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다리만
+
+
+class Node:
+    def __init__(self, data_dir, join_issue=20, genesis_issue=40,
+                 bootstrap_cap=BOOT_CAP, cosign_local=None, bridge_ref=None):
+        self.dir = data_dir
+        os.makedirs(data_dir, exist_ok=True)
+        self.lock = threading.RLock()
+        self.join_issue = int(join_issue)      # ★[M-103] 자기-IOU 회전 한도([M-104])
+        self.genesis_issue = int(genesis_issue)  # 창세 앵커 회전 한도
+        self.boot_cap = int(bootstrap_cap)     # ★상호-신용 스왑 상한/주체
+        self.colors = {}             # ★nid → 발행자(색) — 로그-파생(리플레이 재구성)
+        self.bootstrap_used = {}     # ★주체 → 스왑 누계(로그-파생 · BOOT_CAP 결박)
+        self._cosig_seen = set()     # ★(seq, 서명자) — /cosig 재생 중복-제거
+        self.cosig_map = {}          # ★N-3([M-110]) — seq→병합 서명(/cosigs 서빙 정본)
+        self.ledger_p = os.path.join(data_dir, "entries.jsonl")
+        self.cosig_p = os.path.join(data_dir, "cosigs.jsonl")
+        self.jobs_p = os.path.join(data_dir, "jobs.json")
+        # ── ★D-1 키 실물화: 비밀은 소스가 아니라 data_dir(0600 · 첫 기동 시 생성) ──
+        seed = self._load_secret_int(os.path.join(data_dir, "node_secret"))
+        # ── ★D-2 공동-서명 분리([M-105]): 노드는 --cosign-local 부분집합의 개인키만 보유 ·
+        #    공개키 전량은 cosign_pubs.json(창세 의식에서 고정) · 원격 서명자는 데몬
+        #    (cosigner.py)이 /cosig로 회신 — verify_chain의 confirmation-depth가 비동기 흡수 ──
+        self.cosign_local = tuple(cosign_local) if cosign_local else COSIGNERS
+        if not set(self.cosign_local) <= set(COSIGNERS):
+            raise Fl21Error("cosign_local ⊆ COSIGNERS")
+        pubs_p = os.path.join(data_dir, "cosign_pubs.json")
+        if os.path.exists(pubs_p):
+            self.cosign_pubs = json.load(open(pubs_p, encoding="utf-8"))
+            self.cos_keys = {}
+            for c in self.cosign_local:
+                kp = os.path.join(data_dir, f"{c}.key")
+                if not os.path.exists(kp):
+                    raise Fl21Error(f"D-2: 로컬 서명 키 없음({c}) — 이전했다면 "
+                                    "--cosign-local에서 제외")
+                self.cos_keys[c] = self._load_ed_key(kp)
+        else:                        # 창세 의식: 전 키 생성 → 비-로컬 키 파일은 호스트 이전
+            allk = {c: self._load_ed_key(os.path.join(data_dir, f"{c}.key"))
+                    for c in COSIGNERS}
+            self.cosign_pubs = {c: k.public_key().public_bytes_raw().hex()
+                                for c, k in allk.items()}
+            json.dump(self.cosign_pubs, open(pubs_p, "w", encoding="utf-8"))
+            self.cos_keys = {c: allk[c] for c in self.cosign_local}
+        self.w = World(master_seed=seed, label=LABEL,
+                       genesis_agents=GENESIS, gen=GEN,
+                       bridge_ref=bridge_ref)   # ★D-3 — U-0 계보(파일럿 head 결박)
+        self._export_anchor_key(data_dir)       # 워커 좌석 키(0600 — 워커가 파일로 로드)
+        self.jobs = {}               # ref → {job, anchor, holder, deadline, state, output}
+        self._stats_cache = None     # ★D-13 — (log_len, stats)
+        self._replay()
+        if self.persisted == 0 and self.genesis_issue > 0:   # ★창세 자기-IOU(1회)
+            for a in GENESIS:
+                self._ksubmit(self.w.sign_env(
+                    "operator", "EXT_IN", {"to": a, "amount": self.genesis_issue}))
+            self._persist_new()
+
+    @staticmethod
+    def _load_secret_int(path):
+        if os.path.exists(path):
+            return int(open(path).read().strip())
+        v = _secrets.randbits(256)   # ★RD-8 — 파생 키의 실효 보안 = 시드 엔트로피(256b)
+        with open(path, "w") as fh:
+            fh.write(str(v))
+        os.chmod(path, 0o600)
+        return v
+
+    @staticmethod
+    def _load_ed_key(path):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey)
+        if os.path.exists(path):
+            return Ed25519PrivateKey.from_private_bytes(
+                bytes.fromhex(open(path).read().strip()))
+        k = Ed25519PrivateKey.generate()
+        with open(path, "w") as fh:
+            fh.write(k.private_bytes_raw().hex())
+        os.chmod(path, 0o600)
+        return k
+
+    def _export_anchor_key(self, data_dir):
+        for a in GENESIS:
+            p = os.path.join(data_dir, f"{a}.key")
+            if not os.path.exists(p):
+                with open(p, "w") as fh:
+                    fh.write(self.w._keys[a].private_bytes_raw().hex())
+                os.chmod(p, 0o600)
+
+    # ── 영속·복구(A-3) ──
+    @staticmethod
+    def _read_ledger_lines(path, label="대장"):
+        """★H5 — 관용 리플레이: 크래시로 잘린 **마지막** 줄(부분쓰기)은 절단·무시한다
+        (중간 줄의 파싱 실패는 진짜 손상 = 예외). ack=내구(fsync)이므로 잘린 꼬리는
+        아직 ack 안 된 기입이다. ★N-1([M-108]) — 공동서명 파일도 같은 append+fsync
+        창이라 동일 관용이 필요(빠뜨리면 잘린 꼬리 하나가 부팅-불능)."""
+        raw = [ln for ln in open(path, encoding="utf-8").read().splitlines()
+               if ln.strip()]
+        out = []
+        for i, ln in enumerate(raw):
+            try:
+                out.append(json.loads(ln))
+            except json.JSONDecodeError:
+                if i == len(raw) - 1:
+                    break                # 마지막 줄만 관용(부분쓰기)
+                raise Fl21Error(f"{label} 손상: 중간 줄 {i} 파싱 실패")
+        return out
+
+    @staticmethod
+    def _repair_tail(path):
+        """★N-2([M-108]) — 잘린 꼬리의 **물리 절단**(부팅 시): 관용 리더가 읽기에서
+        무시해도 파일에 남으면 다음 append가 개행 없이 그 줄에 이어붙어, ack된 항목이
+        접착-손상으로 **무음 유실**(마지막 줄일 때) 또는 영구 부팅-불능(중간 줄이 될 때)
+        이 된다(재현 실증 — 「ack=내구」 위반). 절단되는 바이트는 ack 전(fsync 미완)
+        기입뿐이라 무손실 · 완결-무개행 꼬리는 항목 보존·개행만 보수."""
+        if not os.path.exists(path):
+            return
+        raw = open(path, "rb").read()
+        if not raw or raw.endswith(b"\n"):
+            return
+        nl = raw.rfind(b"\n")
+        tail = raw[nl + 1:]
+        try:
+            json.loads(tail)
+            with open(path, "ab") as f:      # 완결 줄(개행만 유실) — 개행 보수
+                f.write(b"\n")
+        except ValueError:
+            with open(path, "r+b") as f:     # 부분쓰기 — ack 전 바이트 절단
+                f.truncate(nl + 1 if nl >= 0 else 0)
+
+    def _replay(self):
+        self._repair_tail(self.ledger_p)     # ★N-2 — append 접착 방지(물리 절단)
+        self._repair_tail(self.cosig_p)
+        n = 0
+        if os.path.exists(self.ledger_p):
+            prev = "genesis"
+            for e in self._read_ledger_lines(self.ledger_p):
+                bi = set(self.w.notes)           # ★색 리플레이(로그-파생)
+                rp_b = ({k: dict(v) for k, v in self.w.redeem_pending.items()}
+                        if e["env"]["typ"] == "TICK" else None)
+                r = self.w._commit(e["env"], replay=True)
+                if r["head"] != e["head"] or e["prev"] != prev:
+                    raise Fl21Error(f"대장 리플레이 불일치 seq {e['seq']}")
+                self._color_step(r, bi, rp_b)
+                prev = e["head"]
+                n += 1
+            for i, e in enumerate(self._read_ledger_lines(self.ledger_p)[:n]):
+                self.w.log[i] = e        # 서명 포함 원본 복원(관용 절단·정합)
+        if os.path.exists(self.jobs_p):
+            try:
+                self.jobs = json.load(open(self.jobs_p, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.jobs = {}           # ★H5 — 잡 메타 손상은 무해(고아 = GC · 대장이 정본)
+        a = self.w.audit()
+        if not a["ok"]:
+            raise Fl21Error("기동 audit 실패")
+        self.persisted = n
+        self._backfill_cosigs()      # ★내구성 자기치유(아래) — 크래시 반쪽-영속 봉합
+
+    def _backfill_cosigs(self):
+        """★공동-서명 구멍 자기치유(직접 리뷰 RD-1): 대장(entries.jsonl) 뒤에 공동-서명
+        (cosigs.jsonl)이 별도 append라 그 사이 크래시가 나면 엔트리는 있는데 서명이 없는
+        구멍이 남고, 그 구멍이 최신-꼬리가 아니게 되면 verify_chain이 원장을 **영구
+        '변조'로 오판**한다(정직한 운영자가 낙인). 공동-서명은 head에 대한 **결정론** 서명이고
+        노드가 키를 쥐고 있으므로 빠진 것만 재생성한다 — ★있는 서명은 절대 덮지 않는다
+        (손상·head-불일치 서명의 변조 검출은 그대로 살린다 · T-COSIGN 불변)."""
+        merged = {}                  # ★병합(D-2 — 줄이 부분-서명일 수 있다) · 있는 서명 불가침
+        if os.path.exists(self.cosig_p):
+            # ★N-1([M-108]) — 잘린-꼬리 관용을 여기도(대장과 동일 크래시 창)
+            for r in self._read_ledger_lines(self.cosig_p, label="공동서명"):
+                m = merged.setdefault(r["seq"], {"seq": r["seq"],
+                                                 "head": r["head"], "sigs": {}})
+                if r["head"] == m["head"]:
+                    for c, s in r["sigs"].items():
+                        m["sigs"].setdefault(c, s)
+                        self._cosig_seen.add((r["seq"], c))   # 재생 중복-제거 시드
+        changed = False
+        for e in self.w.log:
+            m = merged.setdefault(e["seq"], {"seq": e["seq"], "head": e["head"],
+                                             "sigs": {}})
+            for c, k in self.cos_keys.items():   # ★로컬 키만 치유(원격 몫은 데몬·pending)
+                if c not in m["sigs"]:
+                    m["sigs"][c] = k.sign(
+                        FL21_DOMAIN + bytes.fromhex(e["head"])).hex()
+                    changed = True
+        # ★N-3([M-110] 맥락-0 5차 적발): /cosigs는 이 병합-맵을 seq-정렬로 서빙한다 —
+        # 원시 파일은 append-순서(seq 비정렬·seq당 다중 행)라 행-단위 500 절단 시 페이지
+        # 경계에 걸린 seq의 잔여 서명이 SDK 커서(seq+1)에 영구 누락 → 원장 ~167항부터
+        # 외부 verify_chain이 영구 「변조 의심」 오판(재현 확정 · 신뢰-뿌리 파괴).
+        self.cosig_map = merged
+        if not changed:
+            return
+        tmp = self.cosig_p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as ch:
+            for seq in sorted(merged):
+                ch.write(json.dumps(merged[seq], sort_keys=True) + "\n")
+        os.replace(tmp, self.cosig_p)
+
+    def _atomic(self, fn):
+        """★다중 커밋 원자화(완결성 점검 B1 — 부분-커밋 방지): 여러 _ksubmit을 감싸
+        실패 시 세계 상태·로그·색·부트스트랩 계수를 진입 시점으로 전부 되감는다.
+        (단일 _ksubmit은 커널 _commit이 이미 롤백하지만, 두 커밋 사이 실패는 못 막았다 —
+        bootstrap이 EXT_IN 후 BLOCK 실패 시 고아 발행을 남기던 구멍.)"""
+        snap = self.w._snap()
+        nlog = len(self.w.log)
+        cols, boot = dict(self.colors), dict(self.bootstrap_used)
+        try:
+            return fn()
+        except Exception:
+            self.w._restore(snap)
+            del self.w.log[nlog:]
+            self.colors, self.bootstrap_used = cols, boot
+            raise
+
+    # ── ★색 엔진([M-103] — 자유은행 (i) · 색 = 로그-파생 · 캐논 무접촉) ──
+    def _ksubmit(self, env):
+        """커널 제출 + 색 전이(모든 기입 경로 공통 — 리플레이와 동일 규칙)."""
+        bi = set(self.w.notes)
+        rp_b = ({k: dict(v) for k, v in self.w.redeem_pending.items()}
+                if env.get("typ") == "TICK" else None)
+        entry = self.w.submit(env)
+        self._color_step(entry, bi, rp_b)
+        return entry
+
+    def _color_step(self, entry, before_ids, rp_before=None):
+        """엔트리 하나의 색 전이([M-103] 규칙): EXT_IN = 수취인 자기-IOU · SPLIT/MERGE =
+        상속 · 이동(XFER/REDEEM/UW 담보)은 색 불변 · 소멸(DELIVER/BURN 등)은 제거 ·
+        정산(TICK) 배상 = ★가해-앵커 색 · 그 밖의 정산 재발행(압류 잔돈·담보 잔여) =
+        소유자 자기 색(자기 재-약속 독해 — [FREEBANK_ANALOGY §4]·폭포 한계의 정직 규칙)."""
+        env = entry["env"]
+        now_ids = set(self.w.notes)
+        removed = before_ids - now_ids
+        rcol = {nid: self.colors.get(nid) for nid in removed}
+        for nid in removed:
+            self.colors.pop(nid, None)
+        added = sorted(now_ids - before_ids, key=int)
+        typ = env["typ"]
+        if typ == "EXT_IN":
+            for nid in added:
+                self.colors[nid] = env["args"]["to"]      # ★자기-IOU 발행
+        elif typ in ("SPLIT", "MERGE"):
+            cs = {c for c in rcol.values() if c is not None}
+            c = next(iter(cs)) if len(cs) == 1 else None  # 가드가 동색을 보장
+            for nid in added:
+                self.colors[nid] = c or self.w.notes[nid]["owner"]
+        elif typ == "TICK":
+            force = entry.get("_force") or {}
+            claimed = set()
+            for rec in sorted(force.get("settled", []), key=lambda r: r["ref"]):
+                rp = (rp_before or {}).get(rec["ref"])
+                if rec.get("comp", 0) <= 0 or not rp:
+                    continue
+                for nid in added:                          # ★배상 = 가해-앵커 색
+                    if nid not in claimed and \
+                       self.w.notes[nid]["owner"] == rp["holder"] and \
+                       self.w.notes[nid]["face"] == rec["comp"]:
+                        self.colors[nid] = rp["anchor"]
+                        claimed.add(nid)
+                        break
+            for nid in added:                              # 압류 잔돈·담보 잔여
+                if nid not in claimed:
+                    self.colors[nid] = self.w.notes[nid]["owner"]
+        elif typ == "BLOCK":
+            legs = env["args"]["legs"]
+            for lg in legs:                                # ★상호-신용 스왑 계수(로그-파생)
+                a = lg.get("args") or {}
+                if lg.get("typ") == "XFER" and a.get("frm") == GENESIS[0] and \
+                   any(l2.get("typ") == "XFER" and
+                       (l2.get("args") or {}).get("to") == GENESIS[0] and
+                       l2.get("p") == a.get("to") for l2 in legs):
+                    f = self.w.notes.get(str(a.get("note")), {}).get("face", 0)
+                    p_ = a.get("to")
+                    self.bootstrap_used[p_] = self.bootstrap_used.get(p_, 0) + f
+            for nid in added:                              # (허용 다리엔 발행 없음 — 방어)
+                self.colors[nid] = self.w.notes[nid]["owner"]
+        else:
+            for nid in added:                              # 방어(도달 불가 경로)
+                self.colors[nid] = self.w.notes[nid]["owner"]
+        if len(self.colors) != len(self.w.notes):          # ★색 전체성 불변식
+            raise Fl21Error(f"색 불변식 파손 seq {entry['seq']}")
+
+    def _guard_env(self, env):
+        """★서비스층 기입 정책(캐논 무접촉 — 경로 제한): RD-7 + 색-일치 라우팅([M-103])."""
+        typ = (env or {}).get("typ")
+        args = (env or {}).get("args") or {}
+        if typ == "DELIVER" and str(args.get("ref")) in self.jobs:
+            raise Fl21Error("잡-결박 이행은 /deliver 경유(산출 검증-후 이행 — RD-7)")
+        if typ == "REDEEM":
+            c = self.colors.get(str(args.get("note")))
+            if c is None:
+                raise Fl21Error("미지/무색 노트 — 상환 불가")
+            if args.get("anchor") != c:
+                raise Fl21Error(f"색-일치: 노트는 발행자({c})에게만 상환([M-103])")
+        if typ == "MERGE":
+            cs = {self.colors.get(str(x)) for x in (args.get("notes") or [])}
+            if len(cs) != 1 or None in cs:
+                raise Fl21Error("MERGE: 동색 노트만(색 상속 보전)")
+        if typ == "REDEEM_CANCEL":   # ★취소-창([M-105] D-10 ④ — 취소-그리프 방어)
+            j = self.jobs.get(str(args.get("ref")))
+            if j and j.get("state") == "open" and \
+                    self.w.epoch * 2 > j["t0"] + j["deadline"]:
+                raise Fl21Error("취소-창 경과: 잡-결박 청구는 기한 절반 후 취소 불가"
+                                "(이행 착수 매몰 방어)")
+        if typ == "EXIT":            # ★발행자-도주 방어([M-113] 더블체크 FB-1/MS-1):
+            # 커널 EXIT는 bal·obl만 봐서 **유통 중인 자기-색 발행부채**를 못 본다 —
+            # 발행자가 자기-IOU를 전량 넘긴 뒤 EXIT하면 그 색 노트가 영구 상환-불능
+            # (「앵커 무효」)이 되는데 노트는 계속 유통(자유은행 「깨진 은행권」·무음 방기).
+            # 색은 서비스층 개념이라 방어도 서비스층 몫 — 유통 색부채가 남으면 EXIT 거부.
+            out = self.outstanding(env.get("p"))
+            if out > 0:
+                raise Fl21Error(
+                    f"EXIT: 유통 중인 자기-색 발행부채 {out}(먼저 상환/소각·회수 — "
+                    "유통 노트의 상환-불능 방기 방지)")
+        if typ in ("OPEN", "CLOSE", "EXT_IN_POOL"):
+            raise Fl21Error(f"{typ}: r1 표면 밖(색-추적 불가 연산)")
+
+    @staticmethod
+    def _fsync(fh):
+        fh.flush()
+        os.fsync(fh.fileno())
+
+    def _persist_new(self):
+        # ★H5 — 잡 메타를 대장보다 **먼저** 내구화(재배열): 창 안 크래시가 「이행-불가
+        # 유령 청구」(대장엔 REDEEM·jobs엔 스펙 없음 → 강제 사고)를 남기던 순서를 뒤집어,
+        # 실패 모드를 「고아 잡 메타(무해·GC)」로 바꾼다.
+        tmp = self.jobs_p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as jf:
+            json.dump(self.jobs, jf, ensure_ascii=False)
+            self._fsync(jf)
+        os.replace(tmp, self.jobs_p)
+        # ★H5 — 대장·공동서명 append 후 fsync(ack = 내구 보장 · 정전에도 정산 불멸)
+        with open(self.ledger_p, "a", encoding="utf-8") as fh, \
+             open(self.cosig_p, "a", encoding="utf-8") as ch:
+            for e in self.w.log[self.persisted:]:
+                fh.write(json.dumps(e, ensure_ascii=False, sort_keys=True) + "\n")
+                sigs = {c: k.sign(FL21_DOMAIN + bytes.fromhex(e["head"])).hex()
+                        for c, k in self.cos_keys.items()}
+                ch.write(json.dumps({"seq": e["seq"], "head": e["head"],
+                                     "sigs": sigs}, sort_keys=True) + "\n")
+                self.cosig_map[e["seq"]] = {"seq": e["seq"], "head": e["head"],
+                                            "sigs": dict(sigs)}   # ★N-3
+            self._fsync(fh)
+            self._fsync(ch)
+        self.persisted = len(self.w.log)
+
+    # ── 잡 상태 갱신(정산 관측 — 커널 로그가 정본) ──
+    def _sync_jobs(self):
+        for ref, j in self.jobs.items():
+            c = self.w.uw_open.get(ref)
+            if c:                       # ★커버 이력 보존(맥락-0 C-2 — 정산 후에도 감사 가능)
+                j["cover"] = {"uw": c["uw"], "prem": c["prem"]}
+            if j["state"] != "open":
+                continue
+            if ref not in self.w.redeem_pending:
+                if j.get("delivered"):
+                    j["state"] = "delivered"
+                else:
+                    j["state"] = "settled_or_returned"   # 시한-사고 경로(커널 정산)
+        # 표시: 미결이며 기한 지난 잡(사고 예정 — 정보용)
+        for j in self.jobs.values():
+            if j["state"] == "open" and self.w.epoch > j["deadline"]:
+                j["late"] = True
+
+    # ── API 동작(전부 락 안) ──
+    def meta(self):
+        return {"label": LABEL, "domain": "FL21-v0.1",
+                "log_id": self.w.log_id.hex(), "fp0": self.w.fp0,
+                "operator_pk": self.w.reg.pk("operator").hex(),
+                # ★[M-115] 창세 좌석 공개키(JOIN 없이 창세된 좌석의 봉투-서명 검증 원료
+                # — 냉독 결함 2 봉합 · H7 시드-독립 리플레이의 대역-내 서빙)
+                "genesis_pks": {a: self.w.reg.pk(a).hex() for a in GENESIS},
+                "cosigners": dict(self.cosign_pubs),   # ★D-2 — 공개키 전량(분리 후에도)
+                "cosign_k": COSIGN_K,
+                "gen": dict(self.w.GEN), "genesis": list(GENESIS),
+                "model": "free-banking-v0",   # ★[M-103] — 색·자기-발행·발행자-상환
+                "join_issue": self.join_issue, "bootstrap_cap": self.boot_cap,
+                "job_kinds": list(JOBS.KINDS)}
+
+    def state(self):
+        return {"epoch": self.w.epoch, "seq": len(self.w.log),
+                "head": self.w.log[-1]["head"] if self.w.log else "genesis",
+                "F": self.w.F, "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
+                "S": self.w.S,
+                "ext_in": self.w.ext_in, "ext_out": self.w.ext_out,
+                "principals": self.w.reg.size()}
+
+    # ── ★P-5 /stats — 감시 지표·요율 원료(★D-13 증분 캐시 · 대칭-시차 · 버전-경계) ──
+    def stats(self):
+        key = (len(self.w.log), self.w.epoch)
+        if self._stats_cache and self._stats_cache[0] == key:
+            return self._stats_cache[1]
+        out = self._stats_scan()
+        self._stats_cache = (key, out)
+        return out
+
+    def _stats_scan(self):
+        T = self.w.GEN["redeem_T"]
+        now = self.w.epoch
+        ver = {}                      # anchor → 현재 버전(P-10 — TICKMARK 선언)
+        seg = {}                      # (anchor, ver) → {del, fail, mat}
+        cov_open, cov_hist = len(self.w.uw_open), 0
+        loss = {"anchor": 0, "cov": 0, "uw": 0, "fund": 0, "short": 0}
+        uw_book = {}                  # ★RU-4 — 인수자별 실적{covered, prem, paid}
+        ref_uw = {}                   # ref → uw(로그의 UW 봉투에서 재구성)
+        tx_n = 0                      # ★RE-3 — 밀도(비-운영 발화 수)
+
+        def _seg(a):
+            k = (a, ver.get(a, "v0"))
+            return seg.setdefault(k, {"delivered": 0, "failed": 0, "mature": 0})
+
+        def _deliver(a, ref):
+            j = self.jobs.get(ref)
+            t0 = j["t0"] if j and "t0" in j else None
+            s = _seg(a)
+            s["delivered"] += 1
+            # ★대칭-시차 계수([M-94] — 성숙 가시 = t0+T 통일 · t0 미상은 즉시)
+            if t0 is None or now >= t0 + T:
+                s["mature"] += 1
+
+        for e in self.w.log:
+            env = e["env"]
+            legs = (env["args"]["legs"] if env["typ"] == "BLOCK"
+                    else [env])
+            for lg in legs:
+                if lg.get("p") != "operator":
+                    tx_n += 1                       # ★RE-3 밀도 — 참여자 발화
+                if lg["typ"] == "DELIVER":
+                    _deliver(lg["args"]["anchor"], lg["args"]["ref"])
+                elif lg["typ"] == "UW":             # ★RU-4 — 인수자 북 재구성
+                    u_ = lg["args"]["uw"]
+                    ref_uw[lg["args"]["ref"]] = u_
+                    b = uw_book.setdefault(u_, {"covered": 0, "prem": 0,
+                                                "paid": 0})
+                    b["covered"] += 1
+                    b["prem"] += lg["args"].get("prem", 0)
+                elif lg["typ"] == "TICKMARK" and \
+                        isinstance(lg.get("args"), dict) and \
+                        lg["args"].get("kind") == "fl21.version":
+                    ver[lg["p"]] = str(lg["args"].get("v", "?"))[:32]
+            if env["typ"] == "TICK" and "_force" in e:
+                fo = e["_force"]
+                for r in fo.get("settled", []):
+                    j = self.jobs.get(r["ref"])
+                    for k in loss:
+                        loss[k] += r.get(k, 0)
+                    cov_hist += 1
+                    u_ = ref_uw.get(r["ref"])
+                    if u_:                          # ★RU-4 — 인수자 지급(담보+소구)
+                        uw_book[u_]["paid"] += r.get("cov", 0) + r.get("uw", 0)
+                    if j:
+                        s = _seg(j["anchor"])
+                        s["failed"] += 1
+                        s["mature"] += 1
+                for ref in fo.get("returned", []):
+                    j = self.jobs.get(ref)
+                    if j:
+                        s = _seg(j["anchor"])
+                        s["failed"] += 1
+                        s["mature"] += 1
+        anchors = {}
+        for (a, v), s in seg.items():
+            p_hat = (s["failed"] + 1) / (s["mature"] + 2)
+            anchors.setdefault(a, {"version": ver.get(a, "v0"),
+                                   "segments": {}})
+            anchors[a]["segments"][v] = {**s, "p_hat": round(p_hat, 4)}
+        prem_in = sum(c["prem"] for c in self.w.uw_open.values())
+        for u_, b in uw_book.items():               # 인수자 손해율(자기-북)
+            b["loss_ratio"] = round(b["paid"] / b["prem"], 3) if b["prem"] \
+                else None
+        colors_supply = {}                           # ★[M-103] 발행자별 미결 부채(집적 관측)
+        for nid, n in self.w.notes.items():
+            c = self.colors.get(nid, "?")
+            colors_supply[c] = colors_supply.get(c, 0) + n["face"]
+        density = {"tx": tx_n,                       # ★RE-3 — 밀도 지표
+                   "tx_per_epoch": round(tx_n / now, 3) if now else None,
+                   "active_principals": self.w.reg.size() - 1,
+                   "au_circulating": sum(n["face"] for n in
+                                         self.w.notes.values()
+                                         if not n["owner"].startswith("@")),
+                   "au_burned_S": self.w.S,
+                   "colors": colors_supply}
+        return {"epoch": now, "symlag_T": T,
+                "underwriters": uw_book,             # ★RU-4
+                "density": density,
+                "anchors": anchors,
+                "coverage": {"open": cov_open, "settled": cov_hist,
+                             "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
+                             "open_prem": prem_in},
+                "loss_layers": loss,
+                "note": ("★대칭-시차 계수·버전-분절 — 잡-경로 한정"
+                         "(원시 REDEEM은 t0 미상 = 즉시 계수 · 등재)")}
+
+    # ── ★P-9 /attest — 실적 증명(전량-아니면-무 · 운영자-서명 · head-결박) ──
+    def attest(self, principal):
+        st = self.stats()
+        a = st["anchors"].get(principal)
+        doc = {"principal": principal, "log_id": self.w.log_id.hex(),
+               "upto_seq": len(self.w.log),
+               "upto_head": self.w.log[-1]["head"] if self.w.log else "genesis",
+               "epoch": self.w.epoch, "complete": True,   # ★전량-아니면-무([FR-6])
+               "stats": a or {"segments": {}, "version": None}}
+        import kernel21 as K
+        sig = self.w._keys["operator"].sign(
+            FL21_DOMAIN + K._canon(doc)).hex()
+        return {"doc": doc, "operator_sig": sig}
+
+    def join(self, principal, pk_hex):
+        if not _PNAME.match(principal or ""):
+            raise Fl21Error("principal은 [a-z][a-z0-9_-]{1,31}")
+        bytes.fromhex(pk_hex)
+        self._ksubmit(self.w.sign_env("operator", "JOIN",
+                                      {"principal": principal, "pk": pk_hex}))
+        if self.join_issue > 0:      # ★[M-103] 자기-IOU 발행(구매력 아님 — 자기-약속 자본)
+            self._ksubmit(self.w.sign_env("operator", "EXT_IN",
+                                          {"to": principal,
+                                           "amount": self.join_issue}))
+        self._persist_new()
+        return {"joined": principal, "issue": self.join_issue,
+                "note": "발행분은 당신의 자기-IOU(색 = 당신) — 타인 노트는 교환·이행으로"}
+
+    def outstanding(self, principal):
+        """색 = principal인 유통량(에스크로 포함) = 그 발행자의 미결 이행-부채."""
+        return sum(n["face"] for nid, n in self.w.notes.items()
+                   if self.colors.get(nid) == principal)
+
+    def issue(self, env):
+        """★[M-104] 회전-발행(재점검 F-1): 발행권 = 일회 지급이 아니라 **회전 한도** —
+        「내 색 유통량 ≤ 한도」. 이행-소각이 부채를 지우면 그만큼 재발행 가능(공급의
+        단조-수축 봉합 — 소각↔발행이 이행 능력에 결박). 요청 = 본인-서명 TICKMARK
+        (로그-결박·감사 가능) → 운영자 EXT_IN."""
+        if not isinstance(env, dict) or env.get("typ") != "TICKMARK":
+            raise Fl21Error("issue: 본인-서명 TICKMARK{kind: fl21.issue, k}")
+        args = env.get("args") or {}
+        if args.get("kind") != "fl21.issue":
+            raise Fl21Error("issue: kind = fl21.issue")
+        k = args.get("k")
+        if not isinstance(k, int) or isinstance(k, bool) or k < 1:
+            raise Fl21Error("issue: k ≥ 1 정수")
+        p = env.get("p")
+        cap = self.genesis_issue if p in GENESIS else self.join_issue
+        out_now = self.outstanding(p)
+        if out_now + k > cap:
+            raise Fl21Error(f"issue: 회전 한도 초과({out_now}+{k} > {cap} — "
+                            "이행-소각이 부채를 지우면 재발행 가능)")
+        self.w._verify_env(env)      # ★B1 — 발행 전 사용자 요청 선검증
+        self._atomic(lambda: (       # ★B1 — 요청↔발행 원자(부분-커밋 방지)
+            self._ksubmit(env),      # 서명 요청을 로그에 결박(커널이 서명·nonce 검증)
+            self._ksubmit(self.w.sign_env("operator", "EXT_IN",
+                                          {"to": p, "amount": k}))))
+        self._persist_new()
+        return {"issued": k, "outstanding": self.outstanding(p), "cap": cap}
+
+    def bootstrap(self, leg):
+        """★[M-103] 상호 신용 교환(WIR형 — [FREEBANK_ANALOGY §1]): 신규자 자기-IOU
+        노트(XFER 다리) ↔ 같은 액면의 anchor0-IOU 신규 발행을 원자 스왑. anchor0는
+        신규자-IOU(그의 미래-이행 청구)를 자산으로 받는다 — 일방 보조금이 아니다.
+        한도 = BOOT_CAP/주체(로그-파생 계수)."""
+        if not isinstance(leg, dict) or leg.get("typ") != "XFER":
+            raise Fl21Error("bootstrap: XFER 다리 하나(내 자기-IOU → anchor0)")
+        a = leg.get("args") or {}
+        p = leg.get("p")
+        nid = str(a.get("note"))
+        if a.get("to") != GENESIS[0] or a.get("frm") != p:
+            raise Fl21Error("bootstrap: 다리는 본인→anchor0 XFER")
+        if self.colors.get(nid) != p:
+            raise Fl21Error("bootstrap: 자기-색 노트만(자기-IOU 교환)")
+        face = self.w.notes.get(nid, {}).get("face", 0)
+        used = self.bootstrap_used.get(p, 0)
+        if face <= 0 or used + face > self.boot_cap:
+            raise Fl21Error(f"bootstrap: 한도 초과({used}+{face} > {self.boot_cap})")
+        self.w._verify_env(leg)      # ★B1 — 발행 전에 사용자 다리 선검증(서명·nonce·창)
+
+        def _do():
+            self._ksubmit(self.w.sign_env("operator", "EXT_IN",
+                                          {"to": GENESIS[0], "amount": face}))
+            new_nid = str(self.w.note_ctr - 1)
+            back = self.w.sign_env(GENESIS[0], "XFER",
+                                   {"frm": GENESIS[0], "to": p, "note": new_nid})
+            entry = self._ksubmit(self.w.sign_env("operator", "BLOCK",
+                                                  {"legs": [leg, back]}))
+            return entry, new_nid
+        entry, new_nid = self._atomic(_do)   # ★B1 — EXT_IN↔BLOCK 원자(고아 발행 방지)
+        self._persist_new()
+        return {"seq": entry["seq"], "head": entry["head"], "granted": face,
+                "note_nid": new_nid, "used": self.bootstrap_used.get(p, 0),
+                "cap": self.boot_cap}
+
+    def submit(self, env):
+        self._guard_env(env)         # ★RD-7 + 색-라우팅([M-103])
+        entry = self._ksubmit(env)
+        self._sync_jobs()            # 원시 UW/REDEEM_CANCEL도 잡 이력에 반영
+        self._persist_new()
+        return {"seq": entry["seq"], "head": entry["head"]}
+
+    def submit_job(self, env, job):
+        spec = JOBS.validate_spec(job)
+        if env.get("typ") != "REDEEM":
+            raise Fl21Error("job은 REDEEM 봉투에만 붙는다")
+        want = (env.get("args") or {}).get("spec_sha256")
+        if want is not None:             # ★H2([M-121]) — 명세를 서명 head에 결박
+            got = hashlib.sha256(_canon(spec)).hexdigest()
+            if want != got:
+                raise Fl21Error("H2: spec_sha256 불일치 — 명세 결박 위반"
+                                "(서명한 명세 ≠ 제출 명세)")
+        nid = str((env.get("args") or {}).get("note"))
+        note = self.w.notes.get(nid)
+        if note is None:
+            raise Fl21Error("미지 노트")
+        floor = JOBS.price(spec)     # ★P-2 작업-가격 결박(액면 하한)
+        if note["face"] < floor:
+            raise Fl21Error(f"가격 결박: 액면 {note['face']} < 최소 {floor}"
+                            f"(1 AU = {JOBS.N_PER_AU} 작업량)")
+        self._guard_env(env)         # ★색-일치 라우팅([M-103] — 발행자에게만 상환)
+        before = set(self.w.redeem_pending)
+        entry = self._ksubmit(env)
+        ref = next(iter(set(self.w.redeem_pending) - before))
+        rp = self.w.redeem_pending[ref]
+        self.jobs[ref] = {"job": spec, "anchor": rp["anchor"],
+                          "holder": rp["holder"], "t0": rp["t0"],
+                          "exposure": note["face"],
+                          "deadline": rp["t0"] + self.w.GEN["redeem_T"],
+                          "state": "open"}
+        self._persist_new()
+        return {"seq": entry["seq"], "head": entry["head"], "ref": ref,
+                "deadline_epoch": self.jobs[ref]["deadline"]}
+
+    # ── ★B2 이행 3단(검증은 락 밖 — 서브프로세스가 노드를 얼리지 않게) ──
+    def deliver_lookup(self, env):
+        """락 안(짧게): 잡 존재·미이행 확인 후 스펙 복사(락 밖 검증용)."""
+        ref = (env.get("args") or {}).get("ref")
+        j = self.jobs.get(ref)
+        if j is None:
+            raise Fl21Error("미지 작업 ref")
+        if j.get("delivered"):
+            raise Fl21Error("이미 이행된 청구")
+        return dict(j["job"])         # 스펙 스냅샷(검증 중 공유 상태 무접촉)
+
+    def deliver_commit(self, env, output, detail):
+        """락 안(짧게): 잡 재확인 후 커널 DELIVER(시한·판정 내구성은 법이 강제)."""
+        ref = (env.get("args") or {}).get("ref")
+        j = self.jobs.get(ref)
+        if j is None:
+            raise Fl21Error("미지 작업 ref")
+        if j.get("delivered"):
+            raise Fl21Error("이미 이행된 청구")
+        want = (env.get("args") or {}).get("output_sha256")
+        if want is not None:             # ★H2([M-121]) — 산출을 서명 head에 결박
+            got = hashlib.sha256(_canon(output)).hexdigest()
+            if want != got:
+                raise Fl21Error("H2: output_sha256 불일치 — 산출 결박 위반"
+                                "(서명한 산출 ≠ 전달 산출)")
+        entry = self._ksubmit(env)    # ref/anchor/failed 재검증은 커널이 강제
+        j["delivered"] = True
+        j["output"] = output
+        j["verify"] = detail
+        self._sync_jobs()
+        self._persist_new()
+        return {"seq": entry["seq"], "head": entry["head"], "ref": ref,
+                "verify": detail}
+
+    def block(self, legs):
+        """★원자 다자-거래(커널 BLOCK — all-or-nothing): 각 다리는 당사자-서명 봉투,
+        제출은 운영자 좌석(제출자 ≠ 다리 서명자 — 커널 규칙). 보험료↔커버의 원자 교환 등."""
+        if not isinstance(legs, list) or not (1 <= len(legs) <= 8):
+            raise Fl21Error("legs는 1~8개")
+        for lg in legs:              # ★색-추적 가능 다리만 + 다리별 정책([M-103]·RD-7)
+            if not isinstance(lg, dict) or lg.get("typ") not in BLOCK_LEG_TYPES:
+                raise Fl21Error(f"BLOCK 다리 타입은 {BLOCK_LEG_TYPES} 한정")
+            self._guard_env(lg)
+        entry = self._ksubmit(self.w.sign_env("operator", "BLOCK",
+                                              {"legs": legs}))
+        self._sync_jobs()
+        self._persist_new()
+        return {"seq": entry["seq"], "head": entry["head"]}
+
+    def tick(self):
+        ent = self._ksubmit(self.w.sign_env("operator", "TICK", {}))
+        self._sync_jobs()
+        self._persist_new()
+        return {"epoch": self.w.epoch, "settle": ent.get("_force")}
+
+    def cosig_add(self, body):
+        """★D-2([M-105]) — 원격 서명자 데몬의 공동-서명 수신(검증-후 append)."""
+        if not isinstance(body, dict):
+            raise Fl21Error("cosig: 객체")
+        name, seq = body.get("name"), body.get("seq")
+        head, sig = body.get("head"), body.get("sig")
+        pk = self.cosign_pubs.get(name)
+        if pk is None:
+            raise Fl21Error("cosig: 미지 서명자")
+        if not isinstance(seq, int) or not (0 <= seq < len(self.w.log)):
+            raise Fl21Error("cosig: seq 범위 밖")
+        if self.w.log[seq]["head"] != head:
+            raise Fl21Error("cosig: head 불일치")
+        if (seq, name) in self._cosig_seen:      # ★재생 중복-제거(완결성 med — 무한증가 DoS)
+            return {"ok": True, "seq": seq, "signer": name, "dup": True}
+        try:
+            Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk)).verify(
+                bytes.fromhex(sig), FL21_DOMAIN + bytes.fromhex(head))
+        except Exception:
+            raise Fl21Error("cosig: 서명 무효")
+        with open(self.cosig_p, "a", encoding="utf-8") as ch:
+            ch.write(json.dumps({"seq": seq, "head": head,
+                                 "sigs": {name: sig}}, sort_keys=True) + "\n")
+            self._fsync(ch)
+        self._cosig_seen.add((seq, name))
+        cm = self.cosig_map.setdefault(seq, {"seq": seq, "head": head,
+                                             "sigs": {}})   # ★N-3
+        if cm["head"] == head:
+            cm["sigs"].setdefault(name, sig)
+        return {"ok": True, "seq": seq, "signer": name}
+
+    def audit(self):
+        a = self.w.audit()
+        ok = a["ok"] and set(self.colors) == set(self.w.notes)   # ★색 전체성
+        return {"ok": ok, "entries": a.get("entries")}
+
+
+class Handler(BaseHTTPRequestHandler):
+    node: Node = None
+    protocol_version = "HTTP/1.1"
+    timeout = 30                      # ★slow-loris — 소켓 유휴 상한(느린 헤더/본문 절단)
+    rate_limit = 0                    # ★D-6 — 초당 요청 상한/IP(0 = 끔 · 배포 시 켬)
+    trust_forwarded = False           # ★D-5 — 프록시 뒤에서만 X-Forwarded-For 신뢰
+    join_per_ip = 0                   # ★REACH-3 — join 상한/IP(0 = 끔 · 시빌 속도 제어)
+    _buckets = {}
+    _joins = {}                       # IP → join 수(프로세스 수명 · nd.lock 안에서만 접근)
+    _block = threading.Lock()
+
+    def _peer(self):
+        # ★rate-limit이 프록시 뒤 단일 버킷으로 붕괴하는 것 방지 — 신뢰 프록시일 때만 XFF
+        if self.trust_forwarded:
+            xff = self.headers.get("X-Forwarded-For")
+            if xff:
+                return xff.split(",")[-1].strip()   # 마지막 홉(프록시가 붙인 실 피어)
+        return self.client_address[0]
+
+    def log_message(self, *a):        # 조용히(테스트 소음 방지)
+        pass
+
+    def _rate_ok(self):
+        if self.rate_limit <= 0:
+            return True
+        ip = self._peer()
+        now = time.monotonic()
+        with self._block:
+            tok, last = self._buckets.get(ip, (float(self.rate_limit), now))
+            tok = min(float(self.rate_limit),
+                      tok + (now - last) * self.rate_limit)
+            # 유휴 IP 버킷 축출(무한 증가 방지 — 가득 찬 버킷은 상태가 없음)
+            if len(self._buckets) > 4096:
+                for k in [k for k, (t, ls) in self._buckets.items()
+                          if now - ls > 60]:
+                    del self._buckets[k]
+            if tok < 1:
+                self._buckets[ip] = (tok, now)
+                return False
+            self._buckets[ip] = (tok - 1, now)
+            return True
+
+    def _send(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if code >= 400:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            raise Fl21Error("Content-Length 비정형")
+        if not (0 <= n <= 2_000_000):    # ★H6 — 음수 CL이 read(-1)=EOF까지(OOM) 우회하던 것
+            raise Fl21Error("페이로드 상한/음수 거부")
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def do_GET(self):
+        nd = self.node
+        if not self._rate_ok():
+            return self._send(429, {"error": "유량 제한"})
+        try:
+            with nd.lock:
+                p = self.path
+                if p == "/meta":
+                    return self._send(200, nd.meta())
+                if p == "/state":
+                    return self._send(200, nd.state())
+                if p == "/audit":
+                    return self._send(200, nd.audit())
+                if p == "/stats":                     # ★P-5
+                    return self._send(200, nd.stats())
+                m = re.match(r"^/attest/([a-z0-9_-]+)$", p)
+                if m:                                 # ★P-9
+                    return self._send(200, nd.attest(m.group(1)))
+                m = re.match(r"^/balance/([a-z0-9_-]+)$", p)
+                if m:
+                    return self._send(200, {"balance": nd.w.bal(m.group(1))})
+                m = re.match(r"^/nonce/([a-z0-9_-]+)$", p)
+                if m:
+                    return self._send(200, {"nonce": nd.w.nonces.get(m.group(1), 0),
+                                            "epoch": nd.w.epoch})
+                m = re.match(r"^/notes/([a-z0-9_-]+)$", p)
+                if m:
+                    who = m.group(1)
+                    ns = sorted(((nid, n["face"]) for nid, n in nd.w.notes.items()
+                                 if n["owner"] == who), key=lambda x: int(x[0]))
+                    return self._send(200, {"notes": [
+                        {"nid": a, "face": b,
+                         "color": nd.colors.get(a)}    # ★[M-103] 발행자(색)
+                        for a, b in ns]})
+                m = re.match(r"^/log\?since=(\d+)$", p)
+                if m:
+                    s = int(m.group(1))
+                    return self._send(200, {"entries": nd.w.log[s:s + 500]})
+                m = re.match(r"^/cosigs\?since=(\d+)$", p)
+                if m:
+                    s = int(m.group(1))
+                    # ★N-3 — 병합-맵을 seq-정렬 서빙(행-단위 파일 절단의 페이지-경계
+                    # seq 서명 누락 봉합 · SDK 커서[seq+1]가 이제 정확)
+                    ks = sorted(k for k in list(nd.cosig_map) if k >= s)[:500]
+                    rows = [nd.cosig_map.get(k) for k in ks]
+                    return self._send(200, {"cosigs": [r for r in rows if r]})
+                m = re.match(r"^/jobs\?anchor=([a-z0-9_-]+)$", p)
+                if m:
+                    a = m.group(1)
+                    js = {r: j for r, j in nd.jobs.items()
+                          if j["anchor"] == a and j["state"] == "open"
+                          and not j.get("delivered")}
+                    return self._send(200, {"jobs": js, "epoch": nd.w.epoch})
+                if p.startswith("/job/"):
+                    ref = p[5:]
+                    j = nd.jobs.get(ref)
+                    if j is None:
+                        return self._send(404, {"error": "미지 ref"})
+                    c = nd.w.uw_open.get(ref)         # ★P-4 커버리지 노출
+                    cov = ({"covered": True, "uw": c["uw"], "prem": c["prem"]}
+                           if c else {"covered": False})
+                    if not c and j.get("cover"):      # ★정산 후 이력(맥락-0 C-2)
+                        cov["cover_history"] = j["cover"]
+                    return self._send(200, {"ref": ref, **j, **cov})
+            return self._send(404, {"error": "미지 경로"})
+        except Exception as e:                   # 경계 격리(A-4) — 노드 생존
+            return self._send(400, {"error": f"{type(e).__name__}: {e}"[:200]})
+
+    def do_POST(self):
+        nd = self.node
+        if not self._rate_ok():
+            return self._send(429, {"error": "유량 제한"})
+        try:
+            body = self._read_json()
+            p = self.path
+            if p == "/deliver":       # ★B2 — 검증(서브프로세스·재해시)은 락 밖에서
+                env = body.get("env")
+                output = body.get("output", "")
+                with nd.lock:         # 1) 짧게: 잡 확인·스펙 복사
+                    spec = nd.deliver_lookup(env)
+                ok, detail = JOBS.verify_output(spec, output)   # 2) 락 밖: 무거운 검증
+                if not ok:
+                    raise Fl21Error(
+                        f"산출 검증 실패 — 이행 불인정({detail.get('why', '불일치')})")
+                with nd.lock:         # 3) 짧게: 재확인 후 커널 커밋
+                    return self._send(200, nd.deliver_commit(env, output, detail))
+            with nd.lock:
+                if p == "/join":
+                    # ★시빌-소진 방어([M-114] REACH-3): identity_budget(128)은 전역·
+                    # 단조(EXIT도 슬롯 반환 안 함)라 한 행위자가 수 초에 전량 소진하면
+                    # 그 세계의 join이 영구 봉쇄된다 — per-IP 하위 상한으로 속도 제어
+                    # (0 = 끔 · 초기 수요-탐침 창에서만 의미 · 운영 다이얼).
+                    if self.join_per_ip > 0:
+                        ip = self._peer()
+                        n = Handler._joins.get(ip, 0)
+                        if n >= self.join_per_ip:
+                            return self._send(429, {"error": "join 상한/IP — 초기 창의 "
+                                                    "시빌 속도 제어(운영자 문의)"})
+                        Handler._joins[ip] = n + 1
+                    return self._send(200, nd.join(body.get("principal"),
+                                                   body.get("pk", "")))
+                if p == "/bootstrap":                 # ★[M-103] 상호 신용 교환
+                    return self._send(200, nd.bootstrap(body.get("leg")))
+                if p == "/issue":                     # ★[M-104] 회전-발행
+                    return self._send(200, nd.issue(body.get("env")))
+                if p == "/cosig":                     # ★[M-105] D-2 원격 공동-서명 수신
+                    return self._send(200, nd.cosig_add(body))
+                if p == "/submit":
+                    return self._send(200, nd.submit(body.get("env")))
+                if p == "/job":
+                    return self._send(200, nd.submit_job(body.get("env"),
+                                                         body.get("job")))
+                if p == "/block":
+                    return self._send(200, nd.block(body.get("legs")))
+                if p == "/tick":
+                    return self._send(200, nd.tick())
+            return self._send(404, {"error": "미지 경로"})
+        except Fl21Error as e:
+            return self._send(400, {"error": str(e)[:200]})
+        except Exception as e:                   # 비정규 입력 — 격리·생존(A-4)
+            return self._send(400, {"error": f"{type(e).__name__}: {e}"[:200]})
+
+
+def serve(data_dir, port, auto_tick=0, join_issue=20, bind="127.0.0.1",
+          rate_limit=0, genesis_issue=40, bootstrap_cap=BOOT_CAP,
+          cosign_local=None, bridge_ref=None, trust_forwarded=False,
+          join_per_ip=0):
+    nd = Node(data_dir, join_issue=join_issue, genesis_issue=genesis_issue,
+              bootstrap_cap=bootstrap_cap, cosign_local=cosign_local,
+              bridge_ref=bridge_ref)
+    Handler.node = nd
+    Handler.trust_forwarded = bool(trust_forwarded)   # ★D-5 프록시 뒤 XFF
+    Handler.rate_limit = rate_limit   # ★D-6
+    Handler.join_per_ip = int(join_per_ip)   # ★REACH-3 — 시빌 속도 제어
+    Handler._joins = {}
+    srv = ThreadingHTTPServer((bind, port), Handler)   # ★D-5 — 바인딩 선택
+    if auto_tick > 0:
+        def _tk():
+            while True:
+                time.sleep(auto_tick)
+                try:
+                    with nd.lock:
+                        nd.tick()
+                except Exception as e:   # ★침묵 금지 — 틱 정지는 기한 정산이 멈춘다는 뜻
+                    print(json.dumps({"auto_tick_error": str(e)[:150],
+                                      "epoch": nd.w.epoch}), file=sys.stderr,
+                          flush=True)
+        threading.Thread(target=_tk, daemon=True).start()
+    return nd, srv
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", required=True)
+    ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--auto-tick", type=float, default=0)
+    ap.add_argument("--join-issue", type=int, default=20)   # ★자기-IOU 회전 한도
+    ap.add_argument("--genesis-issue", type=int, default=40)
+    ap.add_argument("--bootstrap-cap", type=int, default=BOOT_CAP)
+    ap.add_argument("--cosign-local", default=",".join(COSIGNERS),
+                    help="이 노드가 보유한 공동서명 키(쉼표 — D-2 분리 시 부분집합)")
+    ap.add_argument("--bridge-ref", default=None,
+                    help="세대-연속 참조(U-0 — 프로덕션 창세 = 파일럿 최종 head)")
+    ap.add_argument("--trust-forwarded", action="store_true",
+                    help="신뢰 프록시(D-5 TLS) 뒤에서만 — rate-limit이 X-Forwarded-For 사용")
+    ap.add_argument("--bind", default="127.0.0.1")     # ★D-5(공개는 프록시/TLS 뒤)
+    ap.add_argument("--rate-limit", type=int, default=0)  # ★D-6(초당/IP · 배포 시 켬)
+    ap.add_argument("--join-per-ip", type=int, default=0,
+                    help="join 상한/IP(0 = 끔 · ★공개 초기 = 시빌 속도 제어 REACH-3)")
+    a = ap.parse_args()
+    nd, srv = serve(a.data, a.port, a.auto_tick, a.join_issue,
+                    bind=a.bind, rate_limit=a.rate_limit,
+                    genesis_issue=a.genesis_issue, bootstrap_cap=a.bootstrap_cap,
+                    cosign_local=tuple(x for x in a.cosign_local.split(",") if x),
+                    bridge_ref=a.bridge_ref, trust_forwarded=a.trust_forwarded,
+                    join_per_ip=a.join_per_ip)
+    print(json.dumps({"r1": "up", "port": a.port, "seq": len(nd.w.log),
+                      "epoch": nd.w.epoch, "audit": nd.audit()["ok"]},
+                     ensure_ascii=False), flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

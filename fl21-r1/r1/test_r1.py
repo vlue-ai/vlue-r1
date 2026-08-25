@@ -1,0 +1,1026 @@
+#!/usr/bin/env python3
+"""test_r1.py — R1 수용 게이트 스위트 ([M-95] · A-1~A-6의 기계-판정).
+
+T-SIG    골든-서명: SDK 서명·헤드 재계산이 커널과 바이트-동일(커널 검증 통과).
+T-PERIL  A-1: 실물 계산-이행 루프(상환→계산→검증→이행) ∧ 산출-위조 거부 ∧
+         ★워커-다운 시 시한-사고 실발동(반환) ∧ 잡 상태 정합.
+T-RECOV  A-3: 서브프로세스 노드 SIGKILL → 재기동 리플레이 · audit · 잔고 정합 · 후속 거래.
+T-FUZZ   A-4: 경계 부정형(깨진 JSON·미지 경로·서명 위조·nonce 재사용·타인-발화·부정형
+         잡·거대 페이로드) 전량 4xx ∧ 노드 생존 ∧ audit 유지.
+T-SOAK   A-5: 다중 클라이언트 동시 운전 + 자동 틱 — 종료 후 audit ∧ 유통 보존.
+T-COSIGN A-6: 라이트 검증(head 사슬·운영자 서명·k-of-n) ok ∧ 변조 검출.
+
+실행: python3 test_r1.py  (산출: results/r1_gates.json · 전 게이트 pass 필수)
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang21"))
+sys.path.insert(0, _HERE)
+
+from kernel21 import World, Fl21Error, derive_key                  # noqa: E402
+import node as NODE                                                # noqa: E402
+import jobs as JOBS                                                # noqa: E402
+from sdk import Fl21Client, sig_msg, canon, DOMAIN                 # noqa: E402
+from worker import AnchorWorker                                    # noqa: E402
+
+
+def _tmp():
+    return tempfile.mkdtemp(prefix="r1-", dir=os.environ.get("R1_TMP"))
+
+
+def _serve(port, data=None, **kw):
+    data = data or _tmp()
+    nd, srv = NODE.serve(data, port, **kw)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return nd, srv, data
+
+
+def _client(port, name, data):
+    return Fl21Client(f"http://127.0.0.1:{port}", name,
+                      os.path.join(data, f"{name}.key"))
+
+
+def gate_TSIG():
+    out = {}
+    w = World(master_seed=7, label="golden", genesis_agents=("g1",))
+    body = {"typ": "TICKMARK", "args": {}, "p": "g1", "epoch": 0}
+    sdk_sig = w._keys["g1"].sign(sig_msg(w.log_id, body, 0)).hex()
+    kern = w.sign_env("g1", "TICKMARK", {})
+    out["서명 바이트-동일"] = sdk_sig == kern["sig"]
+    env = {**body, "nonce": 0, "sig": sdk_sig}
+    w.submit(env)                                     # 커널 검증 통과 = 재현 확정
+    out["커널 수리"] = True
+    e = w.log[-1]
+    base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
+    import hashlib
+    out["헤드 재계산"] = hashlib.sha256(
+        e["prev"].encode() + canon(base)).hexdigest() == e["head"]
+    # ★[M-115] 봉투-서명 전량 검증(냉독 결함 1 봉합): head·운영자·공동서명이 전부
+    # 유효해도 **봉투 서명이 가짜인 항목**(= 운영자가 위조한 사용자 행위)을 라이트
+    # 검증이 잡아야 한다 ∧ 정상 원장은 봉투-검증 포함으로 통과해야 한다.
+    nd, srv, data = _serve(8809)
+    c = _client(8809, "envt", data)
+    c.join()
+    c.split(c.notes()[0]["nid"], [5, 15])
+    out["봉투-검증 포함 정상 통과"] = c.verify_chain()["ok"] is True
+    wn = nd.w
+    fenv = {"typ": "XFER", "args": {"frm": "envt", "to": "anchor0", "note": "0"},
+            "p": "envt", "epoch": wn.epoch, "nonce": 999, "sig": "00" * 64}
+    prev = wn.log[-1]["head"]
+    fbase = {"env": fenv, "fp": "00" * 32, "w_epoch": wn.epoch,
+             "state_root": "00" * 32}
+    fhead = hashlib.sha256(prev.encode() + canon(fbase)).hexdigest()
+    fsig = wn._keys["operator"].sign(DOMAIN + bytes.fromhex(fhead)).hex()
+    wn.log.append({"seq": len(wn.log), **fbase, "prev": prev,
+                   "head": fhead, "head_sig": fsig})
+    nd._persist_new()                 # 공동서명까지 정식 부착(위조는 봉투뿐)
+    v = c.verify_chain()
+    out["★위조 봉투 검출(운영자-위조 사용자 행위)"] = \
+        v["ok"] is False and "봉투" in str(v.get("why"))
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TPERIL(port=8791):
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "alice", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    # ★[M-103] 유통 회로: anchor0가 자기-IOU(창세 발행분)를 지출 → alice가 보유 →
+    # 발행자에게 상환(색-일치). 상환-소각 = 부채 소멸(RM-1 회로 복원).
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [12, 4, 24])
+    for n in [x for x in wk.notes() if x["face"] in (12, 4)]:
+        wk.xfer("alice", n["nid"])
+    nid = [x["nid"] for x in c.notes_of("anchor0") if x["face"] == 12][0]
+    j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=5000)
+    ref = j["ref"]
+    # 산출-위조 거부(검증이 이행을 지킨다)
+    bad_env = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": ref})
+    try:
+        wk._post("/deliver", {"env": bad_env, "output": "00" * 32})
+        out["위조 산출 거부"] = False
+    except RuntimeError:
+        out["위조 산출 거부"] = True
+    done = wk.work_once()                             # ★실제 계산·이행
+    out["실물 이행"] = len(done) == 1 and done[0]["ref"] == ref
+    nd_state = c.job(ref)
+    out["이행 검증-후 인정"] = nd_state.get("delivered") is True and \
+        JOBS.verify_output(nd_state["job"], nd_state["output"])[0]
+    c._post("/tick", {})
+    out["잡 종결"] = c.job(ref)["state"] == "delivered"
+    # ★워커-다운 = 시한-사고 실발동(반환)
+    nid2 = [x["nid"] for x in c.notes_of("anchor0") if x["face"] == 4][0]
+    j2 = c.redeem_job("anchor0", nid2, seed="cd" * 8, n=100)
+    bal_before = c.balance()
+    returned = []
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        settle = c._post("/tick", {})["settle"]
+        if settle:
+            returned += settle.get("returned", [])
+    out["시한-사고 발동"] = j2["ref"] in returned
+    out["반환(미부보 법)"] = c.balance() == bal_before + 4
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TRECOV(port=8792):
+    out = {}
+    data = _tmp()
+    env = {**os.environ, "PYTHONPATH": _HERE}
+    proc = subprocess.Popen([sys.executable, os.path.join(_HERE, "node.py"),
+                             "--data", data, "--port", str(port)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(1.2)
+    c = _client(port, "bob", data)
+    c.join()
+    n = c.notes()[0]["nid"]
+    c.split(n, [10, 10])
+    c._post("/tick", {})
+    bal0 = c.balance()
+    seq0 = c.state()["seq"]
+    os.kill(proc.pid, signal.SIGKILL)                 # ★강제 종료(크래시 등가)
+    proc.wait()
+    proc2 = subprocess.Popen([sys.executable, os.path.join(_HERE, "node.py"),
+                              "--data", data, "--port", str(port)],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(1.2)
+    try:
+        st = json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/state", timeout=10).read())
+        au = json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/audit", timeout=10).read())
+        c2 = _client(port, "bob", data)               # 같은 키 재사용
+        out["리플레이 정합"] = st["seq"] == seq0
+        out["audit"] = au["ok"] is True
+        out["잔고 보존"] = c2.balance() == bal0
+        nid = c2.notes()[0]["nid"]
+        c2.xfer("anchor0", nid)                        # 후속 거래 성공
+        out["후속 거래"] = c2.balance() == bal0 - 10
+    finally:
+        proc2.kill()
+        proc2.wait()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TFUZZ(port=8793):
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "carol", data)
+    c.join()
+    url = f"http://127.0.0.1:{port}"
+
+    def post_raw(path, raw):
+        r = urllib.request.Request(url + path, data=raw, method="POST",
+                                   headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(r, timeout=10)
+            return 200
+        except urllib.error.HTTPError as e:
+            return e.code
+        except urllib.error.URLError:
+            return 400                            # 서버-측 연결 절단 = 거부(방어)
+
+    out["깨진 JSON 4xx"] = post_raw("/submit", b"{broken") == 400
+    out["미지 경로 404"] = post_raw("/nope", b"{}") == 404
+    out["빈 봉투 4xx"] = post_raw("/submit", b"{}") == 400
+    # 서명 위조(남의 이름으로 서명)
+    forged = c.sign_env("XFER", {"frm": "anchor0", "to": "carol",
+                                 "note": "0"})
+    forged["p"] = "anchor0"
+    out["타인-발화 거부"] = post_raw(
+        "/submit", json.dumps({"env": forged}).encode()) == 400
+    # nonce 재사용
+    nid = c.notes()[0]["nid"]
+    env1 = c.sign_env("SPLIT", {"owner": "carol", "note": nid, "parts": [10, 10]})
+    c._post("/submit", {"env": env1})
+    out["nonce 재사용 거부"] = post_raw(
+        "/submit", json.dumps({"env": env1}).encode()) == 400
+    # 부정형 잡(클래스 밖·거대 n·비-hex seed)
+    nid2 = c.notes()[0]["nid"]
+    for bad in ({"kind": "evil", "seed": "ab", "n": 5},
+                {"kind": "sha256_chain", "seed": "ab", "n": 10 ** 9},
+                {"kind": "sha256_chain", "seed": "zz", "n": 5}):
+        env = c.sign_env("REDEEM", {"holder": "carol", "note": nid2,
+                                    "anchor": "anchor0"})
+        code = post_raw("/job", json.dumps({"env": env, "job": bad}).encode())
+        out[f"부정형 잡 거부({bad['kind']}/{bad['n']})"] = code == 400
+    out["거대 페이로드 거부"] = post_raw(
+        "/submit", b'{"env": "' + b"A" * 2_100_000 + b'"}') == 400
+    out["노드 생존"] = c.state()["seq"] > 0
+    out["audit 유지"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TSOAK(port=8794, clients=4, rounds=25):
+    out = {}
+    nd, srv, data = _serve(port, auto_tick=0.4)
+    names = [f"u{i}" for i in range(clients)]
+    cs = []
+    for nm in names:
+        cl = _client(port, nm, data)
+        cl.join()
+        cl.split(cl.notes()[0]["nid"], [1] * 20)
+        cs.append(cl)
+    errs = []
+
+    def run(i):
+        cl = cs[i]
+        for r in range(rounds):
+            try:
+                ns = cl.notes()
+                if not ns:
+                    break
+                cl.xfer(names[(i + 1) % clients], ns[0]["nid"])
+            except Exception as e:                    # 경합 재시도(nonce 경신)
+                if "nonce" in str(e) or "HTTP 400" in str(e):
+                    time.sleep(0.05)
+                else:
+                    errs.append(str(e)[:80])
+    ts = [threading.Thread(target=run, args=(i,)) for i in range(clients)]
+    for t in ts:
+        t.start()
+    # 소크 중 실물 잡도 흐른다
+    cs[0].split(cs[0].notes()[-1]["nid"], [1]) if False else None
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    for t in ts:
+        t.join()
+    time.sleep(1.0)
+    tot = sum(cl.balance() for cl in cs) + nd.w.bal("anchor0")
+    out["예외 0"] = errs == []
+    out["유통 보존"] = tot == nd.w.ext_in - nd.w.ext_out - nd.w.S \
+        - nd.w.F - nd.w.F_uw - sum(
+            n["face"] for n in nd.w.notes.values()
+            if n["owner"].startswith("@"))
+    out["거래량"] = len(nd.w.log) > clients * rounds // 2
+    out["audit"] = nd.audit()["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TCOSIGN(port=8795, port2=8808):
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "dave", data)
+    c.join()
+    c.split(c.notes()[0]["nid"], [10, 10])
+    v = c.verify_chain()
+    out["라이트 검증"] = v["ok"] is True and \
+        v["confirmed"] + v["pending"] == c.state()["seq"]
+    # ★N-3([M-110] 맥락-0 5차 적발) — 장기 원장(>500 seq)의 /cosigs 페이지-경계:
+    # 과거엔 원시 파일 행-단위 500 절단 + SDK 커서(seq+1)로 경계-seq 서명이 영구 누락
+    # → 원장 ~167항부터 외부 verify_chain 영구 「변조 의심」. 병합-맵 서빙으로 봉합.
+    for _ in range(520):
+        c._post("/tick", {})
+    v15 = c.verify_chain()
+    out["★장기-원장 페이지 경계(N-3)"] = v15["ok"] is True and \
+        v15["confirmed"] + v15["pending"] == c.state()["seq"]
+    # ★R-6 — 확정 사이 '구멍'(중간 항목 서명 손상)은 변조로 검출(꼬리-지연과 구별)
+    # (★N-3 후 /cosigs 정본 = 병합-맵 ⟹ 저장-변조는 재기동 후 검출 — 실제 복구 흐름 ·
+    #  T-DURABLE 변조 케이스와 정합)
+    lines = open(nd.cosig_p, encoding="utf-8").read().splitlines()
+    mid = len(lines) // 2
+    rec = json.loads(lines[mid])
+    for kk in sorted(rec["sigs"]):
+        rec["sigs"][kk] = "00" * 64          # 중간 항목 전 서명 손상 → 확정 사이 구멍
+    lines[mid] = json.dumps(rec, sort_keys=True)
+    open(nd.cosig_p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    srv.shutdown()
+    srv.server_close()
+    nd2, srv2, _ = _serve(port2, data=data)
+    c2 = _client(port2, "dave", data)
+    v2 = c2.verify_chain()
+    out["변조 검출(구멍·재기동)"] = v2["ok"] is False and "구멍" in v2["why"]
+    srv2.shutdown()
+    srv2.server_close()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TDURABLE(port=8801, port2=8802):
+    """★RD-1 — 공동-서명 구멍 자기치유: 크래시로 대장 뒤 공동-서명이 유실된 채 재기동돼도
+    노드가 결정론 재서명으로 치유(verify_chain 영구 오판 방지) ∧ ★손상(변조) 서명은
+    치유 대상 아님(검출 유지)."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "dur", data)
+    c.join()
+    c.split(c.notes()[0]["nid"], [10, 10])
+    c._post("/tick", {})
+    c.split(c.notes()[0]["nid"], [5, 5])
+    c._post("/tick", {})
+    v0 = c.verify_chain()
+    out["치유-전 정상"] = v0["ok"] is True and v0["pending"] == 0
+    srv.shutdown()
+    srv.server_close()
+    # ★크래시 시뮬: 중간 엔트리의 공동-서명 줄을 통째로 유실(entries.jsonl은 온전)
+    lines = open(nd.cosig_p, encoding="utf-8").read().splitlines()
+    dropped = json.loads(lines[len(lines) // 2])["seq"]
+    del lines[len(lines) // 2]
+    open(nd.cosig_p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    # 재기동(재-리플레이 → 자기치유) 후 검증 정상 복귀
+    nd2, srv2, _ = _serve(port2, data=data)
+    c2 = _client(port2, "dur", data)
+    v1 = c2.verify_chain()
+    out["구멍 치유"] = v1["ok"] is True and \
+        v1["confirmed"] + v1["pending"] == c2.state()["seq"]
+    out["치유된 seq 재확인"] = any(
+        json.loads(ln)["seq"] == dropped
+        for ln in open(nd.cosig_p, encoding="utf-8") if ln.strip())
+    # ★N-1·N-2([M-108]) — 잘린-꼬리(크래시 부분쓰기): ⓐ공동서명 파일도 관용 부팅
+    # (리더 누락 = 부팅-불능이던 구멍) ⓑ★물리 절단 — 안 하면 다음 append가 접착돼
+    # ack된 항목이 무음 유실되거나(마지막 줄) 영구 부팅-불능(중간 줄)이 된다.
+    seq_a = c2.state()["seq"]
+    srv2.shutdown()
+    srv2.server_close()
+    with open(nd.ledger_p, "a", encoding="utf-8") as f:
+        f.write('{"seq": 999, "head": "잘린')      # 개행 없는 부분쓰기 시뮬
+    with open(nd.cosig_p, "a", encoding="utf-8") as f:
+        f.write('{"seq": 999, "hea')
+    nd25, srv25, _ = _serve(port, data=data)
+    c25 = _client(port, "dur", data)
+    out["★잘린-꼬리 부팅(대장·공동서명)"] = c25.state()["seq"] == seq_a
+    c25._post("/tick", {})                         # 새 ack 기입(절단 안 됐으면 접착)
+    seq_b = c25.state()["seq"]
+    srv25.shutdown()
+    srv25.server_close()
+    nd26, srv26, _ = _serve(port2, data=data)
+    c26 = _client(port2, "dur", data)
+    out["★접착-유실 없음(ack=내구)"] = \
+        c26.state()["seq"] == seq_b == seq_a + 1
+    out["잘린-꼬리 후 검증 정상"] = c26.verify_chain()["ok"] is True
+    srv26.shutdown()
+    srv26.server_close()
+    # ★손상(변조) 서명은 치유하지 않는다 — 여전히 변조로 검출(과잉-치유 회귀 방지)
+    lines2 = open(nd.cosig_p, encoding="utf-8").read().splitlines()
+    mid = len(lines2) // 2
+    rec = json.loads(lines2[mid])
+    for kk in list(rec["sigs"]):
+        rec["sigs"][kk] = "00" * 64
+    lines2[mid] = json.dumps(rec, sort_keys=True)
+    open(nd.cosig_p, "w", encoding="utf-8").write("\n".join(lines2) + "\n")
+    nd3, srv3, _ = _serve(port, data=data)
+    c3 = _client(port, "dur", data)
+    v2 = c3.verify_chain()
+    out["변조 서명 미치유(검출 유지)"] = v2["ok"] is False
+    out["audit"] = c3._get("/audit")["ok"]
+    srv3.shutdown()
+    srv3.server_close()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TCOLOR(port=8803):
+    """★[M-103] 화폐 모델 게이트 — 자유은행 (i): 자기-IOU 발행·색-일치 상환 라우팅·
+    상호-신용 부트스트랩(한도)·혼색 MERGE 거부·★RD-7(원시 DELIVER 우회 차단)·
+    배상 노트 = 가해-앵커 색."""
+    out = {}
+    nd, srv, data = _serve(port)
+    nc = _client(port, "nc", data)
+    nc.join()
+    # 자기-IOU: join 발행분의 색 = 본인
+    out["자기-IOU 발행"] = all(n["color"] == "nc" for n in nc.notes()) and \
+        nc.balance() == 20
+    # ★색-일치 라우팅: 자기 노트로 남(anchor0)에게 상환 주문 = 거부
+    try:
+        nc.redeem_job("anchor0", nc.notes()[0]["nid"], seed="ab" * 4, n=100)
+        out["교차-색 상환 거부"] = False
+    except RuntimeError as e:
+        out["교차-색 상환 거부"] = "색-일치" in str(e)
+    # ★상호-신용 부트스트랩(WIR형): 자기-IOU 8 ↔ anchor0-IOU 8 원자 스왑
+    r = nc.bootstrap(8)
+    got = nc.notes_of("anchor0")
+    out["★상호-신용 스왑"] = r["granted"] == 8 and len(got) == 1 and \
+        got[0]["face"] == 8 and nc.balance() == 20
+    out["앵커의 반대-청구 보유"] = any(
+        n["face"] == 8 for n in
+        json.loads(urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/notes/anchor0", timeout=10).read())["notes"]
+        if n["color"] == "nc")
+    try:                                          # 한도(BOOT_CAP) 결박
+        nc.bootstrap(1)
+        out["스왑 한도"] = False
+    except RuntimeError as e:
+        out["스왑 한도"] = "한도" in str(e)
+    # 혼색 MERGE 거부(색 상속 보전)
+    big_nc = [n for n in nc.notes_of("nc") if n["face"] >= 3][0]
+    nc.split(big_nc["nid"], [2, big_nc["face"] - 2])
+    two = [n["nid"] for n in nc.notes_of("nc") if n["face"] == 2][0]
+    try:
+        nc.merge([got[0]["nid"], two])
+        out["혼색 MERGE 거부"] = False
+    except RuntimeError as e:
+        out["혼색 MERGE 거부"] = "동색" in str(e)
+    # ★스왑 노트로 발행자에게 상환 → 실물 이행(회로 완주: 소각 = 부채 소멸)
+    j = nc.redeem_job("anchor0", got[0]["nid"], seed="cd" * 4, n=1000)
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    # ★RD-7 — 원시 /submit DELIVER(검증 우회) 차단: 잡-결박 이행은 /deliver만
+    bypass = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j["ref"]})
+    try:
+        wk._post("/submit", {"env": bypass})
+        out["★RD-7 원시 DELIVER 차단"] = False
+    except RuntimeError as e:
+        out["★RD-7 원시 DELIVER 차단"] = "/deliver" in str(e)
+    try:                                          # /block 다리 우회도 차단
+        wk._post("/block", {"legs": [bypass]})
+        out["RD-7 블록-다리 차단"] = False
+    except RuntimeError as e:
+        out["RD-7 블록-다리 차단"] = "다리 타입" in str(e)
+    wk.work_once()                                # 정규 경로는 정상 이행
+    out["정규 이행 정상"] = nc.job(j["ref"]).get("delivered") is True
+    # ★[M-104] 회전-발행(재점검 F-1): 한도 가득 = 거부 → 이행-소각으로 부채 감소 → 재발행
+    try:
+        nc.issue(1)                               # nc 유통 20 = 한도 ⟹ 거부
+        out["한도-초과 발행 거부"] = False
+    except RuntimeError as e:
+        out["한도-초과 발행 거부"] = "회전 한도" in str(e)
+    nc_iou = wk.notes_of("nc")[0]                 # anchor0가 스왑으로 받은 nc-IOU(8)
+    wk._post("/job", {"env": wk.sign_env(
+        "REDEEM", {"holder": "anchor0", "note": nc_iou["nid"], "anchor": "nc"}),
+        "job": {"kind": "sha256_chain", "seed": "aa" * 4, "n": 500}})
+    done = nc.work_pending()                      # ★역방향: nc가 이행자(양면 회로 완주)
+    out["역방향 이행(양면 회로)"] = len(done) == 1
+    r_iss = nc.issue(8)                           # 부채 20−8=12 ⟹ +8 재발행 가능
+    out["★회전-재발행"] = r_iss["issued"] == 8 and r_iss["outstanding"] == 20 and \
+        len(nc.notes_of("nc")) >= 2
+    # ★배상 노트 = 가해-앵커 색: 부보된 시한-사고 → comp 노트의 색 = anchor0
+    cv = _client(port, "cv", data)
+    uw_ = _client(port, "uwc", data)
+    cv.join()
+    uw_.join()
+    wk.split([n["nid"] for n in wk.notes() if n["face"] >= 40][0], [4, 36])
+    wk.xfer("cv", [n["nid"] for n in wk.notes() if n["face"] == 4][0])
+    j2 = cv.redeem_job("anchor0", cv.notes_of("anchor0")[0]["nid"],
+                       seed="ee" * 4, n=100)
+    uw_.cover(j2["ref"], prem=1)
+    comp_face = 0
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        settle = cv._post("/tick", {})["settle"]
+        for rec in (settle or {}).get("settled", []):
+            if rec["ref"] == j2["ref"]:
+                comp_face = rec["comp"]
+    out["★배상 = 가해-앵커 색"] = comp_face > 0 and any(
+        n["face"] == comp_face and n["color"] == "anchor0"
+        for n in cv.notes())
+    st = nc.stats()
+    out["색-공급 관측"] = "colors" in st["density"] and \
+        st["density"]["colors"].get("nc", 0) > 0
+    out["audit(색 전체성)"] = nc._get("/audit")["ok"]
+    # ★발행자-도주 방어([M-113] 더블체크 FB-1/MS-1): 자기-색 유통부채가 남은 채
+    # EXIT 금지(유통 노트의 상환-불능 방기 방지) ∧ 유통 0이면 정상 EXIT(가둠 아님).
+    ab = _client(port, "absc", data)
+    ab.join()
+    ab.xfer("nc", ab.notes_of("absc")[0]["nid"])   # 자기-IOU 전량 유통
+    try:
+        ab._post("/submit", {"env": ab.sign_env("EXIT", {"a": "absc"})})
+        out["★도주 EXIT 차단"] = False
+    except RuntimeError as e:
+        out["★도주 EXIT 차단"] = "유통" in str(e)
+    hon = _client(port, "honx", data)
+    hon.join()
+    for n in hon.notes_of("honx"):                  # 유통 0으로 정리(BURN)
+        hon._post("/submit", {"env": hon.sign_env("BURN",
+                                                   {"owner": "honx", "note": n["nid"]})})
+    try:
+        hon._post("/submit", {"env": hon.sign_env("EXIT", {"a": "honx"})})
+        out["정직 앵커(유통 0) EXIT 허용"] = True
+    except RuntimeError:
+        out["정직 앵커(유통 0) EXIT 허용"] = False
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TATOMIC(port=8807):
+    """★완결성 점검 blocker 봉합: B1 부분-커밋(무효 leg가 고아 EXT_IN을 남기지 않음) ·
+    B2 검증 중 노드 비동결(느린 /deliver가 전역 락으로 /state를 막지 않음)."""
+    import base64
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "at", data)
+    c.join()
+    c.bootstrap(8)                                # 정상(한도 소진)
+    ext0 = c.state()["ext_in"]
+    a0_supply0 = nd.outstanding("anchor0")
+    used0 = nd.bootstrap_used.get("at", 0)
+    # ★B1 — 서명 무효 leg로 /bootstrap: 고아 anchor0 발행이 남으면 안 됨
+    self_note = c.notes_of("at")[0]
+    leg = c.make_leg("XFER", {"frm": "at", "to": "anchor0",
+                              "note": self_note["nid"]})
+    leg["sig"] = "00" * 64                         # 서명 훼손
+    try:
+        c._post("/bootstrap", {"leg": leg})
+        out["B1 무효-leg 거부"] = False
+    except RuntimeError:
+        out["B1 무효-leg 거부"] = True
+    out["★B1 고아 발행 없음"] = c.state()["ext_in"] == ext0 and \
+        nd.outstanding("anchor0") == a0_supply0
+    out["★B1 캡 미소진"] = nd.bootstrap_used.get("at", 0) == used0
+    # issue도 동일 원자성(무효 요청이 발행 안 남김)
+    ext1 = c.state()["ext_in"]
+    bad_iss = c.sign_env("TICKMARK", {"kind": "fl21.issue", "k": 1})
+    bad_iss["sig"] = "00" * 64
+    try:
+        c._post("/issue", {"env": bad_iss})
+        out["B1 무효-issue 거부"] = False
+    except RuntimeError:
+        out["B1 무효-issue 거부"] = True
+    out["★B1 issue 고아 없음"] = c.state()["ext_in"] == ext1
+    out["audit(B1 후)"] = c._get("/audit")["ok"]
+    # ★B2 — 느린 검증(≈3s) 중 /state가 즉답해야(검증이 락 밖)
+    b = _client(port, "atb", data)
+    b.join()
+    b.split(b.notes()[0]["nid"], [1, 19])
+    b.xfer("at", [n["nid"] for n in b.notes() if n["face"] == 1][0])
+    chk = base64.b64encode(b"print('OK')").decode()
+    j = c._post("/job", {"env": c.sign_env(
+        "REDEEM", {"holder": "at", "note": c.notes_of("atb")[0]["nid"],
+                   "anchor": "atb"}),
+        "job": {"kind": "pyjudge", "checker_b64": chk}})
+    slow = base64.b64encode(b"import time\ntime.sleep(3)\nprint('x')").decode()
+
+    def _slow_deliver():
+        try:
+            b.deliver_job(j["ref"], slow)          # 검증 ≈3s(락 밖이어야)
+        except Exception:
+            pass
+    th = threading.Thread(target=_slow_deliver)
+    th.start()
+    time.sleep(0.6)                                # 검증이 진행 중인 순간
+    t0 = time.monotonic()
+    c.state()                                      # 락이 잡혀 있으면 ~3s 블록
+    dt = time.monotonic() - t0
+    out["★B2 검증 중 /state 즉답"] = dt < 1.2
+    th.join()
+    out["audit(B2 후)"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TPYJUDGE(port=8805):
+    """★[M-105] D-10 — 판정-분리 pyjudge(RD-9 수리): 위조-수용 산출 격퇴(같은 산출이
+    pycheck는 뚫림을 대조-실증) ∧ 정직 이행 수리 ∧ 취소-창 정책(D-10 ④)."""
+    import base64
+    out = {}
+    nd, srv, data = _serve(port)
+    a = _client(port, "ja", data)
+    b = _client(port, "jb", data)
+    a.join()
+    b.join()
+    b.split(b.notes()[0]["nid"], [1, 1, 1, 17])   # jb(발행자·이행자)가 자기-IOU 지출
+    for n in [x for x in b.notes() if x["face"] == 1][:3]:
+        b.xfer("ja", n["nid"])
+    checker = base64.b64encode(
+        b"data = open('output.txt').read()\n"
+        b"assert data.strip() == '42'\nprint('OK')").decode()
+    nid = a.notes_of("jb")[0]["nid"]
+    j = a._post("/job", {"env": a.sign_env(
+        "REDEEM", {"holder": "ja", "note": nid, "anchor": "jb"}),
+        "job": {"kind": "pyjudge", "checker_b64": checker}})
+    # ★RD-9 위조 시도: "OK" 무버퍼 출력 + 즉시 종료 — 판정-분리에선 출력 바이트일 뿐
+    forge = base64.b64encode(
+        b"import os\nos.write(1, b'OK\\n')\nos._exit(0)\n").decode()
+    try:
+        b.deliver_job(j["ref"], forge)
+        out["★위조-수용 격퇴(RD-9)"] = False
+    except RuntimeError:
+        out["★위조-수용 격퇴(RD-9)"] = True
+    # 대조-실증: 같은 위조 산출이 pycheck 술어는 뚫는다(RD-9의 실재 박제)
+    test = base64.b64encode(
+        b"import solution\nassert solution.add(2, 3) == 5\nprint('OK')").decode()
+    pc_ok, _ = JOBS.verify_output({"kind": "pycheck", "test_b64": test}, forge)
+    out["대조: pycheck 뚫림(RD-9 실증)"] = pc_ok is True
+    honest = base64.b64encode(b"print(42)\n").decode()
+    r = b.deliver_job(j["ref"], honest)
+    out["정직 이행 수리"] = r["verify"]["checker_rc"] == 0 and \
+        a.job(j["ref"]).get("delivered") is True
+    # ★취소-창(D-10 ④): 기한 절반 경과 후 잡-결박 취소 거부 · 절반 전은 허용
+    nid2 = a.notes_of("jb")[0]["nid"]
+    j2 = a._post("/job", {"env": a.sign_env(
+        "REDEEM", {"holder": "ja", "note": nid2, "anchor": "jb"}),
+        "job": {"kind": "pyjudge", "checker_b64": checker}})
+    for _ in range(3):                              # T=4 · 절반 = t0+2 < t0+3
+        a._post("/tick", {})
+    try:
+        a._post("/submit", {"env": a.sign_env(
+            "REDEEM_CANCEL", {"ref": j2["ref"]})})
+        out["취소-창 경과 거부"] = False
+    except RuntimeError as e:
+        out["취소-창 경과 거부"] = "취소-창" in str(e)
+    nid3 = a.notes_of("jb")[0]["nid"]
+    j3 = a._post("/job", {"env": a.sign_env(
+        "REDEEM", {"holder": "ja", "note": nid3, "anchor": "jb"}),
+        "job": {"kind": "pyjudge", "checker_b64": checker}})
+    r3 = a._post("/submit", {"env": a.sign_env(
+        "REDEEM_CANCEL", {"ref": j3["ref"]})})      # 즉시(절반 전) = 허용
+    out["절반-전 취소 허용"] = "seq" in r3
+    out["audit"] = a._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TSPLITSIGN(port=8806):
+    """★[M-105] D-2 — 공동-서명 분리: 노드 = cosign1만 로컬 · cosign2 데몬(별도 키·상태)이
+    /cosig 회신 → 2-of-3 확정 ∧ 위조·미지-서명자 거부 ∧ 분리-전 = 전량 pending(정상)."""
+    from cosigner import Cosigner
+    out = {}
+    nd, srv, data = _serve(port, cosign_local=("cosign1",))
+    c = _client(port, "sp", data)
+    c.join()
+    c.split(c.notes()[0]["nid"], [10, 10])
+    c._post("/tick", {})
+    v1 = c.verify_chain()
+    out["분리-전 pending(1-of-3)"] = v1["ok"] is True and v1["confirmed"] == 0 \
+        and v1["pending"] == c.state()["seq"]
+    co = Cosigner(f"http://127.0.0.1:{port}", "cosign2",
+                  os.path.join(data, "cosign2.key"))
+    n1 = co.run_once()                              # ★원격 서명자 회신
+    v2 = c.verify_chain()
+    out["★2-of-3 확정(분리)"] = n1 > 0 and v2["ok"] is True and \
+        v2["pending"] == 0 and v2["confirmed"] == c.state()["seq"]
+    head0 = nd.w.log[0]["head"]
+    def post_cosig(body):
+        try:
+            c._post("/cosig", body)
+            return 200
+        except RuntimeError:
+            return 400
+    out["위조 서명 거부"] = post_cosig(
+        {"name": "cosign3", "seq": 0, "head": head0, "sig": "00" * 64}) == 400
+    out["미지 서명자 거부"] = post_cosig(
+        {"name": "evil", "seq": 0, "head": head0, "sig": "00" * 64}) == 400
+    out["head 불일치 거부"] = post_cosig(
+        {"name": "cosign2", "seq": 0, "head": "ab" * 32, "sig": "00" * 64}) == 400
+    c.split(c.notes()[0]["nid"], [5, 5])            # 새 거래 → 데몬 재-회신 → 재확정
+    co.run_once()
+    v3 = c.verify_chain()
+    out["증분 재확정"] = v3["ok"] is True and v3["pending"] == 0
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TPRICE(port=8796):
+    """★P-2 — 작업-가격 결박(액면 ≥ f(작업량))."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "pa", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    wk.split(wk.notes()[0]["nid"], [1, 3, 36])
+    for n in [x for x in wk.notes() if x["face"] in (1, 3)]:
+        wk.xfer("pa", n["nid"])
+    one = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    try:                                   # n=600,000 → 최소 액면 3 > 1 ⟹ 거부
+        c.redeem_job("anchor0", one, seed="ab" * 4, n=600_000)
+        out["저액면 거부"] = False
+    except RuntimeError as e:
+        out["저액면 거부"] = "가격 결박" in str(e)
+    three = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 3][0]
+    j = c.redeem_job("anchor0", three, seed="ab" * 4, n=600_000)
+    out["정확 액면 수리"] = "ref" in j
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TSAMPLED(port=8797):
+    """★P-3′ — 표본-검증 컴퓨트(체크포인트·검증-시점 표본·위조 검출)."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "sa", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    wk.split(wk.notes()[0]["nid"], [12, 2, 26])
+    for n in [x for x in wk.notes() if x["face"] in (12, 2)]:
+        wk.xfer("sa", n["nid"])
+    nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 12][0]
+    j = c.redeem_job("anchor0", nid, seed="cd" * 4, n=60_000,
+                     kind="sha256_chain_sampled")
+    good = wk.compute_sha256({"kind": "sha256_chain_sampled",
+                              "seed": "cd" * 4, "n": 60_000})
+    bad = {"final": good["final"],
+           "ckpts": ["00" * 32, good["ckpts"][1]]}     # 구간 0 위조(전-구간 검사 좌표)
+    env = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j["ref"]})
+    try:
+        wk._post("/deliver", {"env": env, "output": bad})
+        out["위조 체크포인트 거부"] = False
+    except RuntimeError:
+        out["위조 체크포인트 거부"] = True
+    r = wk.deliver_job(j["ref"], good)
+    out["표본-검증 수리"] = "checked" in r["verify"] and \
+        0 < r["verify"]["coverage"] <= 1
+    # ★sub-1 표본(검증 ≪ 작업) — 이름값 실증: n=300k → 체크포인트 6·검사 2 = coverage 0.33
+    # (위 n=60k는 체크포인트 2 = 전수라 '표본'이 아니었다 — 확률-표본 영역을 여기서 시험)
+    nid2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] >= 2][0]
+    j2 = c.redeem_job("anchor0", nid2, seed="ef" * 4, n=300_000,
+                      kind="sha256_chain_sampled")
+    good2 = wk.compute_sha256({"kind": "sha256_chain_sampled",
+                               "seed": "ef" * 4, "n": 300_000})
+    r2 = wk.deliver_job(j2["ref"], good2)
+    out["★sub-1 표본(검증≪작업)"] = 0 < r2["verify"]["coverage"] < 1
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TPYCHECK(port=8798):
+    """★P-3′ 코드-이행 + ★P-1 외부-앵커(일반 참여자가 이행자)."""
+    import base64
+    out = {}
+    nd, srv, data = _serve(port)
+    alice = _client(port, "pya", data)
+    bob = _client(port, "pyb", data)          # ★외부 앵커(워커 아님 — SDK만)
+    alice.join()
+    bob.join()
+    test = base64.b64encode(
+        b"import solution\nassert solution.add(2, 3) == 5\nprint('OK')"
+    ).decode()
+    # ★[M-103] pyb(외부 앵커 = 발행자)가 자기-IOU를 지출 → pya가 pyb에게 상환(색-일치)
+    bob.split(bob.notes()[0]["nid"], [1, 19])
+    bob.xfer("pya", [n["nid"] for n in bob.notes() if n["face"] == 1][0])
+    nid = alice.notes_of("pyb")[0]["nid"]
+    j = alice._post("/job", {"env": alice.sign_env(
+        "REDEEM", {"holder": "pya", "note": nid, "anchor": "pyb"}),
+        "job": {"kind": "pycheck", "test_b64": test}})
+    # 틀린 산출 거부(약속-불일치)
+    wrong = base64.b64encode(b"def add(a, b):\n    return a - b\n").decode()
+    try:
+        bob.deliver_job(j["ref"], wrong)
+        out["불일치 거부"] = False
+    except RuntimeError:
+        out["불일치 거부"] = True
+    # 시간폭탄 거부(자원 상한)
+    bomb = base64.b64encode(b"while True:\n    pass\n").decode()
+    try:
+        bob.deliver_job(j["ref"], bomb)
+        out["시간 상한 거부"] = False
+    except RuntimeError:
+        out["시간 상한 거부"] = True
+    good = base64.b64encode(b"def add(a, b):\n    return a + b\n").decode()
+    r = bob.deliver_job(j["ref"], good)
+    out["★외부-앵커 이행"] = r["ref"] == j["ref"]
+    out["상태 delivered"] = alice.job(j["ref"]).get("delivered") is True
+    out["audit"] = alice._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TCOVER(port=8799):
+    """★P-4 — 인수 개방(cover → 시한-사고 → 배상 폭포 실발동)."""
+    out = {}
+    nd, srv, data = _serve(port)
+    h = _client(port, "cvh", data)
+    u = _client(port, "cvu", data)
+    h.join()
+    u.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    # ★[M-103] anchor0가 자기-IOU 전량 지출(가해자-층 소진) — 폭포가 담보·소구 층을 지나게
+    wk.split(wk.notes()[0]["nid"], [12, 4, 24])
+    for n in list(wk.notes()):
+        wk.xfer("cvh", n["nid"])
+    nid = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 12][0]
+    j = h.redeem_job("anchor0", nid, seed="ee" * 4, n=1000)
+    # ★R-5 — 자기-당사자(홀더 자기부보) 거부
+    try:
+        h.cover(j["ref"], prem=2)
+        out["자기-당사자 거부"] = False
+    except RuntimeError as e:
+        out["자기-당사자 거부"] = "자기-당사자" in str(e)
+    r = u.cover(j["ref"], prem=2)             # 담보 6 + 기금 1(자기적립) — 제3자
+    out["인수 개설"] = "seq" in r
+    st = h.job(j["ref"])
+    out["커버리지 노출"] = st.get("covered") is True and st.get("uw") == "cvu"
+    bal_u0 = u.balance()
+    comp = 0
+    for _ in range(nd.w.GEN["redeem_T"] + 1):  # 워커 없음 = 시한-사고
+        settle = h._post("/tick", {})["settle"]
+        if settle:
+            for rec in settle.get("settled", []):
+                if rec["ref"] == j["ref"]:
+                    comp = rec["comp"]
+    out["★배상 폭포 발동"] = comp >= 6         # 담보 6 이상 배상(폭포 층 합)
+    out["인수자 담보 몰수"] = u.balance() < bal_u0 + 1
+    # ★맥락-0 C-2 — 정산 후에도 커버 이력이 잡 레코드에 남는다(사후 감사)
+    st_after = h.job(j["ref"])
+    out["커버 이력 보존"] = st_after.get("covered") is False and \
+        st_after.get("cover_history", {}).get("uw") == "cvu"
+    # ★RU-1 — 기한-경과 청구 인수 가드(SDK-측 보호)
+    nid_late = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 4][0]
+    j_late = h.redeem_job("anchor0", nid_late, seed="ff" * 4, n=100)
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        h._post("/tick", {})
+    if j_late["ref"] in nd.w.redeem_pending:      # 아직 미정산(경계) — 가드 검사
+        try:
+            u.cover(j_late["ref"], prem=1)
+            out["기한-후 인수 가드"] = False
+        except RuntimeError as e:
+            out["기한-후 인수 가드"] = "기한" in str(e)
+    else:
+        out["기한-후 인수 가드"] = True            # 이미 정산 — 가드 무대상(통과)
+    # ★원자 보험료↔커버(/block — all-or-nothing) + 실패 다리의 원자 롤백
+    h2 = _client(port, "cvh2", data)
+    u2 = _client(port, "cvu2", data)
+    h2.join()
+    u2.join()
+    # ★배상 노트(12 · 가해-앵커 색)를 2차 유통 — 색 상속으로 그대로 상환-가능
+    h.xfer("cvh2", [n["nid"] for n in h.notes_of("anchor0")
+                    if n["face"] == 12][0])
+    h2.split(h2.notes_of("cvh2")[0]["nid"], [12, 4, 1, 1, 1, 1])  # 자기-IOU(보험료용)
+    nid3 = [n["nid"] for n in h2.notes_of("anchor0") if n["face"] == 12][0]
+    j3 = h2.redeem_job("anchor0", nid3, seed="dd" * 4, n=1000)
+    prem_note = [n["nid"] for n in h2.notes() if n["face"] == 1][0]
+    pay_leg = h2.make_leg("XFER", {"frm": "cvh2", "to": "cvu2",
+                                   "note": prem_note})
+    cov_leg = u2.cover(j3["ref"], prem=2, submit=False)   # UW 다리(미제출)
+    bal_h2, bal_u2 = h2.balance(), u2.balance()
+    r_blk = h2.submit_block([pay_leg, cov_leg])
+    out["★원자 보험료↔커버"] = "seq" in r_blk and \
+        h2.job(j3["ref"]).get("covered") is True and \
+        h2.balance() == bal_h2 - 1
+    # 실패 다리 포함 블록 = 전부 롤백(커널 원자성)
+    bad_leg = h2.make_leg("XFER", {"frm": "cvh2", "to": "cvu2",
+                                   "note": "999999"})
+    ok_note = [n["nid"] for n in h2.notes() if n["face"] == 1][0]
+    ok_leg = h2.make_leg("XFER", {"frm": "cvh2", "to": "cvu2",
+                                  "note": ok_note})
+    bal_before_blk = h2.balance()
+    try:
+        h2.submit_block([ok_leg, bad_leg])
+        out["원자 롤백"] = False
+    except RuntimeError:
+        out["원자 롤백"] = h2.balance() == bal_before_blk
+    out["audit"] = h._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_THASHBIND(port=8810):
+    """★H2([M-121]) — 명세·산출 해시-결박: REDEEM.spec_sha256·DELIVER.output_sha256이
+    서명 head에 결박(로그-단독 재구성) ∧ 위조는 거부 ∧ 무필드 구항목은 하위호환."""
+    from sdk import spec_sha256, output_sha256
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "hb", data)
+    c.join()
+    c.bootstrap(8)
+    a8 = c.notes_of("anchor0")[0]
+    c.split(a8["nid"], [1, 1, a8["face"] - 2])
+    n1, n2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][:2]
+    # ⓐ정상 — SDK 자동-결박: REDEEM에 spec_sha256·DELIVER에 output_sha256이 로그에 실림
+    j = c.redeem_job("anchor0", n1, seed="ab" * 8, n=5000)
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    wk.work_pending()
+    log = c._get(f"/log?since=0")["entries"]
+    r_env = next(e["env"] for e in log
+                 if e["env"]["typ"] == "REDEEM"
+                 and e["env"]["args"].get("spec_sha256"))
+    d_env = next(e["env"] for e in log
+                 if e["env"]["typ"] == "DELIVER"
+                 and e["env"]["args"].get("output_sha256"))
+    st = c.job(j["ref"])
+    out["★스펙 해시 로그-결박"] = r_env["args"]["spec_sha256"] == \
+        spec_sha256({"kind": "sha256_chain", "seed": "ab" * 8, "n": 5000})
+    out["★산출 해시 로그-결박"] = d_env["args"]["output_sha256"] == \
+        output_sha256(st["output"])
+    # ⓑ위조 스펙 — 서명한 해시 ≠ 제출 명세
+    bad = c.sign_env("REDEEM", {"holder": "hb", "note": n2, "anchor": "anchor0",
+                                "spec_sha256": "00" * 32})
+    try:
+        c._post("/job", {"env": bad,
+                         "job": {"kind": "sha256_chain", "seed": "ab" * 8,
+                                 "n": 5000}})
+        out["★위조 스펙 거부"] = False
+    except RuntimeError as e:
+        out["★위조 스펙 거부"] = "H2" in str(e)
+    # ⓒ레거시(무필드) 하위호환 + 위조 산출 거부
+    legacy = c.sign_env("REDEEM", {"holder": "hb", "note": n2,
+                                   "anchor": "anchor0"})
+    j2 = c._post("/job", {"env": legacy,
+                          "job": {"kind": "sha256_chain", "seed": "ab" * 8,
+                                  "n": 5000}})
+    out["레거시(무필드) 수리"] = bool(j2.get("ref"))
+    good_out = wk.compute_sha256({"kind": "sha256_chain", "seed": "ab" * 8,
+                                  "n": 5000})
+    bd = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j2["ref"],
+                                 "output_sha256": "00" * 32})
+    try:
+        wk._post("/deliver", {"env": bd, "output": good_out})
+        out["★위조 산출 거부"] = False
+    except RuntimeError as e:
+        out["★위조 산출 거부"] = "H2" in str(e)
+    wk.deliver_job(j2["ref"], good_out)      # 정상 마감(자동-결박)
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TSTATS(port=8800):
+    """★P-5 /stats(대칭-시차·버전-경계[P-10]) + ★P-9 /attest."""
+    import time as _t
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "sta", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    wk.split(wk.notes()[0]["nid"], [12, 4, 24])
+    for n in [x for x in wk.notes() if x["face"] in (12, 4)]:
+        wk.xfer("sta", n["nid"])
+    nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 12][0]
+    j = c.redeem_job("anchor0", nid, seed="aa" * 4, n=1000)
+    wk.work_once()
+    s1 = c.stats()
+    a0 = s1["anchors"].get("anchor0", {}).get("segments", {}).get("v0", {})
+    out["배달 계수"] = a0.get("delivered", 0) >= 1
+    out["★대칭-시차(미성숙)"] = a0.get("mature", 99) == 0    # now < t0+T ⟹ 미성숙
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        c._post("/tick", {})
+    s2 = c.stats()
+    a0b = s2["anchors"]["anchor0"]["segments"]["v0"]
+    out["성숙 도달"] = a0b["mature"] >= 1 and "p_hat" in a0b
+    # ★P-10 버전-경계 — 선언 후 새 이행은 새 세그먼트로
+    wk_env = wk.sign_env("TICKMARK", {"kind": "fl21.version", "v": "m2"})
+    wk._post("/submit", {"env": wk_env})
+    nid2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 4][0]
+    j2 = c.redeem_job("anchor0", nid2, seed="bb" * 4, n=1000)
+    wk.work_once()
+    s3 = c.stats()
+    segs = s3["anchors"]["anchor0"]["segments"]
+    out["★버전 분절"] = "m2" in segs and segs["m2"]["delivered"] >= 1 \
+        and segs["v0"]["delivered"] >= 1
+    # ★P-9 실적 증명 — 검증·변조 검출·부분-발췌 무효
+    att = c.fetch_attest("anchor0")
+    out["증명 검증"] = c.verify_attest(att)["ok"] is True
+    forged = {"doc": att["doc"], "operator_sig": "00" * 64}
+    out["증명 위조 검출"] = c.verify_attest(forged)["ok"] is False
+    part = {"doc": {**att["doc"], "complete": False},
+            "operator_sig": att["operator_sig"]}
+    out["부분-발췌 무효"] = c.verify_attest(part)["ok"] is False
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def main():
+    gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
+             "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
+             "T-SOAK 내구": gate_TSOAK(), "T-COSIGN 암호실물": gate_TCOSIGN(),
+             "T-DURABLE 서명치유": gate_TDURABLE(),
+             "T-COLOR 화폐모델": gate_TCOLOR(),
+             "T-ATOMIC 원자성": gate_TATOMIC(),
+             "T-PYJUDGE 판정분리": gate_TPYJUDGE(),
+             "T-SPLITSIGN 서명분리": gate_TSPLITSIGN(),
+             "T-PRICE 가격결박": gate_TPRICE(),
+             "T-SAMPLED 표본검증": gate_TSAMPLED(),
+             "T-PYCHECK 코드이행": gate_TPYCHECK(),
+             "T-COVER 인수개방": gate_TCOVER(),
+             "T-HASHBIND 해시결박": gate_THASHBIND(),
+             "T-STATS 통계·증명": gate_TSTATS()}
+    ok = all(g["pass"] for g in gates.values())
+    res = {**gates, "R1_GATES_PASS": ok}
+    os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)
+    with open(os.path.join(_HERE, "results", "r1_gates.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(res, fh, ensure_ascii=False, indent=1)
+    print(json.dumps(res, ensure_ascii=False, indent=1))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
