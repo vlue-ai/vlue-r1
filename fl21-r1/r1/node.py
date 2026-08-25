@@ -45,6 +45,13 @@ COSIGN_K = 2
 _PNAME = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 BOOT_CAP = 8                         # ★[M-103] 상호-신용 스왑 상한(주체당 · anchor0-IOU)
 BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다리만
+# ── ★호가 창(R2-a — [M-116] /scope 성장판 · [시장-미시구조 §6] 최소 발견층) ──
+# 게시판 = **오프-원장** 서명 봉투(비용 ~0 · seq 무접촉 · 매칭·정산은 온-원장 그대로).
+# 도메인 분리: 게시 서명은 원장 봉투로 재생 불가(역방향도) — 별도 도메인 + log_id 결박.
+BOARD_DOMAIN = b"FL21-BOARD"
+BOARD_TTL_MAX = 10080                # 게시 수명 상한(에포크 — 60s 틱 기준 1주)
+BOARD_PER_P = 8                      # 주체당 활성 게시 상한(스팸 — 예치금은 R2 등재)
+BOARD_MAX = 4096                     # 전역 게시 상한(자원 가드)
 
 
 class Node:
@@ -63,6 +70,14 @@ class Node:
         self.ledger_p = os.path.join(data_dir, "entries.jsonl")
         self.cosig_p = os.path.join(data_dir, "cosigs.jsonl")
         self.jobs_p = os.path.join(data_dir, "jobs.json")
+        # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
+        self.board_p = os.path.join(data_dir, "board.json")
+        self.board = {}              # id → {post, sig, id}
+        if os.path.exists(self.board_p):
+            try:
+                self.board = json.load(open(self.board_p, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.board = {}
         # ── ★D-1 키 실물화: 비밀은 소스가 아니라 data_dir(0600 · 첫 기동 시 생성) ──
         seed = self._load_secret_int(os.path.join(data_dir, "node_secret"))
         # ── ★D-2 공동-서명 분리([M-105]): 노드는 --cosign-local 부분집합의 개인키만 보유 ·
@@ -448,12 +463,13 @@ class Node:
         uw_book = {}                  # ★RU-4 — 인수자별 실적{covered, prem, paid}
         ref_uw = {}                   # ref → uw(로그의 UW 봉투에서 재구성)
         tx_n = 0                      # ★RE-3 — 밀도(비-운영 발화 수)
+        tape = {}                     # ★R2-a — kind별 최근 체결(원장-파생 = 위조-불가)
 
         def _seg(a):
             k = (a, ver.get(a, "v0"))
             return seg.setdefault(k, {"delivered": 0, "failed": 0, "mature": 0})
 
-        def _deliver(a, ref):
+        def _deliver(a, ref, e):
             j = self.jobs.get(ref)
             t0 = j["t0"] if j and "t0" in j else None
             s = _seg(a)
@@ -461,6 +477,11 @@ class Node:
             # ★대칭-시차 계수([M-94] — 성숙 가시 = t0+T 통일 · t0 미상은 즉시)
             if t0 is None or now >= t0 + T:
                 s["mature"] += 1
+            if j:                     # ★테이프(잡-경로 한정 — face·kind가 있는 체결)
+                lst = tape.setdefault(j["job"]["kind"], [])
+                lst.append({"seq": e["seq"], "epoch": e["w_epoch"],
+                            "face": j["exposure"], "anchor": a})
+                del lst[:-32]         # kind당 최근 32건
 
         for e in self.w.log:
             env = e["env"]
@@ -470,7 +491,7 @@ class Node:
                 if lg.get("p") != "operator":
                     tx_n += 1                       # ★RE-3 밀도 — 참여자 발화
                 if lg["typ"] == "DELIVER":
-                    _deliver(lg["args"]["anchor"], lg["args"]["ref"])
+                    _deliver(lg["args"]["anchor"], lg["args"]["ref"], e)
                 elif lg["typ"] == "UW":             # ★RU-4 — 인수자 북 재구성
                     u_ = lg["args"]["uw"]
                     ref_uw[lg["args"]["ref"]] = u_
@@ -527,6 +548,7 @@ class Node:
         return {"epoch": now, "symlag_T": T,
                 "underwriters": uw_book,             # ★RU-4
                 "density": density,
+                "tape": tape,                        # ★R2-a — kind별 최근 체결 32
                 "anchors": anchors,
                 "coverage": {"open": cov_open, "settled": cov_hist,
                              "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
@@ -760,6 +782,99 @@ class Node:
         ok = a["ok"] and set(self.colors) == set(self.w.notes)   # ★색 전체성
         return {"ok": ok, "entries": a.get("entries")}
 
+    # ── ★호가 창(R2-a — [M-116] 발견층 · [시장-미시구조 §6]) ──
+    # 게시 = 오프-원장 서명 공표(ASK = 매도 호가 · WANT = 매수 호가) — seq 무접촉.
+    # ⚠️자문층이다: 게시는 에스크로가 아니고 아무것도 구속하지 않는다 — 구속·정산은
+    # 온-원장 경로(REDEEM·BLOCK)만. 스팸 = 등록-주체 한정(join 예산에 결박) + 주체당
+    # 상한 + TTL(예치금 파라미터는 R2 등재).
+    def _board_verify(self, body, sig):
+        p = (body or {}).get("p")
+        pk = self.w.reg.pk(p) if isinstance(p, str) else None
+        if pk is None:
+            raise Fl21Error("board: 미등록 주체(먼저 /join)")
+        try:
+            Ed25519PublicKey.from_public_bytes(pk).verify(
+                bytes.fromhex(sig),
+                BOARD_DOMAIN + self.w.log_id + _canon(body))
+        except Exception:
+            raise Fl21Error("board: 서명 무효(도메인 = FL21-BOARD + log_id + canon)")
+
+    def _board_gc(self):
+        now = self.w.epoch
+        dead = [i for i, r in self.board.items()
+                if r["post"]["expires"] <= now]
+        for i in dead:
+            del self.board[i]
+        return bool(dead)
+
+    def _board_save(self):
+        tmp = self.board_p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(self.board, fh, ensure_ascii=False)
+        os.replace(tmp, self.board_p)     # 자문층 — 원자 교체면 충분(fsync는 대장 몫)
+
+    def board_list(self):
+        if self._board_gc():
+            self._board_save()
+        asks = sorted((r for r in self.board.values()
+                       if r["post"]["side"] == "ask"),
+                      key=lambda r: (r["post"]["price"], r["id"]))
+        wants = sorted((r for r in self.board.values()
+                        if r["post"]["side"] == "want"),
+                       key=lambda r: (-r["post"]["price"], r["id"]))
+        return {"epoch": self.w.epoch, "asks": asks, "wants": wants,
+                "note": ("게시판 = 자문층(무-에스크로·무-구속) — 구속·정산은 "
+                         "온-원장(REDEEM·BLOCK)만 · 체결 이력 = /stats.tape")}
+
+    def board_post(self, body, sig):
+        if not isinstance(body, dict) or not isinstance(sig, str):
+            raise Fl21Error("board: {post: 서명-본문, sig: hex}")
+        self._board_verify(body, sig)
+        if "rm" in body:                  # 철회(본인-서명이 소유 증명)
+            if set(body) != {"rm", "p"}:
+                raise Fl21Error("board: 철회 본문은 {rm, p}만")
+            rid = str(body["rm"])
+            r = self.board.get(rid)
+            if r and r["post"]["p"] != body["p"]:
+                raise Fl21Error("board: 본인 게시만 철회 가능")
+            self.board.pop(rid, None)
+            self._board_save()
+            return {"removed": rid}
+        keys = {"side", "kind", "title", "detail", "price", "p", "expires"}
+        if set(body) != keys:
+            raise Fl21Error(f"board: 키는 정확히 {sorted(keys)}")
+        if body["side"] not in ("ask", "want"):
+            raise Fl21Error("board: side ∈ {ask, want}")
+        if body["kind"] not in JOBS.KINDS + ("other",):
+            raise Fl21Error(f"board: kind ∈ {JOBS.KINDS + ('other',)}")
+        if not (isinstance(body["title"], str)
+                and 1 <= len(body["title"]) <= 80):
+            raise Fl21Error("board: title 1~80자")
+        if not (isinstance(body["detail"], str) and len(body["detail"]) <= 400):
+            raise Fl21Error("board: detail ≤ 400자")
+        pr = body["price"]
+        if not isinstance(pr, int) or isinstance(pr, bool) or \
+                not (1 <= pr <= 10 ** 6):
+            raise Fl21Error("board: price 1..10^6 정수 AU"
+                            "(ask = 최소가 · want = 최대가)")
+        ex, now = body["expires"], self.w.epoch
+        if not isinstance(ex, int) or isinstance(ex, bool) or \
+                not (now < ex <= now + BOARD_TTL_MAX):
+            raise Fl21Error(f"board: expires ∈ (지금, 지금+{BOARD_TTL_MAX}]")
+        self._board_gc()
+        pid = hashlib.sha256(_canon(body)).hexdigest()[:16]   # 내용-주소(재게시 멱등)
+        if pid not in self.board:
+            if len(self.board) >= BOARD_MAX:
+                raise Fl21Error(f"board: 전역 상한({BOARD_MAX})")
+            mine = sum(1 for r in self.board.values()
+                       if r["post"]["p"] == body["p"])
+            if mine >= BOARD_PER_P:
+                raise Fl21Error(f"board: 주체당 활성 {BOARD_PER_P}건"
+                                "(철회/만료 후 재게시)")
+        self.board[pid] = {"id": pid, "post": body, "sig": sig}
+        self._board_save()
+        return {"id": pid, "expires": ex}
+
 
 class Handler(BaseHTTPRequestHandler):
     node: Node = None
@@ -838,6 +953,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, nd.audit())
                 if p == "/stats":                     # ★P-5
                     return self._send(200, nd.stats())
+                if p == "/board":                     # ★R2-a 호가 창(발견층)
+                    return self._send(200, nd.board_list())
                 m = re.match(r"^/attest/([a-z0-9_-]+)$", p)
                 if m:                                 # ★P-9
                     return self._send(200, nd.attest(m.group(1)))
@@ -930,6 +1047,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, nd.issue(body.get("env")))
                 if p == "/cosig":                     # ★[M-105] D-2 원격 공동-서명 수신
                     return self._send(200, nd.cosig_add(body))
+                if p == "/board":                     # ★R2-a — 오프-원장 서명 게시
+                    return self._send(200, nd.board_post(body.get("post"),
+                                                         body.get("sig")))
                 if p == "/submit":
                     return self._send(200, nd.submit(body.get("env")))
                 if p == "/job":

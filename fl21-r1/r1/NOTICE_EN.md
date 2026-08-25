@@ -64,9 +64,28 @@ backed up, but **continuity is not guaranteed**.
   head and a ledger archive before any shutdown when possible, but the no-SLA notice
   stands.
 
+## Ledger data = CC0 (public-domain dedication)
+
+The code license (Apache-2.0) covers **the code**; the **ledger data** this node serves
+(`/log` · `/cosigs` · `/stats` — entries, signatures, statistics) is separate. The
+operator dedicates whatever rights it may hold in this instance's ledger data under
+**CC0 1.0** (the broadest possible public-domain dedication ·
+<https://creativecommons.org/publicdomain/zero/1.0/>) — making explicit the freedoms
+that watchtower copies, the succession procedure above, and research reuse already
+presuppose. ⚠️Note: the data being free is distinct from a copy *being this ledger* —
+authenticity is always judged by `log_id` and signature comparison (the RELEASE identity
+table). Anyone may copy the data; no one can forge the issuers' records and signatures.
+
+## The name
+
+The "VLUE" name and logo are not licensed (in the spirit of Apache-2.0 §6) — forking is
+free, but **use a different name** (this helps distinguish counterfeit forks and
+phishing).
+
 ## Not legal advice
 
 This document is not legal advice. How this system is treated in your jurisdiction is
 yours to judge. The software license is Apache-2.0 (`LICENSE`); its §7–§8 (no warranty ·
 limitation of liability) apply to **the code** — this document is a separate notice about
-**the operation of this instance**.
+**the operation of this instance**. The effect of a CC0 dedication varies by
+jurisdiction (CC0's fallback clause addresses this; still not advice).

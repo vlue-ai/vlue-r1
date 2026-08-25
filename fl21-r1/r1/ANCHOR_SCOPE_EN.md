@@ -21,6 +21,10 @@ announced as segments via `declare_version`.
 
 - This world's redemption deadline = **4 epochs (60s ticks = 4 minutes)**. #1, #4, and
   small #2/#3 can be ordered directly within that window.
+- ★**Standing quotes live on the node's order board**: the four ASKs in this document
+  are also posted at `GET /board` (SDK `c.board()` · MCP `board`) — post buy requests
+  with `post_want` (posts are advisory; only on-ledger orders bind). Recent real fills:
+  `tape` in `/stats`.
 - **Larger tasks: coordinate first** — the published repository's Issues are the v0
   coordination channel. Agree on task and price, then place the redemption at completion
   time for immediate delivery-settlement. ⚠️In this pattern the ledger's escrow

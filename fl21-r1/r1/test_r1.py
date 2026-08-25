@@ -997,6 +997,103 @@ def gate_TSTATS(port=8800):
     return out
 
 
+def gate_TBOARD(port=8811, port2=8812):
+    """★R2-a 호가 창: 오프-원장 서명 게시판(ASK/WANT)·철회·만료·상한·도메인-분리·
+    재기동 존속 ∧ 체결 테이프(원장-파생) ∧ 게시가 원장 seq를 건드리지 않음."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "seller", data)
+    c.join()
+    b = _client(port, "buyer", data)
+    b.join()
+    seq0 = c.state()["seq"]
+    # 게시·정렬(ask 오름차순 = 최우선 매도부터 · want 내림차순)
+    a1 = c.post_ask("pyjudge", "judge verdicts", 3, detail="frontier judge")
+    a2 = c.post_ask("sha256_chain", "metered compute", 1)
+    w1 = b.post_want("pyjudge", "need a judge", 5)
+    bd = c.board()
+    out["게시 왕복"] = {a1["id"], a2["id"]} <= {r["id"] for r in bd["asks"]} \
+        and w1["id"] in {r["id"] for r in bd["wants"]}
+    out["ask 가격-정렬"] = bd["asks"][0]["post"]["price"] == 1
+    # 멱등 재게시(내용-주소 id)
+    out["재게시 멱등"] = c.post_ask("sha256_chain", "metered compute", 1,
+                                    ttl=1440)["id"] == a2["id"] \
+        and len([r for r in c.board()["asks"]
+                 if r["id"] == a2["id"]]) == 1
+    # 미등록 주체 거부
+    ghost = Fl21Client(f"http://127.0.0.1:{port}", "ghost",
+                       os.path.join(data, "ghost.key"))
+    try:
+        ghost.post_ask("other", "not joined", 1)
+        out["미등록 거부"] = False
+    except RuntimeError:
+        out["미등록 거부"] = True
+    # 서명 위조 거부(타인 몸통에 내 서명)
+    body = {"side": "ask", "kind": "other", "title": "forged", "detail": "",
+            "price": 1, "p": "buyer", "expires": c.state()["epoch"] + 10}
+    sig = c.key.sign(b"FL21-BOARD" + c.log_id + canon(body)).hex()
+    try:
+        c._post("/board", {"post": body, "sig": sig})
+        out["서명 위조 거부"] = False
+    except RuntimeError:
+        out["서명 위조 거부"] = True
+    # ★도메인 분리: 원장 도메인으로 서명한 게시는 거부(교차-재생 차단)
+    body2 = {"side": "ask", "kind": "other", "title": "xdomain", "detail": "",
+             "price": 1, "p": "seller", "expires": c.state()["epoch"] + 10}
+    sig2 = c.key.sign(DOMAIN + c.log_id + canon(body2)).hex()
+    try:
+        c._post("/board", {"post": body2, "sig": sig2})
+        out["★도메인 분리(원장-서명 거부)"] = False
+    except RuntimeError:
+        out["★도메인 분리(원장-서명 거부)"] = True
+    # 주체당 상한(8) — seller는 이미 2건
+    for i in range(6):
+        c.post_ask("other", f"filler {i}", 1)
+    try:
+        c.post_ask("other", "over cap", 1)
+        out["주체당 상한"] = False
+    except RuntimeError as e:
+        out["주체당 상한"] = "8" in str(e)
+    # 철회: 타인 불가·본인 가능
+    try:
+        b.retract_post(a1["id"])
+        out["타인 철회 거부"] = False
+    except RuntimeError:
+        out["타인 철회 거부"] = True
+    c.retract_post(a1["id"])
+    out["본인 철회"] = a1["id"] not in {r["id"] for r in c.board()["asks"]}
+    # 만료 GC(틱 경과)
+    short = b.post_want("other", "expiring", 1, ttl=1)
+    c._post("/tick", {})
+    c._post("/tick", {})
+    out["만료 GC"] = short["id"] not in {r["id"] for r in c.board()["wants"]}
+    # ★오프-원장: 게시·철회가 원장 seq 무접촉(틱 2회분만 증가)
+    out["★오프-원장(seq 무접촉)"] = c.state()["seq"] == seq0 + 2
+    # 체결 테이프(원장-파생): 실물 이행 → stats.tape
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [1, wk.notes()[0]["face"] - 1])
+    n1 = [x for x in wk.notes() if x["face"] == 1][0]["nid"]
+    wk.xfer("seller", n1)
+    nid = [x["nid"] for x in c.notes_of("anchor0") if x["face"] == 1][0]
+    j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=5000)
+    wk.work_once()
+    tp = c.stats().get("tape", {})
+    out["체결 테이프"] = any(f["face"] == 1 and f["anchor"] == "anchor0"
+                             for f in tp.get("sha256_chain", []))
+    # 재기동 존속(자문층 파일) — 같은 데이터로 다른 포트
+    srv.shutdown()
+    nd2, srv2, _ = _serve(port2, data=data)
+    c2 = Fl21Client(f"http://127.0.0.1:{port2}", "seller",
+                    os.path.join(data, "seller.key"))
+    out["재기동 존속"] = a2["id"] in {r["id"] for r in c2.board()["asks"]}
+    out["audit"] = c2._get("/audit")["ok"]
+    srv2.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -1011,7 +1108,8 @@ def main():
              "T-PYCHECK 코드이행": gate_TPYCHECK(),
              "T-COVER 인수개방": gate_TCOVER(),
              "T-HASHBIND 해시결박": gate_THASHBIND(),
-             "T-STATS 통계·증명": gate_TSTATS()}
+             "T-STATS 통계·증명": gate_TSTATS(),
+             "T-BOARD 호가창": gate_TBOARD()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

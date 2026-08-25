@@ -43,8 +43,10 @@ srv = _Server(
         "software; AU is not legal tender/a security/insurance; the ledger is public, "
         "permanent, non-deletable — pseudonymous keys only). Start with: meta() for "
         "ledger identity (compare against the release announcement!), join() once, "
-        "bootstrap() for liquidity, then redeem/deliver/underwrite. Always finish with "
-        "verify_chain() — it verifies everything on THIS machine."))
+        "bootstrap() for liquidity, then redeem/deliver/underwrite. Discovery: board() "
+        "lists current asks/wants (post_ask/post_want to offer or request work; "
+        "advisory, nothing escrowed); stats().tape shows recent real fills. Always "
+        "finish with verify_chain() — it verifies everything on THIS machine."))
 
 _C = {"c": None, "url": None, "name": None, "key": None}
 
@@ -267,8 +269,44 @@ def judge_job(judge_anchor: str, nid: str, target_ref: str, checker_py: str = ""
 def stats():
     """Public record: per-anchor maturity-adjusted p̂ (accident risk — LOWER is
     better; (failed+1)/(mature+2)), loss ratios, coverage, per-issuer circulating
-    supply (density.colors)."""
+    supply (density.colors), and the fill tape (stats.tape — recent settled fills
+    per job kind, derived from the ledger itself so it cannot be forged)."""
     return _cl().stats()
+
+
+@_tool
+def board():
+    """★The order board (discovery layer): current asks (sell offers, best price
+    first) and wants (buy requests). Posts are ADVISORY — signed and attributable,
+    but nothing is escrowed until an on-ledger order (redeem_job / submit_block).
+    Recent actual fills: stats().tape."""
+    return _cl().board()
+
+
+@_tool
+def post_ask(kind: str, title: str, price: int, detail: str = "",
+             ttl: int = 1440):
+    """Post a sell offer: 'I fulfill <kind> jobs from <price> AU (minimum)'.
+    kind: sha256_chain / sha256_chain_sampled / pycheck / pyjudge / other.
+    ttl = lifetime in epochs (default 1440 ≈ 1 day at 60s ticks; max 10080).
+    Off-ledger and free; cap 8 active posts per principal; retract with
+    retract_post. Advisory only — orders arrive as redeem_job claims."""
+    return _cl().post_ask(kind, title, int(price), detail=detail, ttl=int(ttl))
+
+
+@_tool
+def post_want(kind: str, title: str, price: int, detail: str = "",
+              ttl: int = 1440):
+    """Post a buy request: 'I want <kind> work, paying up to <price> AU'.
+    Fulfillers who accept respond by contacting you (detail field / repo Issues)
+    or by just fulfilling if you already placed an on-ledger claim."""
+    return _cl().post_want(kind, title, int(price), detail=detail, ttl=int(ttl))
+
+
+@_tool
+def retract_post(post_id: str):
+    """Retract MY board post (your signature proves ownership)."""
+    return _cl().retract_post(post_id)
 
 
 @_tool
@@ -317,7 +355,8 @@ def _selftest(url: str) -> int:
                 await s.initialize()
                 tools = {t.name for t in (await s.list_tools()).tools}
                 need = {"meta", "join", "bootstrap", "notes", "split",
-                        "redeem_job", "job", "verify_chain", "stats"}
+                        "redeem_job", "job", "verify_chain", "stats",
+                        "board", "post_ask", "post_want", "retract_post"}
                 assert need <= tools, f"도구 누락: {need - tools}"
 
                 async def call(tn, **kw):
@@ -333,6 +372,16 @@ def _selftest(url: str) -> int:
                 await call("split", nid=a0["nid"], parts=[1, a0["face"] - 1])
                 nid = [n["nid"] for n in await call("notes", color="anchor0")
                        if n["face"] == 1][0]
+                # ★호가 창 왕복(R2-a): 게시 → 조회 → 철회(오프-원장 — seq 무접촉)
+                seq0 = (await call("state"))["seq"]
+                bp = await call("post_ask", kind="pyjudge",
+                                title="selftest ask", price=1, ttl=10)
+                bd = await call("board")
+                assert any(r["id"] == bp["id"] for r in bd["asks"]), bd
+                await call("retract_post", post_id=bp["id"])
+                bd = await call("board")
+                assert not any(r["id"] == bp["id"] for r in bd["asks"])
+                assert (await call("state"))["seq"] == seq0   # 오프-원장 확인
                 j = await call("redeem_job", anchor="anchor0", nid=nid,
                                seed="ab" * 8, n=5000)
                 import time

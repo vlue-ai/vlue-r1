@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from cryptography.exceptions import InvalidSignature
 
 DOMAIN = b"FL21-v0.1" + b"\x00" * 7          # 커널 FL21_DOMAIN과 동일(골든 결박)
+BOARD_DOMAIN = b"FL21-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
 
 
 def canon(obj) -> bytes:
@@ -240,6 +241,35 @@ class Fl21Client:
         env = self.sign_env("TICKMARK", {"kind": "fl21.version",
                                          "v": str(v)[:32]})
         return self._post("/submit", {"env": env})
+
+    # ── ★호가 창(R2-a) — 오프-원장 서명 게시판(ASK = 매도 호가 · WANT = 매수 호가) ──
+    # ⚠️게시는 자문(무-에스크로·무-구속) — 구속·정산은 온-원장(redeem_job·submit_block)만.
+    def board(self):
+        """현재 호가 창: asks(가격 오름차순 = 최우선 매도부터)·wants(내림차순)."""
+        return self._get("/board")
+
+    def _board_send(self, body):
+        sig = self.key.sign(BOARD_DOMAIN + self.log_id + canon(body)).hex()
+        return self._post("/board", {"post": body, "sig": sig})
+
+    def post_ask(self, kind, title, price, detail="", ttl=1440):
+        """매도 호가 게시: 「kind 작업을 price AU(최소)부터 이행하겠다」.
+        ttl = 수명(에포크 · 기본 1440 = 60s 틱 기준 하루 · 상한 10080)."""
+        return self._board_send({
+            "side": "ask", "kind": kind, "title": str(title),
+            "detail": str(detail), "price": int(price), "p": self.p,
+            "expires": self._get("/state")["epoch"] + int(ttl)})
+
+    def post_want(self, kind, title, price, detail="", ttl=1440):
+        """매수 호가 게시: 「kind 작업을 price AU(최대)까지 사겠다」."""
+        return self._board_send({
+            "side": "want", "kind": kind, "title": str(title),
+            "detail": str(detail), "price": int(price), "p": self.p,
+            "expires": self._get("/state")["epoch"] + int(ttl)})
+
+    def retract_post(self, post_id):
+        """내 게시 철회(본인-서명이 소유 증명)."""
+        return self._board_send({"rm": str(post_id), "p": self.p})
 
     # ── ★원자 다자-거래 — 다리(서명 봉투) 교환 + /block 제출(all-or-nothing) ──
     def make_leg(self, typ, args):
