@@ -336,11 +336,18 @@ class Fl21Client:
         if not force and self.state()["epoch"] > j["deadline"]:
             raise RuntimeError("기한 경과 청구 — 인수는 즉시 손실(force=True로 무시 가능)")
         need = -(-exp // 2)                      # β_min = 1/2(정수-정확 상향)
+        st = self.state()
+        g = self.meta["gen"]
+        prem_f = prem * g["uw_phi_num"] // g["uw_phi_den"]
+        cap = g["fq_mult"] * max(st["F_peak"], g["fq_base"])
+        if g["fq_mult"] > 0 and st["F_uw"] + prem_f > cap:
+            prem_f = 0                            # ★흡입-결박 미러(커널 v0.3 동형)
+        want = need + prem_f + 2                  # ★[M-129] — 기금 몫까지 선-충당
         ones = [n["nid"] for n in self.notes() if n["face"] == 1]
-        if len(ones) < need + 2:
+        if len(ones) < want:
             big = max(self.notes(), key=lambda x: x["face"])
             if big["face"] >= 2:
-                parts = [1] * min(big["face"], need + 4 - len(ones))
+                parts = [1] * min(big["face"], want + 2 - len(ones))
                 rest = big["face"] - len(parts)
                 if rest > 0:
                     parts.append(rest)
@@ -349,15 +356,10 @@ class Fl21Client:
         if len(ones) < need:
             raise RuntimeError(f"담보 부족: 1-노트 {len(ones)} < {need}")
         cov = ones[:need]
-        st = self.state()
-        g = self.meta["gen"]
-        prem_f = prem * g["uw_phi_num"] // g["uw_phi_den"]
-        cap = g["fq_mult"] * max(st["F_peak"], g["fq_base"])
-        if g["fq_mult"] > 0 and st["F_uw"] + prem_f > cap:
-            prem_f = 0                            # ★흡입-결박 미러(커널 v0.3 동형)
         fund = ones[need:need + prem_f]
         if len(fund) < prem_f:
-            raise RuntimeError("기금 노트 부족")
+            raise RuntimeError(f"기금 노트 부족({len(fund)} < {prem_f} — "
+                               "잔고 확인)")
         env = self.sign_env("UW", {"uw": self.p, "ref": ref,
                                    "cov_notes": cov, "prem": prem,
                                    "prem_fund_notes": fund})
