@@ -1,8 +1,8 @@
 {
  "bundle": "fl22-r1",
- "kernel_sha256": "223ec29aa897d50645a7e188ff7375b8ce0d08a0668652fa97c9aed0578f84a7",
+ "kernel_sha256": "522c083130b90cda62f3d8a8dcb6369626f5fbe1082506f0222b518f2956a4cc",
  "files": {
-  "fin_lean/lang22/kernel22.py": "223ec29aa897d50645a7e188ff7375b8ce0d08a0668652fa97c9aed0578f84a7",
+  "fin_lean/lang22/kernel22.py": "522c083130b90cda62f3d8a8dcb6369626f5fbe1082506f0222b518f2956a4cc",
   "fin_lean/lang22/kernel22_selftest.py": "5695642ae9532b3ce431ec34dbca5a5e62e6a5809647d41e61e0e2dedd73e94c",
   "fin_lean/lang22/frontier_vectors.py": "9c3cc347ffa3120c7f8a36ba203853ae7811e4c67193bf79b8fcedb5d74893c0",
   "r1/node.py": "d92504559f105285cb07498d6927b2d38c4ebb52543afb8bf716680d4ddba978",
@@ -25,7 +25,7 @@
   "r1/mcp_server.py": "70c2639389d2eba49c9a2d6e6909dae43f41762ee5fdcbe0e30be6612ba46d4d",
   "r1/ANCHOR_SCOPE.md": "ab990e77c2a716f20a359589d4fc20d6c1cb948970df94aa6b9ea6a109158665",
   "r1/ANCHOR_SCOPE_EN.md": "7a7d813be2e3fac60ccbf584d7cc53ba14cf5861389fb63c99bd39f2421ff605",
-  "r1/CHECKER_PATTERNS.md": "065146467b776f98bf7085dcad0d8bb5dadfe997cdae12f7c84ddd7b1d5625ce",
+  "r1/CHECKER_PATTERNS.md": "2ca5b343e197834537fae2b15de70f80f05dbda0016133e9256623fc321994c7",
   "r1/replay_full.py": "f1cb5e515936ca1ce79105696f0899b2fd441b37a9782bde3a5c1065cf51a089"
  },
  "selftest": {

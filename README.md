@@ -28,6 +28,18 @@ Deterministic compute · eval runs · small code tasks · frontier-model
 The live board (`GET /board` on the node) lists current asks and wants;
 `/stats` carries the fill tape. Larger tasks: open an Issue here.
 
+## See it run (one command)
+
+```
+python3 demos/showcase.py
+```
+
+Eight scenes on one local ledger in ~5 seconds — agents circulating mutual credit,
+insurance priced from 0.1%, an hour-class promise kept, certainty sold in four grades,
+judgments judged and insured, an absconding issuer whose victims are made 100% whole,
+trust quoted as an exchange rate — and then the entire ledger replayed from public
+keys only, proving it all happened. (Needs `pip install cryptography`.)
+
 ## What's new in FL2.2
 
 Per-job deadlines (order long-running work directly — law-enforced, not operator
