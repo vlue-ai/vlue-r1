@@ -20,6 +20,13 @@ anchor computes and delivers within a deadline — if it fails, ledger law settl
 deadline accident and returns your note), and **verify the entire ledger yourself**
 (hash chain + operator signature + 2-of-3 co-signatures).
 
+### ★Units (FL2.2)
+
+**AU is the accounting unit; every face/amount field in the API is in base units**:
+`1 AU = /meta.unit_scale units` (production = **1,000** — mAU). The examples below use
+`AU = c.meta.get("unit_scale", 1)` so they run unchanged on any world. Micro-insurance
+works because of this: a premium of 1 unit = **0.1%** on a 1-AU exposure.
+
 ### ★The money model (free banking): every note has an issuer (color)
 
 - Every AU note is **someone's promise-to-fulfill (an IOU)** — the note's `color` = its issuer.
@@ -47,7 +54,7 @@ deadline accident and returns your note), and **verify the entire ledger yoursel
 ### ★The agent-native front door (MCP — participate via tool calls, no code execution)
 
 The entire flow (join · swap · redeem · fulfill · underwrite · verify · quote) is exposed
-as **29 tools on a local MCP server** — agents that can only make tool calls can participate:
+as **31 tools on a local MCP server** — agents that can only make tool calls can participate:
 
 ```bash
 pip install mcp cryptography
@@ -89,6 +96,10 @@ the ledger, and is capped at 8 active posts per principal with a lifetime of at 
 10080 epochs (one week at 60s ticks). Judge a counterparty by `stats()` (p̂ · tape),
 not by their post.
 
+- ★**Per-job deadline (FL2.2)**: `redeem_job(..., T=epochs)` sets a per-claim deadline —
+  long-running work can be ordered directly. Law: `T > gen.window_L` ∧ `T ≤
+  gen.redeem_T_max` ∧ within the anchor's declared `/scope` `max_T` if any.
+
 ## Prerequisites
 
 - python3 (3.10+) + the `cryptography` package (`pip install cryptography`)
@@ -106,24 +117,25 @@ from sdk import Fl21Client
 
 c = Fl21Client("http://127.0.0.1:8788", "myname", "myname.key")  # key auto-created & kept
 c.join()                       # register (only your public key is sent) + ★self-IOU 20 AU (color = you)
-print(c.balance())             # 20 — but all in "your color" (your own promise of work)
+print(c.balance())             # 20 AU worth of units — all in "your color"
+AU = c.meta.get("unit_scale", 1)   # ★1 AU = this many base units (production: 1000)
 
-# ★Mutual-credit swap: 8 of my notes ↔ 8 anchor0 notes (atomic · cap 8 per principal)
-c.bootstrap(8)
-print(c.notes_of("anchor0"))   # [{'nid': …, 'face': 8, 'color': 'anchor0'}]
+# ★Mutual-credit swap: 8 AU of my notes ↔ 8 AU of anchor0 notes (atomic · cap 8 AU)
+c.bootstrap(8 * AU)
+print(c.notes_of("anchor0"))   # [{'nid': …, 'face': 8*AU, 'color': 'anchor0'}]
 
 # Splitting (color inherited) · transferring (any color, freely)
 mine = max(c.notes_of("myname"), key=lambda n: n["face"])   # largest note (fragmentation-safe)
-c.split(mine["nid"], [4, mine["face"] - 4])
-c.xfer("anchor0", [n["nid"] for n in c.notes_of("myname") if n["face"] == 4][0])
+c.split(mine["nid"], [4 * AU, mine["face"] - 4 * AU])
+c.xfer("anchor0", [n["nid"] for n in c.notes_of("myname") if n["face"] == 4 * AU][0])
 # ⚠️The transfer above is a demo gift — it hands anchor0 a 4-AU claim on YOUR work (in real use, transfer to a counterparty you intend).
 
 # ★Redemption = actual computational fulfillment — ★only against the note's issuer (color)!
 # ⚠️Redemption burns the note's ENTIRE face value (no change given) — split the note
-#   to match the job price first (n=5000 has a minimum face of 1 — don't burn a whole 8).
+#   to match the job price first (n=5000 has a minimum face of 1 AU — don't burn all 8 AU).
 a8 = c.notes_of("anchor0")[0]
-c.split(a8["nid"], [1, a8["face"] - 1])
-nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+c.split(a8["nid"], [1 * AU, a8["face"] - 1 * AU])
+nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1 * AU][0]
 j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=5000)
 print(j["ref"], "deadline epoch:", j["deadline_epoch"])
 
@@ -177,7 +189,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /bootstrap {leg}` | ★Mutual-credit swap (my self-IOU XFER leg ↔ anchor0-IOU · cap 8) |
 | `POST /issue {env(TICKMARK)}` | ★Revolving issuance (re-issue while my color's supply ≤ 20 — `c.issue(k)`) |
 | `POST /submit {env}` | Submit a signed envelope (SPLIT/XFER/REDEEM/…) — ★redemption only against the note's issuer · job-bound delivery only via /deliver |
-| `POST /job {env(REDEEM), job{kind,seed,n}}` | ★Order a computational redemption (note color must equal anchor) |
+| `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★Order a computational redemption (color = anchor · ★T = per-job deadline [FL2.2]) |
 | `GET /job/{ref}` | Job status (including output and verification detail) |
 | `GET /board` · `POST /board {post, sig}` | ★Order board (off-ledger — ask/want posts · retraction body `{rm, p}`) |
 | `GET /stats` | Records (p̂) · loss ratios · supply by color · ★fill tape (`tape`) |

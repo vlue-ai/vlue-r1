@@ -1,0 +1,37 @@
+{
+ "bundle": "fl22-r1",
+ "kernel_sha256": "223ec29aa897d50645a7e188ff7375b8ce0d08a0668652fa97c9aed0578f84a7",
+ "files": {
+  "fin_lean/lang22/kernel22.py": "223ec29aa897d50645a7e188ff7375b8ce0d08a0668652fa97c9aed0578f84a7",
+  "fin_lean/lang22/kernel22_selftest.py": "5695642ae9532b3ce431ec34dbca5a5e62e6a5809647d41e61e0e2dedd73e94c",
+  "fin_lean/lang22/frontier_vectors.py": "9c3cc347ffa3120c7f8a36ba203853ae7811e4c67193bf79b8fcedb5d74893c0",
+  "r1/node.py": "d92504559f105285cb07498d6927b2d38c4ebb52543afb8bf716680d4ddba978",
+  "r1/sdk.py": "120a52ca01d058404cbd2b465dacb59e96a81d3553f0e24b1c3750e7d99dc49e",
+  "r1/jobs.py": "f87043ec59abbe04a9f6572fa4d6b7c25890b4cc1d8455f8a8f7a7566e1d96ab",
+  "r1/worker.py": "30250113d1c360e870198eb68c892b82454426bbe335faca0150468cbdf54d38",
+  "r1/cosigner.py": "d08ceb7d439cb7f33cbe73da180bb20b4f15b1b0df64eaad24bce2b204d5add9",
+  "r1/test_r1.py": "6340df90938e34ee731943eb233314ec39b46147202e700203775431c33e8733",
+  "r1/EXTERNAL_QUICKSTART.md": "1df9cd79379b5daf09c3965f05c31ab2b6f6851d329dad332bdc24ee87d5cfc5",
+  "r1/RUNBOOK.md": "de617e45f902f86545101ce12a5f742a0bcb452b20b6657d1d808758cbda56e9",
+  "r1/README.md": "30bd99390df966a1aa7d7d3b4d6a9c53e2d290f1d1a5a1de5ef4643441fdc763",
+  "r1/VERIFIER.md": "9234df9a95181350329ff2aaeecb8ef01b84dc35158eeaddc7373c50ad000790",
+  "r1/RELEASE.md": "d56bd3d26e408e2190f6abd501eaf200033fb62710b4e993a1a1dca4cf98c06b",
+  "r1/NOTICE.md": "bde0bc1b516d98735648e5fecee24885d37de09d9594e7785ccb9adafb53878b",
+  "r1/LICENSE": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+  "r1/EXTERNAL_QUICKSTART_EN.md": "7933699141729c090ea7cc7ca8277f0ce670de04344ddce2babbd50e0184cec7",
+  "r1/VERIFIER_EN.md": "4705d181edb055f96f93fb3d4dbc95e807bf3f055f212468fcadbb0a359ae622",
+  "r1/RELEASE_EN.md": "e33c11e34a1bfb5aa4717e9ebf01bb3693e82918b270a8add436221c275b9cda",
+  "r1/NOTICE_EN.md": "babd8bf5ab53390adc9e72dfd9c1498d6cef3c8ff164ebd8d6f62bf60e6c92da",
+  "r1/mcp_server.py": "70c2639389d2eba49c9a2d6e6909dae43f41762ee5fdcbe0e30be6612ba46d4d",
+  "r1/ANCHOR_SCOPE.md": "ab990e77c2a716f20a359589d4fc20d6c1cb948970df94aa6b9ea6a109158665",
+  "r1/ANCHOR_SCOPE_EN.md": "7a7d813be2e3fac60ccbf584d7cc53ba14cf5861389fb63c99bd39f2421ff605",
+  "r1/CHECKER_PATTERNS.md": "065146467b776f98bf7085dcad0d8bb5dadfe997cdae12f7c84ddd7b1d5625ce",
+  "r1/replay_full.py": "f1cb5e515936ca1ce79105696f0899b2fd441b37a9782bde3a5c1065cf51a089"
+ },
+ "selftest": {
+  "kernel_selftest": true,
+  "golden_vectors": true,
+  "r1_gates": true,
+  "pass": true
+ }
+}

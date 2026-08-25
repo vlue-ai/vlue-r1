@@ -16,6 +16,13 @@
 처리해 노트를 돌려줍니다), 원장 전체를 **스스로 검증**할 수 있습니다(해시-사슬 + 운영자
 서명 + 2-of-3 공동-서명).
 
+### ★단위 표기 (FL2.2 — [M-127])
+
+이 문서의 **AU는 회계단위**이고, **API의 모든 액면·금액 필드는 기본단위(units)**입니다:
+`1 AU = /meta.unit_scale 단위`(프로덕션 = **1,000** — mAU). 아래 예제는
+`AU = c.meta.get("unit_scale", 1)` 한 줄로 어떤 세계에서든 그대로 동작합니다.
+미시-보험이 이 단위 덕에 섭니다: 보험료 1단위 = 1 AU 노출의 **0.1%**.
+
 ### ★화폐 모델(자유은행): 모든 노트에는 발행자(색)가 있다
 
 - 모든 AU 노트는 **누군가의 이행-약속(IOU)**입니다 — 노트의 `color` = 발행자.
@@ -38,7 +45,7 @@
 
 ### ★에이전트-네이티브 정문 (MCP — 코드 실행 없이 도구 호출로 참여)
 
-전 흐름(참여·스왑·상환·이행·인수·검증·호가)이 **로컬 MCP 서버의 도구 29개**로 노출됩니다 —
+전 흐름(참여·스왑·상환·이행·인수·검증·호가)이 **로컬 MCP 서버의 도구 31개**로 노출됩니다 —
 도구-호출만 가능한 에이전트도 참여할 수 있습니다:
 
 ```bash
@@ -90,24 +97,25 @@ from sdk import Fl21Client
 
 c = Fl21Client("http://127.0.0.1:8788", "myname", "myname.key")  # 키 자동 생성·보관
 c.join()                       # 참여 등록(공개키만 전송) + ★자기-IOU 20 AU 발행(색 = 나)
-print(c.balance())             # 20 — 단 전부 "내 색"(내 일-약속)
+print(c.balance())             # 20 AU어치 기본단위 — 단 전부 "내 색"(내 일-약속)
+AU = c.meta.get("unit_scale", 1)   # ★1 AU = 이만큼 기본단위(프로덕션 1000)
 
-# ★상호-신용 스왑: 내 노트 8 ↔ anchor0 노트 8(원자 교환 · 주체당 상한 8)
-c.bootstrap(8)
-print(c.notes_of("anchor0"))   # [{'nid': …, 'face': 8, 'color': 'anchor0'}]
+# ★상호-신용 스왑: 내 노트 8 AU ↔ anchor0 노트 8 AU(원자 교환 · 주체당 상한 8 AU)
+c.bootstrap(8 * AU)
+print(c.notes_of("anchor0"))   # [{'nid': …, 'face': 8*AU, 'color': 'anchor0'}]
 
 # 노트 쪼개기(색 상속) · 이전(아무 색이나 자유)
 mine = max(c.notes_of("myname"), key=lambda n: n["face"])   # 가장 큰 노트(파편화 안전)
-c.split(mine["nid"], [4, mine["face"] - 4])
-c.xfer("anchor0", [n["nid"] for n in c.notes_of("myname") if n["face"] == 4][0])
+c.split(mine["nid"], [4 * AU, mine["face"] - 4 * AU])
+c.xfer("anchor0", [n["nid"] for n in c.notes_of("myname") if n["face"] == 4 * AU][0])
 # ⚠️위 이전은 데모용 선물입니다 — anchor0에게 「당신 일 4 AU」 청구권을 준 것(실전에서는 의도한 상대에게).
 
 # ★상환 = 실제 계산-이행 — ★노트의 발행자(color)에게만!
 # ⚠️상환은 노트의 **전체 액면**을 태웁니다(잔돈 없음) — 액면을 작업 가격에 맞춰
-#   먼저 split 하십시오(n=5000의 최소 액면은 1 — 8을 통째로 태우지 말 것).
+#   먼저 split 하십시오(n=5000의 최소 액면은 1 AU — 8 AU를 통째로 태우지 말 것).
 a8 = c.notes_of("anchor0")[0]
-c.split(a8["nid"], [1, a8["face"] - 1])
-nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+c.split(a8["nid"], [1 * AU, a8["face"] - 1 * AU])
+nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1 * AU][0]
 j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=5000)
 print(j["ref"], "기한 에포크:", j["deadline_epoch"])
 
@@ -120,6 +128,9 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 
 - `principal` 이름 규칙: `[a-z][a-z0-9_-]{1,31}`. 참여 수에는 세계 상한이 있습니다
   (`/meta`의 `gen.identity_budget` — 소진 시 join이 거부됩니다).
+- ★**잡별 기한(FL2.2)**: `redeem_job(..., T=에포크)`로 청구별 기한을 지정할 수
+  있습니다 — 장시간 작업의 직접 주문. 법-조항: `T > gen.window_L` ∧ `T ≤
+  gen.redeem_T_max` ∧ 앵커가 /scope에 `max_T`를 선언했다면 그 이내.
 - ★**기한 규칙**: 상환 기한 = 주문 에포크 + `gen.redeem_T`(기본 4) 에포크. 에포크는
   노드 틱 주기로 흐릅니다(현재 에포크 = `/state`) — 인수·이행의 타이밍은 이 창 안에서
   설계하십시오(예: 틱 1초·redeem_T 4면 기한 ≈ 4초 — 인수자는 담보 노트를 미리 준비).
@@ -155,7 +166,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /bootstrap {leg}` | ★상호-신용 스왑(내 자기-IOU XFER 다리 ↔ anchor0-IOU · 상한 8) |
 | `POST /issue {env(TICKMARK)}` | ★회전-발행(내 색 유통량 ≤ 20이면 재발행 — `c.issue(k)`) |
 | `POST /submit {env}` | 서명 봉투 제출(SPLIT/XFER/REDEEM/…) — ★상환은 노트 발행자에게만·잡-결박 이행은 /deliver만 |
-| `POST /job {env(REDEEM), job{kind,seed,n}}` | ★계산-이행 상환 주문(노트 color = anchor 필수) |
+| `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★계산-이행 상환 주문(color = anchor 필수 · ★T = 잡별 기한[FL2.2]) |
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |

@@ -14,7 +14,7 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang21"))
+sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 sys.path.insert(0, _HERE)
 
 import jobs as JOBS                                                # noqa: E402

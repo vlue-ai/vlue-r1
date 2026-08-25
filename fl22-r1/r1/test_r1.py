@@ -24,10 +24,10 @@ import time
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang21"))
+sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 sys.path.insert(0, _HERE)
 
-from kernel21 import World, Fl21Error, derive_key                  # noqa: E402
+from kernel22 import World, Fl22Error as Fl21Error, derive_key                  # noqa: E402
 import node as NODE                                                # noqa: E402
 import jobs as JOBS                                                # noqa: E402
 from sdk import Fl21Client, sig_msg, canon, DOMAIN                 # noqa: E402
@@ -1031,7 +1031,7 @@ def gate_TBOARD(port=8811, port2=8812):
     # 서명 위조 거부(타인 몸통에 내 서명)
     body = {"side": "ask", "kind": "other", "title": "forged", "detail": "",
             "price": 1, "p": "buyer", "expires": c.state()["epoch"] + 10}
-    sig = c.key.sign(b"FL21-BOARD" + c.log_id + canon(body)).hex()
+    sig = c.key.sign(b"FL22-BOARD" + c.log_id + canon(body)).hex()
     try:
         c._post("/board", {"post": body, "sig": sig})
         out["서명 위조 거부"] = False
@@ -1094,6 +1094,565 @@ def gate_TBOARD(port=8811, port2=8812):
     return out
 
 
+def gate_TSCOPE(port=8815, port2=8817):
+    """★H5([M-126]) 작업-범위 결박: 선언(온-원장 TICKMARK) → 범위-밖 제출 거부(kind·
+    액면·raw) · 개정·철회 · 무-선언 하위호환 · ★리플레이 재구성(재기동 후에도 강제)."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "sc", data)
+    c.join()
+    wk = Fl21Client(f"http://127.0.0.1:{port}", "anchor0",
+                    os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [1] * 4 + [4, wk.notes()[0]["face"] - 8])
+    for n in [x for x in wk.notes() if x["face"] in (1, 4)][:5]:
+        wk.xfer("sc", n["nid"])
+    # 선언: sha256_chain만 · 원시 거부 · 액면 ≤ 2
+    wk.declare_scope(kinds=["sha256_chain"], raw=False, max_exposure=2)
+    nid1 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j = c.redeem_job("anchor0", nid1, seed="ab" * 8, n=1000)
+    out["범위-내 통과"] = "ref" in j
+    try:
+        c.redeem_job("anchor0",
+                     [n["nid"] for n in c.notes_of("anchor0")
+                      if n["face"] == 1][0],
+                     seed="ab" * 8, n=1000, kind="sha256_chain_sampled")
+        out["범위-밖 kind 거부"] = False
+    except RuntimeError as e:
+        out["범위-밖 kind 거부"] = "H5" in str(e)
+    try:
+        nid4 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 4][0]
+        c.redeem_job("anchor0", nid4, seed="ab" * 8, n=1000)
+        out["액면 상한 거부"] = False
+    except RuntimeError as e:
+        out["액면 상한 거부"] = "최대 노출" in str(e)
+    try:
+        c._post("/submit", {"env": c.sign_env("REDEEM", {
+            "holder": "sc",
+            "note": [n["nid"] for n in c.notes_of("anchor0")
+                     if n["face"] == 1][0], "anchor": "anchor0"})})
+        out["원시 상환 거부"] = False
+    except RuntimeError as e:
+        out["원시 상환 거부"] = "원시" in str(e)
+    try:
+        wk.declare_scope(kinds=["evil_kind"])
+        out["비정형 선언 거부"] = False
+    except RuntimeError:
+        out["비정형 선언 거부"] = True
+    wk.declare_scope(kinds=["sha256_chain", "pyjudge"], max_exposure=0,
+                     max_T=6)
+    out["개정 반영"] = nd.scopes["anchor0"]["kinds"] == \
+        ["sha256_chain", "pyjudge"]
+    try:                               # ★F-R1 — 잡별-T 앵커-측 상한(FL2.2 리뷰)
+        c.redeem_job("anchor0",
+                     [n["nid"] for n in c.notes_of("anchor0")
+                      if n["face"] == 1][0], seed="ee" * 8, n=1000, T=8)
+        out["★max_T 초과 거부"] = False
+    except RuntimeError as e:
+        out["★max_T 초과 거부"] = "앵커 상한" in str(e)
+    j5 = c.redeem_job("anchor0",
+                      [n["nid"] for n in c.notes_of("anchor0")
+                       if n["face"] == 1][0], seed="ee" * 8, n=1000, T=5)
+    out["max_T 내 통과"] = "ref" in j5
+    srv.shutdown()
+    srv.server_close()
+    nd2, srv2, _ = _serve(port2, data=data)   # ★리플레이 재구성
+    c2 = _client(port2, "sc", data)
+    try:
+        c2.redeem_job("anchor0",
+                      [n["nid"] for n in c2.notes_of("anchor0")
+                       if n["face"] == 1][0],
+                      seed="ab" * 8, n=1000, kind="sha256_chain_sampled")
+        out["★재기동 후 강제(리플레이)"] = False
+    except RuntimeError as e:
+        out["★재기동 후 강제(리플레이)"] = "H5" in str(e)
+    wk2 = Fl21Client(f"http://127.0.0.1:{port2}", "anchor0",
+                     os.path.join(data, "anchor0.key"))
+    wk2.declare_scope(clear=True)
+    j3 = c2.redeem_job("anchor0",
+                       [n["nid"] for n in c2.notes_of("anchor0")
+                        if n["face"] == 1][0],
+                       seed="cd" * 8, n=1000, kind="sha256_chain_sampled")
+    out["철회 = 전-수락 복귀"] = "ref" in j3
+    out["audit"] = c2._get("/audit")["ok"]
+    srv2.shutdown()
+    srv2.server_close()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TCHALLENGE(port=8816):
+    """★P-11([M-126]) 챌린지 창: 일치 = 오프-원장 계수 · ★불일치(저장-산출 변조 시나리오)
+    = 온-원장 기록 + 공개 실적 · 서명·대상 검증 · 라이트 검증 정합."""
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "ch", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [1, 1, wk.notes()[0]["face"] - 2])
+    for n in [x for x in wk.notes() if x["face"] == 1][:2]:
+        wk.xfer("ch", n["nid"])
+    nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=1000)
+    wk.work_once()
+    seq0 = c.state()["seq"]
+    r = c.challenge(j["ref"])
+    out["일치 = 검증 확인"] = r["verified"] is True
+    out["일치 = 원장 무접촉"] = c.state()["seq"] == seq0
+    # ★저장-산출 변조(운영자-측 사후 조작 시나리오) → 챌린지가 잡는다
+    nd.jobs[j["ref"]]["output"] = "00" * 32
+    r2 = c.challenge(j["ref"])
+    out["★불일치 = 온-원장 기록"] = r2["verified"] is False and \
+        c.state()["seq"] == seq0 + 1
+    last = nd.w.log[-1]["env"]
+    out["기록 형식"] = last["typ"] == "TICKMARK" and \
+        last["args"]["kind"] == "fl21.challenge" and \
+        last["args"]["anchor"] == "anchor0"
+    out["공개 실적 반영"] = \
+        c.stats()["anchors"]["anchor0"].get("challenged") == 1
+    # 검증·대상 음성 경로
+    try:
+        c.challenge("nope")
+        out["미지 ref 거부"] = False
+    except RuntimeError:
+        out["미지 ref 거부"] = True
+    nid2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j2 = c.redeem_job("anchor0", nid2, seed="cd" * 8, n=1000)
+    try:
+        c.challenge(j2["ref"])                    # 미이행 잡
+        out["미이행 거부"] = False
+    except RuntimeError:
+        out["미이행 거부"] = True
+    ghost = Fl21Client(f"http://127.0.0.1:{port}", "ghostc",
+                       os.path.join(data, "ghostc.key"))
+    try:
+        ghost.challenge(j["ref"])
+        out["미등록 거부"] = False
+    except RuntimeError:
+        out["미등록 거부"] = True
+    bad = {"ref": j["ref"], "p": "ch", "sig": "00" * 64}
+    try:
+        c._post("/challenge", bad)
+        out["위조 서명 거부"] = False
+    except RuntimeError:
+        out["위조 서명 거부"] = True
+    v = c.verify_chain()
+    out["라이트 검증 정합"] = v["ok"] is True
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TGEN22(port=8818):
+    """★FL2.2 세대 게이트([M-127]): ⓐ단위-정책(1 AU = 1000단위 — 가격-결박 스케일)
+    ⓑ★미시-보험 입도 돌파(prem 1단위 = 0.1%@1AU — [M-118] 100% 하한의 해소)
+    ⓒ★잡별-T(J-1 — 기본-T 생존·자기-T 성숙·조항 거부) ⓓ★H7 공개-리플레이(J-2 —
+    /meta 공개 재료만으로 전-상태 재검증·정체성 재유도)."""
+    out = {}
+    nd, srv, data = _serve(port, join_issue=20_000, genesis_issue=40_000,
+                           bootstrap_cap=8_000, unit_scale=1000)
+    c = _client(port, "g22", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [999, 1000, 1000, 2000, wk.notes()[0]["face"] - 4999])
+    for f in (999, 1000, 1000, 2000):
+        n = next(x for x in wk.notes() if x["face"] == f)
+        wk.xfer("g22", n["nid"])
+    # ⓐ 가격-결박 스케일: n=250,000 = 1 AU = 1000단위 — 999단위 거부·1000 통과
+    n999 = next(x["nid"] for x in c.notes_of("anchor0") if x["face"] == 999)
+    try:
+        c.redeem_job("anchor0", n999, seed="ab" * 8, n=250_000)
+        out["스케일 가격-결박(999 거부)"] = False
+    except RuntimeError as e:
+        out["스케일 가격-결박(999 거부)"] = "1000" in str(e)
+    n1000 = next(x["nid"] for x in c.notes_of("anchor0") if x["face"] == 1000)
+    j = c.redeem_job("anchor0", n1000, seed="ab" * 8, n=250_000)
+    out["스케일 통과(1000)"] = "ref" in j
+    # ⓑ ★미시-보험 입도 돌파: exposure 1000단위(1 AU)에 prem 1단위 = 0.1%
+    u = _client(port, "uw22", data)
+    u.join()
+    r = u.cover(j["ref"], prem=1)
+    out["★0.1% 보험료 성립"] = "seq" in r
+    cov = c.job(j["ref"])
+    out["커버 확인"] = cov.get("covered") is True and cov["prem"] == 1
+    wk.work_once()                    # 이행 — 커버 정상 종결
+    # ⓒ ★잡별-T: 세계 기본 4 · T=8 잡은 5~7틱 생존, 8틱에 사고
+    n2000 = next(x["nid"] for x in c.notes_of("anchor0") if x["face"] == 2000)
+    j2 = c.redeem_job("anchor0", n2000, seed="cd" * 8, n=250_000, T=8)
+    out["T-기한 부기"] = j2["deadline_epoch"] == c.state()["epoch"] + 8
+    returned = []
+    for i in range(8):
+        st = c._post("/tick", {})["settle"]
+        if st:
+            returned += st.get("returned", [])
+        if i == 5:
+            out["긴-T 생존(6틱)"] = j2["ref"] not in returned
+    out["긴-T 성숙(8틱 사고)"] = j2["ref"] in returned
+    try:
+        c.redeem_job("anchor0",
+                     next(x["nid"] for x in c.notes_of("anchor0")
+                          if x["face"] == 1000),
+                     seed="ef" * 8, n=250_000, T=2)
+        out["조항 거부(T ≤ window_L)"] = False
+    except RuntimeError as e:
+        out["조항 거부(T ≤ window_L)"] = "window_L" in str(e)
+    # ⓓ ★H7 — 공개 재료만으로 전-상태 재검증(시드 불요)
+    meta = c.meta
+    pks = {"operator": meta["operator_pk"], **meta["genesis_pks"]}
+    pub = World.from_public(pks, meta["label"], tuple(meta["genesis"]),
+                            gen=dict(meta["gen"]),
+                            bridge_ref=meta.get("bridge_ref"))
+    out["★H7 정체성 재유도"] = pub.log_id.hex() == meta["log_id"] and \
+        pub.fp0 == meta["fp0"]
+    entries, s = [], 0
+    for _ in range(100):
+        page = c._get(f"/log?since={s}")["entries"]
+        if not page:
+            break
+        entries += page
+        s = page[-1]["seq"] + 1
+    rv = pub.replay_verify(entries)
+    out["★H7 전-상태 공개 재검증"] = rv["ok"] is True and \
+        rv["state_root"] == nd.w.state_root()
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def _root_snapshot(nd):
+    """세계 상태의 정준 스냅숏(리플레이-차등·거부-원자성의 기준)."""
+    w = nd.w
+    return json.dumps({
+        "notes": {nid: [n["owner"], n["face"]] for nid, n in w.notes.items()},
+        "colors": dict(nd.colors), "epoch": w.epoch, "F": w.F,
+        "F_uw": w.F_uw, "S": w.S, "ext_in": w.ext_in, "ext_out": w.ext_out,
+        "nonces": dict(w.nonces), "boot": dict(nd.bootstrap_used),
+        "pending": sorted(w.redeem_pending), "seq": len(w.log),
+        "head": w.log[-1]["head"] if w.log else "genesis"},
+        sort_keys=True, ensure_ascii=False)
+
+
+def _root_invariants(nd, out_err):
+    """불변식 전량(매 수용-연산 후): 보존(audit)·색 전체성·양수 액면·에스크로 정합."""
+    w = nd.w
+    if not nd.audit()["ok"]:
+        out_err.append("audit 파손")
+    if set(nd.colors) != set(w.notes):
+        out_err.append("색 전체성 파손")
+    if any(n["face"] < 1 for n in w.notes.values()):
+        out_err.append("액면 < 1")
+    for ref, rp in w.redeem_pending.items():
+        if w.notes.get(rp["nid"], {}).get("owner") != f"@redeem:{ref}":
+            out_err.append(f"에스크로 고아 {ref}")
+
+
+def _root_engine(port, seed, n_ops, data=None):
+    """★T-ROOT 엔진 — 기본(거래·검증·인수)의 뿌리 시험:
+    ①결정론 프롤로그: 기본 회로 전량을 1회씩(각 단계 뒤 불변식) ②필수-실패 프로브
+    11종(각각 거부 확인 + ★상태-해시 불변 = 거부의 원자성) ③무작위 폭풍 n_ops
+    (수용 = 불변식 전량 · 거부 = 상태-해시 불변) ④정산 항등식(모든 settled rec:
+    comp+short == exposure ∧ comp == anchor+cov+uw+fund) ⑤종료: 라이트 검증
+    (봉투 포함) + ★리플레이 차등(재기동 세계의 스냅숏 바이트-동일)."""
+    import random as _rnd
+    rng = _rnd.Random(seed)
+    nd, srv, data = _serve(port, data=data)
+    url = f"http://127.0.0.1:{port}"
+    us = []
+    for i in range(3):
+        c = _client(port, f"r{i}", data)
+        c.join()
+        us.append(c)
+    wk = Fl21Client(url, "anchor0", os.path.join(data, "anchor0.key"))
+    errs, stats = [], {"accept": 0, "reject": 0, "settled": 0, "covered": 0,
+                       "delivered": 0, "accidents": 0}
+    exposure = {}                       # ref → face(정산 항등식 대조)
+
+    def shot():
+        return _root_snapshot(nd)
+
+    def attempt(fn):
+        """단일 기입-연산 전용: 수용 = 불변식 · 거부 = 상태-해시 불변(원자성)."""
+        h0 = shot()
+        try:
+            fn()
+            stats["accept"] += 1
+            _root_invariants(nd, errs)
+            return True
+        except RuntimeError:
+            stats["reject"] += 1
+            if shot() != h0:
+                errs.append("★거부-원자성 파손(거부가 상태를 바꿈)")
+            return False
+
+    def attempt_soft(fn):
+        """복합 편의(SDK cover·bootstrap의 내부 사전-split) — 실패 시에도 선행
+        단일-연산은 정당 수용일 수 있어 해시-불변 대신 불변식만 검사."""
+        try:
+            fn()
+            stats["accept"] += 1
+            _root_invariants(nd, errs)
+            return True
+        except RuntimeError:
+            stats["reject"] += 1
+            _root_invariants(nd, errs)
+            return False
+
+    def must_fail(name, fn):
+        h0 = shot()
+        try:
+            fn()
+            errs.append(f"필수-실패 통과됨: {name}")
+        except RuntimeError:
+            if shot() != h0:
+                errs.append(f"★거부-원자성 파손: {name}")
+
+    open_refs = {}                     # ref → {"holder", "covered"}
+
+    def settle_check(res):
+        st = (res or {}).get("settle") or {}
+        for rec in st.get("settled", []):
+            stats["settled"] += 1
+            exp = exposure.get(rec["ref"])
+            parts = rec.get("anchor", 0) + rec.get("cov", 0) + \
+                rec.get("uw", 0) + rec.get("fund", 0)
+            if exp is not None and rec["comp"] + rec["short"] != exp:
+                errs.append(f"정산 항등식1 파손 {rec}")
+            if rec["comp"] != parts:
+                errs.append(f"정산 항등식2 파손 {rec}")
+            open_refs.pop(rec["ref"], None)
+        for ref in st.get("returned", []):
+            open_refs.pop(ref, None)
+        stats["accidents"] += len(st.get("settled", [])) + \
+            len(st.get("returned", []))
+
+    def tick(c):
+        r = c._post("/tick", {})
+        settle_check(r)
+        return r
+
+    def one_a0(c):
+        """c가 가진 anchor0-색 1-노트(있으면 nid · 없으면 None — 유동성 주입 없음)."""
+        ns = [n for n in c.notes_of("anchor0") if n["face"] == 1]
+        return ns[0]["nid"] if ns else None
+
+    def redeem_p(c, cover_by=None, deliver=True, reserve=False):
+        """프롤로그 전용(유동성 사전 보장) — 상환[+커버][+이행].
+        reserve=True: 폭풍 불가침(기한-사고 경로의 결정론 보장용)."""
+        nid = one_a0(c)
+        if nid is None:
+            big = next(n for n in c.notes_of("anchor0") if n["face"] > 1)
+            c.split(big["nid"], [1, big["face"] - 1])
+            nid = one_a0(c)
+        j = c.redeem_job("anchor0", nid, seed="ab" * 8, n=1000)
+        exposure[j["ref"]] = 1
+        if not reserve:
+            open_refs[j["ref"]] = {"holder": c.p, "covered": False}
+        if cover_by is not None:
+            cover_by.cover(j["ref"], prem=1)
+            if not reserve:
+                open_refs[j["ref"]]["covered"] = True
+            stats["covered"] += 1
+        if deliver:
+            wk.deliver_job(j["ref"], Fl21Client.compute_sha256(
+                {"kind": "sha256_chain", "seed": "ab" * 8, "n": 1000}))
+            stats["delivered"] += 1
+            open_refs.pop(j["ref"], None)
+        return j["ref"]
+
+    # ── ①프롤로그 — 기본 회로 전량(각 단계 뒤 불변식) ──
+    for c in us:
+        c.split(c.notes()[0]["nid"], [1] * 6 + [14])
+        _root_invariants(nd, errs)
+        c.bootstrap(4)
+        _root_invariants(nd, errs)
+    u0, u1, u2 = us
+    m = [n["nid"] for n in u0.notes_of(u0.p) if n["face"] == 1][:2]
+    u0.merge(m)                                        # 동색 병합
+    _root_invariants(nd, errs)
+    nid = next(n["nid"] for n in u0.notes_of(u0.p) if n["face"] == 2)
+    u0.split(nid, [1, 1])
+    u0.xfer("r1", [n["nid"] for n in u0.notes_of(u0.p)][0])   # 이전
+    _root_invariants(nd, errs)
+    redeem_p(u0, deliver=True)                         # 상환→이행(소각)
+    ref_c = redeem_p(u1, cover_by=u2, deliver=False,   # 부보 청구(예약 —
+                     reserve=True)                     #  기한-사고 폭포 보장)
+    ref_u = redeem_p(u2, deliver=False, reserve=True)  # 무부보 청구(예약)
+    _root_invariants(nd, errs)
+    la = u0.make_leg("XFER", {"frm": "r0", "to": "r1",
+                              "note": [n["nid"] for n in
+                                       u0.notes_of(u0.p)][0]})
+    lb = u1.make_leg("XFER", {"frm": "r1", "to": "r0",
+                              "note": [n["nid"] for n in
+                                       u1.notes_of(u1.p)][0]})
+    u0.submit_block([la, lb])                          # 원자 스왑
+    _root_invariants(nd, errs)
+
+    # ── ②필수-실패 프로브(음성 경로가 공집합이 아님을 보장 · 전부 거부-원자성 검사) ──
+    must_fail("타인-노트 이전", lambda: u0._post("/submit", {"env": u0.sign_env(
+        "XFER", {"frm": "r0", "to": "r1",
+                 "note": [n["nid"] for n in u1.notes_of(u1.p)][0]})}))
+    must_fail("혼색 병합", lambda: u0.merge(
+        [[n["nid"] for n in u0.notes_of(u0.p)][0],
+         [n["nid"] for n in u0.notes_of("anchor0")][0]]))
+    must_fail("색-불일치 상환", lambda: u0.redeem_job(
+        "r1", [n["nid"] for n in u0.notes_of("anchor0")][0],
+        seed="ab" * 8, n=1000))
+    must_fail("과대-발행", lambda: u0.issue(999))
+    must_fail("스왑 상한 초과", lambda: u0.bootstrap(999))
+    # 자기-부보 프로브는 단일-연산으로 직접 구성(SDK cover는 사전-split 복합)
+    must_fail("홀더 자기-부보", lambda: u2._post("/submit", {"env": u2.sign_env(
+        "UW", {"uw": "r2", "ref": ref_u,
+               "cov_notes": [u2.notes()[0]["nid"]], "prem": 0,
+               "prem_fund_notes": []})}))
+    must_fail("가해-앵커 자기-부보", lambda: wk._post("/submit", {
+        "env": wk.sign_env("UW", {"uw": "anchor0", "ref": ref_u,
+                                  "cov_notes": [wk.notes()[0]["nid"]],
+                                  "prem": 0, "prem_fund_notes": []})}))
+    must_fail("위조 산출 이행", lambda: wk.deliver_job(ref_c, "00" * 32))
+    ref_d = redeem_p(u0, deliver=True)
+    must_fail("중복 이행", lambda: wk.deliver_job(ref_d, "00" * 32))
+    ref_l = redeem_p(u1, deliver=False)                # 취소-창 프로브용
+    for _ in range(3):                                 # 반-창 경과(t0+3 < 기한 4)
+        tick(u0)
+    must_fail("취소-창 경과 취소", lambda: u1._post("/submit", {
+        "env": u1.sign_env("REDEEM_CANCEL", {"holder": "r1", "ref": ref_l})}))
+    used = u2.sign_env("TICKMARK", {"kind": "fl21.note", "v": "x"})
+    u2._post("/submit", {"env": used})                 # nonce 소비
+    good_leg = u0.make_leg("XFER", {"frm": "r0", "to": "r2",
+                                    "note": [n["nid"] for n in
+                                             u0.notes_of(u0.p)][0]})
+    must_fail("원자 블록 나쁜 다리(전부-무효)",
+              lambda: u0.submit_block([good_leg, used]))
+    must_fail("유통-부채 EXIT", lambda: u0._post("/submit", {
+        "env": u0.sign_env("EXIT", {"a": "r0"})}))
+
+    # ── ③무작위 폭풍(★단일-연산 단위 — 수용 = 불변식·거부 = 상태-불변) ──
+    seq0 = u0.state()["seq"]
+    u0.post_ask("other", "root probe", 1, ttl=100)     # board = seq 무접촉
+    if u0.state()["seq"] != seq0:
+        errs.append("board가 원장을 건드림")
+    for i in range(n_ops):
+        c = rng.choice(us)
+        op = rng.random()
+        if op < 0.15:                                  # 쪼개기
+            ns = [n for n in c.notes() if n["face"] > 1]
+            if ns:
+                n = rng.choice(ns)
+                k = rng.randint(1, n["face"] - 1)
+                attempt(lambda: c.split(n["nid"], [k, n["face"] - k]))
+        elif op < 0.28:                                # 이전
+            ns = c.notes()
+            if ns:
+                attempt(lambda: c.xfer(rng.choice(
+                    [u.p for u in us if u.p != c.p] + ["anchor0"]),
+                    rng.choice(ns)["nid"]))
+        elif op < 0.36:                                # 병합(동색만 수용될 것)
+            mine = c.notes_of(c.p)
+            if len(mine) >= 2:
+                attempt(lambda: c.merge([mine[0]["nid"], mine[1]["nid"]]))
+        elif op < 0.44:                                # 회전-발행
+            attempt(lambda: c.issue(rng.randint(1, 3)))
+        elif op < 0.50:                                # 상호-신용 스왑(복합 편의)
+            attempt_soft(lambda: c.bootstrap(rng.randint(1, 3)))
+        elif op < 0.62:                                # 상환 주문(유동성 있을 때만)
+            nid2 = one_a0(c)
+            if nid2:
+                def _rd():
+                    j = c.redeem_job("anchor0", nid2, seed="ab" * 8, n=1000)
+                    exposure[j["ref"]] = 1
+                    open_refs[j["ref"]] = {"holder": c.p, "covered": False}
+                attempt(_rd)
+        elif op < 0.72:                                # 이행(열린 청구)
+            if open_refs:
+                ref = rng.choice(list(open_refs))   # 삽입-순(세계-독립 — ref 문자열은 세계-고유)
+                def _dl():
+                    wk.deliver_job(ref, Fl21Client.compute_sha256(
+                        {"kind": "sha256_chain", "seed": "ab" * 8, "n": 1000}))
+                if attempt(_dl):
+                    stats["delivered"] += 1
+                    open_refs.pop(ref, None)
+        elif op < 0.80:                                # 제3자 인수
+            cands = [r for r, v in open_refs.items()
+                     if not v["covered"] and v["holder"] != c.p]
+            # ⚠️빈-지갑 사전검사: SDK cover()는 노트 0에서 ValueError(비-정제 —
+            # 다음 번들 갱신 후보로 등재 · RuntimeError 정제가 옳다)
+            if cands and c.notes():
+                ref = rng.choice(cands)             # 삽입-순(세계-독립)
+                if attempt_soft(lambda: c.cover(ref, prem=1)):
+                    stats["covered"] += 1
+                    if ref in open_refs:
+                        open_refs[ref]["covered"] = True
+        elif op < 0.86:                                # 원자 스왑
+            other = us[(us.index(c) + 1) % 3]
+            mine = c.notes_of(c.p)
+            theirs = other.notes_of(other.p)
+            if mine and theirs:
+                def _swap():
+                    a = c.make_leg("XFER", {"frm": c.p, "to": other.p,
+                                            "note": mine[0]["nid"]})
+                    b = other.make_leg("XFER", {"frm": other.p, "to": c.p,
+                                                "note": theirs[0]["nid"]})
+                    c.submit_block([a, b])
+                attempt(_swap)
+        elif op < 0.94:                                # 틱(정산 항등식 검사 동반)
+            attempt(lambda: tick(c))
+        else:
+            _root_invariants(nd, errs)                 # 유휴 검문
+    for _ in range(6):                                 # 잔여 청구 전량 성숙·정산
+        tick(u0)
+
+    # ── ⑤종료 검증 — 라이트 검증(봉투 포함) + 리플레이 차등 ──
+    v = u0.verify_chain()
+    snap_live = shot()
+    seq_end = u0.state()["seq"]
+    srv.shutdown()
+    srv.server_close()
+    nd2 = NODE.Node(data)                              # 재기동 = 전체-리플레이
+    snap_replay = _root_snapshot(nd2)
+    # 의미-지문: 세계-고유 값(head — 키·log_id 파생)을 뺀 상태 = 같은 시드의
+    # 신선-세계 간 비교 대상(리플레이-차등은 전체 스냅숏으로 같은-세계 비교)
+    sem = json.loads(snap_live)
+    sem.pop("head", None)
+    return {"seed": seed, "ops": n_ops, **stats,
+            "invariant_errors": errs[:5], "err_n": len(errs),
+            "verify_ok": v.get("ok") is True,
+            "replay_identical": snap_live == snap_replay,
+            "seq": seq_end,
+            "state_fp": __import__("hashlib").sha256(
+                snap_live.encode()).hexdigest()[:16],
+            "sem_fp": __import__("hashlib").sha256(json.dumps(
+                sem, sort_keys=True, ensure_ascii=False).encode())
+            .hexdigest()[:16],
+            "pass": not errs and v.get("ok") is True
+                    and snap_live == snap_replay}
+
+
+def gate_TROOT():
+    """★기본의 뿌리: 결정론 프롤로그(기본 회로 전량) + 필수-실패 11종(거부-원자성) +
+    무작위 폭풍(수용 = 불변식·거부 = 상태-불변) + 정산 항등식 + 리플레이 차등 × 3시드."""
+    out = {}
+    for i, (port, seed) in enumerate([(8821, 11), (8822, 22), (8823, 33)]):
+        r = _root_engine(port, seed, 150)
+        out[f"seed{seed}"] = {k: r[k] for k in
+                              ("accept", "reject", "settled", "covered",
+                               "delivered", "err_n", "verify_ok",
+                               "replay_identical", "seq", "state_fp", "pass")}
+        if r["invariant_errors"]:
+            out[f"seed{seed}_errs"] = r["invariant_errors"]
+    out["기본경로 전량 가동"] = all(
+        o["settled"] >= 1 and o["covered"] >= 1 and o["delivered"] >= 2
+        and o["reject"] >= 1 for o in out.values() if isinstance(o, dict))
+    out["pass"] = out["기본경로 전량 가동"] and all(
+        o["pass"] for o in out.values() if isinstance(o, dict) and "pass" in o)
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -1109,7 +1668,11 @@ def main():
              "T-COVER 인수개방": gate_TCOVER(),
              "T-HASHBIND 해시결박": gate_THASHBIND(),
              "T-STATS 통계·증명": gate_TSTATS(),
-             "T-BOARD 호가창": gate_TBOARD()}
+             "T-BOARD 호가창": gate_TBOARD(),
+             "T-ROOT 뿌리(무작위×불변식)": gate_TROOT(),
+             "T-SCOPE 범위결박": gate_TSCOPE(),
+             "T-CHALLENGE 챌린지창": gate_TCHALLENGE(),
+             "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

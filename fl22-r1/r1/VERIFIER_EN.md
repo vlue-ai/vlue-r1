@@ -74,3 +74,17 @@ python3 r1/test_r1.py                            # full service-layer acceptance
 | ★**State-law conformance** | Whether state_root results from the conservation laws = **not externally verifiable** (genesis seed is secret → no full-state replay) — light verification cannot catch a law-violating issuance by a malicious node | The node's `/audit` (self-replay) · fundamental fix = ★**seed-independent replay path** (genesis public-key injection — an FL2.2 candidate) or an independent replica sharing the seed |
 | Integrity of output verification | Job-path fulfillment verdicts are computed by the node. ✅**H2 binding is LIVE**: from new entries onward, REDEEM carries `spec_sha256` (of the normalized spec) and DELIVER carries `output_sha256` (of the output canon), both **bound into the signed head** — after-the-fact spec/output forgery by the operator is refutable from the log alone (⚠️pre-binding entries keep v0 semantics) | ★Outputs are public at `/job/{ref}` — anyone can re-verify AND compare hashes against the head-bound values in REDEEM/DELIVER (mismatch = proof of forgery) |
 | 2-of-3 co-signing | Whether signer keys are physically separated is an operational property (whether cosigner daemons are deployed on separate infrastructure) | The release announcement states the actual configuration |
+
+
+## ★Full public state replay (H7 — FL2.2 · the top trust rung)
+
+Above light verification: re-execute **the law itself**, with no genesis seed — build a
+verify-only world from /meta's public material (operator/genesis public keys, GEN,
+label, bridge_ref) and replay the entire log, re-checking every state transition,
+settlement waterfall, head binding, and operator signature (re-deriving fp0/log_id =
+a genesis-integrity check):
+
+```bash
+python3 r1/replay_full.py --url https://NODE_URL
+# expect: {"H7_FULL_REPLAY": true, "identity_rederived": true, ...}
+```

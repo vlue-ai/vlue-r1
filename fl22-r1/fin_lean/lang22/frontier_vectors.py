@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """frontier_vectors.py — R-FRONT 법 정합 골든 벡터 생성기 ([RFRONT_PREREG §6 C1]).
 
-지위: ⛔**정합 기준물 생성 — 측정 아님 · 세계 판정 0**. kernel21(정본 폭포 의미론)을
+지위: ⛔**정합 기준물 생성 — 측정 아님 · 세계 판정 0**. kernel22(정본 폭포 의미론 — FL2.1 문언-동일 승계 · FL2.2 재생성)을
 9개 정준 시나리오로 실행해 ★**기판-중립 정산 벡터**를 추출한다. lab-측 β 사이드카는
 이 벡터를 **배분-동일**하게 재현해야 측정에 착수할 수 있다(프로토콜 = 등록서 §6).
 
@@ -19,7 +19,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from kernel21 import World, derive_key                             # noqa: E402
+from kernel22 import World, derive_key                             # noqa: E402
 
 
 def _in(w, who, amt):

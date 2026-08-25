@@ -1,0 +1,21 @@
+{
+ "captured": "2026-08-23T17:20+09:00 (창세 의식 — [M-111])",
+ "label": "fl21-r1",
+ "domain": "FL21-v0.1",
+ "log_id": "3d9946664334eaca21f7031120566414b98514de348e72784250b17e167c7112",
+ "fp0": "572c93fa028d9d31633dfc500e560f3377a39d036f8b9abb9ac21433bf74b1ff",
+ "operator_pk": "cb6c0dd3faa4d6e8a9bfd0804c2a79ce47e08b5857422fd4851c1a342569e2a9",
+ "anchor0_pk": "4d1f3cd8e3142fcc2f2cbc0ae3cfb067e07583494bae2fb27ca83f229ddb853c",
+ "cosigners": {
+  "cosign1": "2f52d1c5038e2276dc0e8398ca85493bf7775bde36ec286a3c01110a45494cb8",
+  "cosign2": "85f3548e16613c2432c967677a8cbc1722111a1924f2a7ae8995667899b7154a",
+  "cosign3": "5d02d72c78b674674c02536c962b6d05ad95bdf988f0ccec76870bd0f5d229d7"
+ },
+ "cosign_k": 2,
+ "bridge_ref": "2d013222891d2997b62aa7bc0369769b4dbe0a4e7feece6c8cffdd6d7799f356",
+ "gen": {"identity_budget": 128, "redeem_T": 4, "fq_mult": 1, "window_L": 3,
+         "qual_price": 40, "room_c": 32, "room_phi": 2, "beta_min": "1/2",
+         "uw_phi": "1/2", "prem_floor": "0", "fq_base": 12},
+ "genesis": ["anchor0"], "model": "free-banking-v0",
+ "join_issue": 20, "bootstrap_cap": 8
+}

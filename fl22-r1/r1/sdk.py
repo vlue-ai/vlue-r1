@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sdk.py — FL2.1 R1 클라이언트 SDK ([M-95] · E-2 · A-2/A-6).
+"""sdk.py — FL2.2 R1 클라이언트 SDK ([M-95] · E-2 · A-2/A-6).
 
 ★커널 무임포트 — 외부 주체가 받는 것: 이 파일 + EXTERNAL_QUICKSTART.md. 서명·정준화·
 헤드 산식을 독립 재구현하고(골든-서명 테스트가 커널과 바이트-동일을 결박 —
@@ -22,8 +22,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey, Ed25519PublicKey)
 from cryptography.exceptions import InvalidSignature
 
-DOMAIN = b"FL21-v0.1" + b"\x00" * 7          # 커널 FL21_DOMAIN과 동일(골든 결박)
-BOARD_DOMAIN = b"FL21-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
+DOMAIN = b"FL22-v0.1" + b"\x00" * 7          # 커널 FL22_DOMAIN과 동일(골든 결박)
+BOARD_DOMAIN = b"FL22-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
 
 
 def canon(obj) -> bytes:
@@ -169,11 +169,15 @@ class Fl21Client:
         return self._post("/submit", {"env": self.sign_env(
             "XFER", {"frm": self.p, "to": to, "note": nid})})
 
-    def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain"):
+    def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain", T=None):
+        """★T = 잡별 시한(FL2.2 J-1 — 에포크 · 무지정 = 세계 기본 redeem_T ·
+        법-조항: T > window_L ∧ T ≤ redeem_T_max — 장시간 작업의 커널-법 개방)."""
         job = {"kind": kind, "seed": seed, "n": n}
-        env = self.sign_env("REDEEM", {"holder": self.p, "note": nid,
-                                       "anchor": anchor,
-                                       "spec_sha256": spec_sha256(job)})  # ★H2 결박
+        args = {"holder": self.p, "note": nid, "anchor": anchor,
+                "spec_sha256": spec_sha256(job)}                  # ★H2 결박
+        if T is not None:
+            args["T"] = int(T)
+        env = self.sign_env("REDEEM", args)
         return self._post("/job", {"env": env, "job": job})
 
     def job(self, ref):
@@ -242,6 +246,28 @@ class Fl21Client:
                                          "v": str(v)[:32]})
         return self._post("/submit", {"env": env})
 
+    # ── ★작업-범위 선언(H5 — [M-126]) — 온-원장 결박·노드가 제출-시점 강제 ──
+    def declare_scope(self, kinds=None, raw=False, max_exposure=0, max_T=0,
+                      clear=False):
+        """내 수락 범위 공표: kinds(잡 클래스 화이트리스트)·raw(원시 상환 수락)·
+        max_exposure(청구 액면 상한)·★max_T(잡별 시한 상한 — FL2.2 · 0 = 무제한).
+        범위-밖 청구는 노드가 제출 시점에 거부한다(기한-사고·EXIT-잠금 그리프 차단).
+        clear=True = 선언 철회(전-수락 복귀)."""
+        args = {"kind": "fl21.scope", "clear": True} if clear else \
+            {"kind": "fl21.scope", "kinds": list(kinds or []),
+             "raw": bool(raw), "max_exposure": int(max_exposure),
+             "max_T": int(max_T)}
+        return self._post("/submit", {"env": self.sign_env("TICKMARK", args)})
+
+    # ── ★재검증 요청(P-11 — [M-126]) — 낙관적-검증의 챌린지 창 ──
+    def challenge(self, ref):
+        """이행-완료 잡의 재검증을 노드에 요구한다(등록 주체 서명 — 오프-원장 요청).
+        일치 = 계수만 · ★불일치 = 온-원장 기록(fl21.challenge — 앵커 공개 실적).
+        표본-검증 클래스는 재검증마다 새 구간을 뽑아 검증 깊이가 실제로 깊어진다."""
+        body = {"ref": str(ref), "p": self.p}
+        sig = self.key.sign(b"FL22-CHAL" + self.log_id + canon(body)).hex()
+        return self._post("/challenge", {**body, "sig": sig})
+
     # ── ★호가 창(R2-a) — 오프-원장 서명 게시판(ASK = 매도 호가 · WANT = 매수 호가) ──
     # ⚠️게시는 자문(무-에스크로·무-구속) — 구속·정산은 온-원장(redeem_job·submit_block)만.
     def board(self):
@@ -302,6 +328,8 @@ class Fl21Client:
 
     # ── ★인수(P-4) — 남의 청구를 인수하기(담보 β≥1/2 · 기금 몫 자기적립) ──
     def cover(self, ref, prem=1, force=False, submit=True):
+        if not self.notes():         # ★N-22([M-125]) — 빈 지갑 = 정제 예외
+            raise RuntimeError("커버 불가: 보유 노트 0(담보·기금 재원 없음)")
         j = self.job(ref)
         exp = j["exposure"]
         # ★기한-후 인수 가드(직접 재리뷰 RU-1): 기한 지난 열린 청구의 인수 = 즉시 손실

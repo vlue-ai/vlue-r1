@@ -19,6 +19,9 @@ no warranty of availability, correctness, or continuity.
   no financial redemption obligation of any kind**. Whether participants accept each
   other's notes is entirely their own choice and responsibility.
 
+**Accounting notation**: 1 AU = `/meta.unit_scale` base units (production: 1,000 —
+mAU). Face/amount fields in the API are in base units.
+
 ## On the words "underwriting · insurance"
 
 "Underwriting," "premium," and "compensation" in these documents are technical terms for

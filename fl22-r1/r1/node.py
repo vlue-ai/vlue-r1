@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """node.py — R1 노드: FL2.1 캐논(FROZEN)을 감싸는 공개형 서비스 ([M-95] · E-1).
 
-지위: ★캐논 무접촉 — kernel21 v0.3을 읽기-전용 임포트(법 재구현 0 · lab과 같은 규율의
+지위: ★캐논 무접촉 — kernel22 v0.1(FL2.2 — [M-127])을 읽기-전용 임포트(법 재구현 0 · lab과 같은 규율의
 제품판). 외부 주체는 HTTP API + SDK로 참여한다(키는 클라이언트가 보관 — 노드는 운영자
 키만). 영속 = append-only 대장(jsonl) + 기동 전체-리플레이(head 대조 · 파일럿 규율의
 서비스판 — A-3). 전 핸들러 예외-격리(비정규 입력 = 4xx · 노드 생존 — A-4). 헤드 k-of-n
@@ -27,18 +27,20 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang21"))
+sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 
-from kernel21 import (World, Fl21Error, derive_key, FL21_DOMAIN,   # noqa: E402
-                      _canon)
+from kernel22 import (World, Fl22Error as Fl21Error, derive_key,   # noqa: E402
+                      FL22_DOMAIN as FL21_DOMAIN, _canon)
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
     Ed25519PublicKey)
 import jobs as JOBS                                                # noqa: E402
 
-LABEL = "fl21-r1"
+LABEL = "fl22-r1"
 # ★[M-105] D-3 프로덕션 GEN: fq_mult=1(★실측 보정표 n≤128→1 — RFRONT2 규모-의존) ·
 # identity_budget=128(전 인구가 보정-구역 안 · k-공존 대역 4배 여유 · 세계-사멸 방지)
-GEN = {"fq_mult": 1, "identity_budget": 128}
+GEN = {"fq_mult": 1, "identity_budget": 128,
+       # ★FL2.2 리뷰 F-R1 — 잡별-T 상한(EXIT-잠금 그리프 유계 · 60s 틱 기준 1주)
+       "redeem_T_max": 10080}
 GENESIS = ("anchor0",)               # 창세 앵커(워커 좌석) — 외부 주체는 JOIN
 COSIGNERS = ("cosign1", "cosign2", "cosign3")
 COSIGN_K = 2
@@ -48,15 +50,21 @@ BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다
 # ── ★호가 창(R2-a — [M-116] /scope 성장판 · [시장-미시구조 §6] 최소 발견층) ──
 # 게시판 = **오프-원장** 서명 봉투(비용 ~0 · seq 무접촉 · 매칭·정산은 온-원장 그대로).
 # 도메인 분리: 게시 서명은 원장 봉투로 재생 불가(역방향도) — 별도 도메인 + log_id 결박.
-BOARD_DOMAIN = b"FL21-BOARD"
+BOARD_DOMAIN = b"FL22-BOARD"
 BOARD_TTL_MAX = 10080                # 게시 수명 상한(에포크 — 60s 틱 기준 1주)
 BOARD_PER_P = 8                      # 주체당 활성 게시 상한(스팸 — 예치금은 R2 등재)
 BOARD_MAX = 4096                     # 전역 게시 상한(자원 가드)
+# ── ★P-11 /challenge([M-126] R2-A — 낙관적-검증의 재검증 창) ──
+CHAL_DOMAIN = b"FL22-CHAL"           # 오프-원장 서명 요청(원장 봉투와 도메인 분리)
 
 
 class Node:
     def __init__(self, data_dir, join_issue=20, genesis_issue=40,
-                 bootstrap_cap=BOOT_CAP, cosign_local=None, bridge_ref=None):
+                 bootstrap_cap=BOOT_CAP, cosign_local=None, bridge_ref=None,
+                 unit_scale=1):
+        # ★[M-127] 단위-정책: 1 AU = unit_scale 기본단위(커널은 정수 액면 — 스케일
+        # 불가지). 프로덕션 = 1000(mAU — 미시-보험 입도 해소: prem 1 = 0.1%@1AU).
+        self.unit_scale = max(1, int(unit_scale))
         self.dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         self.lock = threading.RLock()
@@ -103,6 +111,7 @@ class Node:
                                 for c, k in allk.items()}
             json.dump(self.cosign_pubs, open(pubs_p, "w", encoding="utf-8"))
             self.cos_keys = {c: allk[c] for c in self.cosign_local}
+        self.scopes = {}             # ★H5([M-126]) anchor → 작업-범위(로그-파생 — 리플레이 재구성)
         self.w = World(master_seed=seed, label=LABEL,
                        genesis_agents=GENESIS, gen=GEN,
                        bridge_ref=bridge_ref)   # ★D-3 — U-0 계보(파일럿 head 결박)
@@ -288,6 +297,10 @@ class Node:
         정산(TICK) 배상 = ★가해-앵커 색 · 그 밖의 정산 재발행(압류 잔돈·담보 잔여) =
         소유자 자기 색(자기 재-약속 독해 — [FREEBANK_ANALOGY §4]·폭포 한계의 정직 규칙)."""
         env = entry["env"]
+        self._scope_step(env)                          # ★H5 — 범위 선언 파생
+        if env["typ"] == "BLOCK":
+            for lg in env["args"]["legs"]:
+                self._scope_step(lg)
         now_ids = set(self.w.notes)
         removed = before_ids - now_ids
         rcol = {nid: self.colors.get(nid) for nid in removed}
@@ -339,10 +352,74 @@ class Node:
         if len(self.colors) != len(self.w.notes):          # ★색 전체성 불변식
             raise Fl21Error(f"색 불변식 파손 seq {entry['seq']}")
 
+    def _scope_step(self, e):
+        """★H5([M-126]) — 작업-범위 선언의 로그-파생(live·리플레이 공통 경로 =
+        _color_step). 파생은 관용(비정형은 최선-해석) · 신규 제출의 엄격 검증은
+        _guard_env가 한다."""
+        if (e or {}).get("typ") != "TICKMARK":
+            return
+        a = e.get("args") or {}
+        if not isinstance(a, dict) or a.get("kind") != "fl21.scope":
+            return
+        p = e.get("p")
+        if a.get("clear"):
+            self.scopes.pop(p, None)
+            return
+        kinds = a.get("kinds")
+        me = a.get("max_exposure")
+        mt = a.get("max_T")
+        self.scopes[p] = {
+            "kinds": [k for k in kinds if isinstance(k, str)]
+            if isinstance(kinds, list) else [],
+            "raw": a.get("raw") is True,
+            "max_exposure": me if isinstance(me, int)
+            and not isinstance(me, bool) and me >= 0 else 0,
+            # ★FL2.2 리뷰 F-R1 — 잡별-T의 앵커-측 상한(EXIT-잠금·노출-기간 결박)
+            "max_T": mt if isinstance(mt, int)
+            and not isinstance(mt, bool) and mt >= 0 else 0}
+
+    def _scope_check(self, anchor, kind, face, T=None):
+        """★H5 — 범위-밖 청구의 제출-시점 거부(기한-사고 그리프 원천 차단).
+        무-선언 앵커 = v0 시맨틱(전 수락 — 하위호환) · kind = 잡 클래스 또는 'raw' ·
+        ★T = 잡별 시한(FL2.2 — max_T 선언 앵커는 초과-기간 청구를 거부: 긴-T가
+        obl·EXIT-잠금을 임의 연장하는 그리프의 앵커-측 방어)."""
+        sc = self.scopes.get(anchor)
+        if sc is None:
+            return
+        if kind == "raw":
+            if not sc.get("raw"):
+                raise Fl21Error(f"H5 범위-밖: {anchor}는 원시 상환 미수락"
+                                "(/scope 선언 참조)")
+        elif kind not in sc.get("kinds", []):
+            raise Fl21Error(f"H5 범위-밖: {anchor} 수락 = {sc.get('kinds')}")
+        me = sc.get("max_exposure", 0)
+        if me and face > me:
+            raise Fl21Error(f"H5 범위-밖: 액면 {face} > 최대 노출 {me}")
+        mt = sc.get("max_T", 0)
+        if mt and T is not None and T > mt:
+            raise Fl21Error(f"H5 범위-밖: 잡별 시한 {T} > 앵커 상한 {mt}")
+
     def _guard_env(self, env):
         """★서비스층 기입 정책(캐논 무접촉 — 경로 제한): RD-7 + 색-일치 라우팅([M-103])."""
         typ = (env or {}).get("typ")
         args = (env or {}).get("args") or {}
+        if typ == "TICKMARK" and isinstance(args, dict) \
+                and args.get("kind") == "fl21.scope":   # ★H5 — 선언 엄격 검증
+            if args.get("clear") is True:
+                pass
+            else:
+                kinds = args.get("kinds")
+                if not isinstance(kinds, list) or \
+                        any(k not in JOBS.KINDS for k in kinds):
+                    raise Fl21Error(f"scope: kinds ⊆ {list(JOBS.KINDS)} 리스트")
+                me = args.get("max_exposure", 0)
+                if not isinstance(me, int) or isinstance(me, bool) or me < 0:
+                    raise Fl21Error("scope: max_exposure ≥ 0 정수")
+                if not isinstance(args.get("raw", False), bool):
+                    raise Fl21Error("scope: raw = 불리언")
+                mt = args.get("max_T", 0)
+                if not isinstance(mt, int) or isinstance(mt, bool) or mt < 0:
+                    raise Fl21Error("scope: max_T ≥ 0 정수")
         if typ == "DELIVER" and str(args.get("ref")) in self.jobs:
             raise Fl21Error("잡-결박 이행은 /deliver 경유(산출 검증-후 이행 — RD-7)")
         if typ == "REDEEM":
@@ -423,7 +500,7 @@ class Node:
 
     # ── API 동작(전부 락 안) ──
     def meta(self):
-        return {"label": LABEL, "domain": "FL21-v0.1",
+        return {"label": LABEL, "domain": "FL22-v0.1",
                 "log_id": self.w.log_id.hex(), "fp0": self.w.fp0,
                 "operator_pk": self.w.reg.pk("operator").hex(),
                 # ★[M-115] 창세 좌석 공개키(JOIN 없이 창세된 좌석의 봉투-서명 검증 원료
@@ -434,6 +511,8 @@ class Node:
                 "gen": dict(self.w.GEN), "genesis": list(GENESIS),
                 "model": "free-banking-v0",   # ★[M-103] — 색·자기-발행·발행자-상환
                 "join_issue": self.join_issue, "bootstrap_cap": self.boot_cap,
+                "unit_scale": self.unit_scale,   # ★[M-127] 1 AU = 이만큼 기본단위
+                "bridge_ref": self.w.bridge_ref,  # ★H7 — 공개-리플레이 재료(세대 계보)
                 "job_kinds": list(JOBS.KINDS)}
 
     def state(self):
@@ -464,6 +543,7 @@ class Node:
         ref_uw = {}                   # ref → uw(로그의 UW 봉투에서 재구성)
         tx_n = 0                      # ★RE-3 — 밀도(비-운영 발화 수)
         tape = {}                     # ★R2-a — kind별 최근 체결(원장-파생 = 위조-불가)
+        chal = {}                     # ★P-11 — anchor별 확인-불일치 챌린지(원장-파생)
 
         def _seg(a):
             k = (a, ver.get(a, "v0"))
@@ -503,6 +583,11 @@ class Node:
                         isinstance(lg.get("args"), dict) and \
                         lg["args"].get("kind") == "fl21.version":
                     ver[lg["p"]] = str(lg["args"].get("v", "?"))[:32]
+                elif lg["typ"] == "TICKMARK" and \
+                        isinstance(lg.get("args"), dict) and \
+                        lg["args"].get("kind") == "fl21.challenge":
+                    chal[lg["args"].get("anchor", "?")] = \
+                        chal.get(lg["args"].get("anchor", "?"), 0) + 1
             if env["typ"] == "TICK" and "_force" in e:
                 fo = e["_force"]
                 for r in fo.get("settled", []):
@@ -529,10 +614,16 @@ class Node:
             anchors.setdefault(a, {"version": ver.get(a, "v0"),
                                    "segments": {}})
             anchors[a]["segments"][v] = {**s, "p_hat": round(p_hat, 4)}
+        for a, n in chal.items():                   # ★P-11 — 확인-불일치 공개 실적
+            anchors.setdefault(a, {"version": ver.get(a, "v0"),
+                                   "segments": {}})["challenged"] = n
         prem_in = sum(c["prem"] for c in self.w.uw_open.values())
-        for u_, b in uw_book.items():               # 인수자 손해율(자기-북)
-            b["loss_ratio"] = round(b["paid"] / b["prem"], 3) if b["prem"] \
-                else None
+        # ★UW-1([M-113]·[M-126] 집행): prem은 인수자 자기-선언(커널 자기적립 —
+        # 홀더→인수자 실지급에 비결박)이라 손해율의 분모로 신뢰 불가 ⟹ 정직 강등:
+        # loss_ratio → loss_ratio_selfdecl(한정어) · 검증-분모판은 face-사map 필요(등재)
+        for u_, b in uw_book.items():
+            b["loss_ratio_selfdecl"] = round(b["paid"] / b["prem"], 3) \
+                if b["prem"] else None
         colors_supply = {}                           # ★[M-103] 발행자별 미결 부채(집적 관측)
         for nid, n in self.w.notes.items():
             c = self.colors.get(nid, "?")
@@ -549,13 +640,15 @@ class Node:
                 "underwriters": uw_book,             # ★RU-4
                 "density": density,
                 "tape": tape,                        # ★R2-a — kind별 최근 체결 32
+                "scopes": dict(self.scopes),         # ★H5 — 선언된 작업-범위(파생)
                 "anchors": anchors,
                 "coverage": {"open": cov_open, "settled": cov_hist,
                              "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
                              "open_prem": prem_in},
                 "loss_layers": loss,
                 "note": ("★대칭-시차 계수·버전-분절 — 잡-경로 한정"
-                         "(원시 REDEEM은 t0 미상 = 즉시 계수 · 등재)")}
+                         "(원시 REDEEM은 t0 미상 = 즉시 계수) · "
+                         "underwriters.prem = 자기-선언(비결박 — UW-1 한정어)")}
 
     # ── ★P-9 /attest — 실적 증명(전량-아니면-무 · 운영자-서명 · head-결박) ──
     def attest(self, principal):
@@ -566,7 +659,7 @@ class Node:
                "upto_head": self.w.log[-1]["head"] if self.w.log else "genesis",
                "epoch": self.w.epoch, "complete": True,   # ★전량-아니면-무([FR-6])
                "stats": a or {"segments": {}, "version": None}}
-        import kernel21 as K
+        import kernel22 as K
         sig = self.w._keys["operator"].sign(
             FL21_DOMAIN + K._canon(doc)).hex()
         return {"doc": doc, "operator_sig": sig}
@@ -654,6 +747,11 @@ class Node:
 
     def submit(self, env):
         self._guard_env(env)         # ★RD-7 + 색-라우팅([M-103])
+        if (env or {}).get("typ") == "REDEEM":        # ★H5 — 원시 상환 범위 검사
+            a = env.get("args") or {}
+            note = self.w.notes.get(str(a.get("note"))) or {}
+            self._scope_check(a.get("anchor"), "raw", note.get("face", 0),
+                              T=a.get("T"))
         entry = self._ksubmit(env)
         self._sync_jobs()            # 원시 UW/REDEEM_CANCEL도 잡 이력에 반영
         self._persist_new()
@@ -673,10 +771,14 @@ class Node:
         note = self.w.notes.get(nid)
         if note is None:
             raise Fl21Error("미지 노트")
-        floor = JOBS.price(spec)     # ★P-2 작업-가격 결박(액면 하한)
+        floor = JOBS.price(spec) * self.unit_scale   # ★P-2 × 단위-정책([M-127])
         if note["face"] < floor:
             raise Fl21Error(f"가격 결박: 액면 {note['face']} < 최소 {floor}"
-                            f"(1 AU = {JOBS.N_PER_AU} 작업량)")
+                            f"(1 AU = {JOBS.N_PER_AU} 작업량 · 1 AU = "
+                            f"{self.unit_scale} 단위)")
+        self._scope_check((env.get("args") or {}).get("anchor"),
+                          spec["kind"], note["face"],
+                          T=(env.get("args") or {}).get("T"))   # ★H5 범위 결박
         self._guard_env(env)         # ★색-일치 라우팅([M-103] — 발행자에게만 상환)
         before = set(self.w.redeem_pending)
         entry = self._ksubmit(env)
@@ -685,7 +787,9 @@ class Node:
         self.jobs[ref] = {"job": spec, "anchor": rp["anchor"],
                           "holder": rp["holder"], "t0": rp["t0"],
                           "exposure": note["face"],
-                          "deadline": rp["t0"] + self.w.GEN["redeem_T"],
+                          # ★FL2.2 J-1 — 청구별 시한(커널 rp["T"]가 정본)
+                          "deadline": rp["t0"] + (rp.get("T")
+                                                  or self.w.GEN["redeem_T"]),
                           "state": "open"}
         self._persist_new()
         return {"seq": entry["seq"], "head": entry["head"], "ref": ref,
@@ -734,6 +838,11 @@ class Node:
             if not isinstance(lg, dict) or lg.get("typ") not in BLOCK_LEG_TYPES:
                 raise Fl21Error(f"BLOCK 다리 타입은 {BLOCK_LEG_TYPES} 한정")
             self._guard_env(lg)
+            if lg.get("typ") == "REDEEM":             # ★H5 — 블록 내 원시 상환도
+                a = lg.get("args") or {}
+                note = self.w.notes.get(str(a.get("note"))) or {}
+                self._scope_check(a.get("anchor"), "raw", note.get("face", 0),
+                                  T=a.get("T"))
         entry = self._ksubmit(self.w.sign_env("operator", "BLOCK",
                                               {"legs": legs}))
         self._sync_jobs()
@@ -787,17 +896,20 @@ class Node:
     # ⚠️자문층이다: 게시는 에스크로가 아니고 아무것도 구속하지 않는다 — 구속·정산은
     # 온-원장 경로(REDEEM·BLOCK)만. 스팸 = 등록-주체 한정(join 예산에 결박) + 주체당
     # 상한 + TTL(예치금 파라미터는 R2 등재).
-    def _board_verify(self, body, sig):
+    def _offledger_verify(self, domain, body, sig, tag):
+        """오프-원장 서명 요청 공통 검증(board·challenge — 도메인 분리 + log_id 결박)."""
         p = (body or {}).get("p")
         pk = self.w.reg.pk(p) if isinstance(p, str) else None
         if pk is None:
-            raise Fl21Error("board: 미등록 주체(먼저 /join)")
+            raise Fl21Error(f"{tag}: 미등록 주체(먼저 /join)")
         try:
             Ed25519PublicKey.from_public_bytes(pk).verify(
-                bytes.fromhex(sig),
-                BOARD_DOMAIN + self.w.log_id + _canon(body))
+                bytes.fromhex(sig), domain + self.w.log_id + _canon(body))
         except Exception:
-            raise Fl21Error("board: 서명 무효(도메인 = FL21-BOARD + log_id + canon)")
+            raise Fl21Error(f"{tag}: 서명 무효(도메인 + log_id + canon)")
+
+    def _board_verify(self, body, sig):
+        self._offledger_verify(BOARD_DOMAIN, body, sig, "board")
 
     def _board_gc(self):
         now = self.w.epoch
@@ -874,6 +986,50 @@ class Node:
         self.board[pid] = {"id": pid, "post": body, "sig": sig}
         self._board_save()
         return {"id": pid, "expires": ex}
+
+    # ── ★P-11 /challenge([M-126] R2-A) — 낙관적-검증의 재검증 창 ──
+    # 누구나(등록 주체) 이행-완료 잡의 재검증을 요청한다. 노드는 의무-재검증하고,
+    # 불일치가 확인되면 온-원장 기록(운영자 TICKMARK fl21.challenge — head-결박)을
+    # 남긴다. 표본-검증 클래스는 재검증마다 새 구간을 뽑으므로 챌린지가 검증 깊이를
+    # 실제로 더한다([R-SAMPLE] 쌍대의 실행형). ⚠️v0.1 법-효과 = 평판 축(정직 등재 —
+    # 배상은 인수-계약 조건·법-수준 소급은 FL2.2 회부 · [R2_DESIGN §2]).
+    def challenge_lookup(self, body):
+        """락 안(짧게): 서명·대상 확인 후 스펙·산출 스냅숏(락-밖 재검증용 — B2 동형)."""
+        if not isinstance(body, dict):
+            raise Fl21Error("challenge: {ref, p, sig}")
+        ref, p, sig = body.get("ref"), body.get("p"), body.get("sig")
+        if not (isinstance(ref, str) and isinstance(sig, str)):
+            raise Fl21Error("challenge: {ref, p, sig}")
+        self._offledger_verify(CHAL_DOMAIN, {"ref": ref, "p": p}, sig,
+                               "challenge")
+        j = self.jobs.get(ref)
+        if j is None:
+            raise Fl21Error("challenge: 미지 ref")
+        if not j.get("delivered") or "output" not in j:
+            raise Fl21Error("challenge: 미이행 잡(재검증 대상 없음)")
+        return dict(j["job"]), j["output"]
+
+    def challenge_commit(self, body, okv, detail):
+        """락 안(짧게): 결과 기록 — 일치 = 계수만(오프-원장) · 불일치 = 온-원장 기록."""
+        ref = body["ref"]
+        j = self.jobs.get(ref)
+        if j is None:
+            raise Fl21Error("challenge: 미지 ref")
+        ch = j.setdefault("challenges", {"ok": 0, "fail": 0})
+        if okv:
+            ch["ok"] += 1
+            self._persist_new()          # 잡 메타만(원장 무접촉)
+            return {"ref": ref, "verified": True, "challenges": dict(ch)}
+        ch["fail"] += 1
+        j["challenged"] = True
+        entry = self._ksubmit(self.w.sign_env(
+            "operator", "TICKMARK",
+            {"kind": "fl21.challenge", "ref": ref, "anchor": j["anchor"],
+             "by": body.get("p"),
+             "why": str((detail or {}).get("why") or "불일치")[:80]}))
+        self._persist_new()
+        return {"ref": ref, "verified": False, "recorded_seq": entry["seq"],
+                "challenges": dict(ch)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1026,6 +1182,13 @@ class Handler(BaseHTTPRequestHandler):
                         f"산출 검증 실패 — 이행 불인정({detail.get('why', '불일치')})")
                 with nd.lock:         # 3) 짧게: 재확인 후 커널 커밋
                     return self._send(200, nd.deliver_commit(env, output, detail))
+            if p == "/challenge":     # ★P-11([M-126]) — 재검증도 락 밖(B2 동형)
+                with nd.lock:
+                    spec, output = nd.challenge_lookup(body)
+                okv, detail = JOBS.verify_output(spec, output)
+                with nd.lock:
+                    return self._send(200, nd.challenge_commit(body, okv,
+                                                               detail))
             with nd.lock:
                 if p == "/join":
                     # ★시빌-소진 방어([M-114] REACH-3): identity_budget(128)은 전역·
@@ -1069,10 +1232,10 @@ class Handler(BaseHTTPRequestHandler):
 def serve(data_dir, port, auto_tick=0, join_issue=20, bind="127.0.0.1",
           rate_limit=0, genesis_issue=40, bootstrap_cap=BOOT_CAP,
           cosign_local=None, bridge_ref=None, trust_forwarded=False,
-          join_per_ip=0):
+          join_per_ip=0, unit_scale=1):
     nd = Node(data_dir, join_issue=join_issue, genesis_issue=genesis_issue,
               bootstrap_cap=bootstrap_cap, cosign_local=cosign_local,
-              bridge_ref=bridge_ref)
+              bridge_ref=bridge_ref, unit_scale=unit_scale)
     Handler.node = nd
     Handler.trust_forwarded = bool(trust_forwarded)   # ★D-5 프록시 뒤 XFF
     Handler.rate_limit = rate_limit   # ★D-6
@@ -1112,13 +1275,15 @@ def main():
     ap.add_argument("--rate-limit", type=int, default=0)  # ★D-6(초당/IP · 배포 시 켬)
     ap.add_argument("--join-per-ip", type=int, default=0,
                     help="join 상한/IP(0 = 끔 · ★공개 초기 = 시빌 속도 제어 REACH-3)")
+    ap.add_argument("--unit-scale", type=int, default=1,
+                    help="1 AU = 이만큼 기본단위([M-127] — 프로덕션 1000 = mAU)")
     a = ap.parse_args()
     nd, srv = serve(a.data, a.port, a.auto_tick, a.join_issue,
                     bind=a.bind, rate_limit=a.rate_limit,
                     genesis_issue=a.genesis_issue, bootstrap_cap=a.bootstrap_cap,
                     cosign_local=tuple(x for x in a.cosign_local.split(",") if x),
                     bridge_ref=a.bridge_ref, trust_forwarded=a.trust_forwarded,
-                    join_per_ip=a.join_per_ip)
+                    join_per_ip=a.join_per_ip, unit_scale=a.unit_scale)
     print(json.dumps({"r1": "up", "port": a.port, "seq": len(nd.w.log),
                       "epoch": nd.w.epoch, "audit": nd.audit()["ok"]},
                      ensure_ascii=False), flush=True)

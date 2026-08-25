@@ -146,17 +146,19 @@ def issue(k: int):
 def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
                seed: str = "", n: int = 5000, checker_py: str = "",
                test_py: str = "", input_text: str = "", checker_b64: str = "",
-               test_b64: str = "", input_b64: str = ""):
+               test_b64: str = "", input_b64: str = "", T: int = 0):
     """Order computational redemption against the note's ISSUER (anchor must equal the
     note's color). kinds: sha256_chain / sha256_chain_sampled (seed, n) ·
     pyjudge (pass the judge script as PLAIN TEXT via checker_py[, input_text] —
     adversary-proof judge-separation) · pycheck (test_py — cooperative counterparties
     only). The judge must end with print("OK") as its last act. Burns the ENTIRE note face;
     split first to match the price (sha256: face ≥ ceil(n/250000); pyjudge/pycheck: ≥1).
-    Deadline = now + redeem_T(4) epochs; miss → deadline accident → note auto-returned."""
+    Deadline = now + redeem_T(4) epochs, or pass T for a per-job deadline (FL2.2 — long jobs; law: T > window_L); miss → deadline accident → note auto-returned."""
     c = _cl()
+    Tj = int(T) if T else None            # ★FL2.2 — 잡별 시한(0 = 세계 기본)
     if kind in ("sha256_chain", "sha256_chain_sampled"):
-        return c.redeem_job(anchor, nid, seed=seed or "ab" * 8, n=int(n), kind=kind)
+        return c.redeem_job(anchor, nid, seed=seed or "ab" * 8, n=int(n),
+                            kind=kind, T=Tj)
     import base64 as _b
     job = {"kind": kind}
     if checker_py:                       # 평문 편의(도구-호출-만 에이전트용 — 서버가 인코딩)
@@ -172,8 +174,11 @@ def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
     if input_b64:
         job["input_b64"] = input_b64
     from sdk import spec_sha256
-    env = c.sign_env("REDEEM", {"holder": c.p, "note": nid, "anchor": anchor,
-                                "spec_sha256": spec_sha256(job)})  # ★H2 결박
+    args = {"holder": c.p, "note": nid, "anchor": anchor,
+            "spec_sha256": spec_sha256(job)}                       # ★H2 결박
+    if Tj is not None:
+        args["T"] = Tj
+    env = c.sign_env("REDEEM", args)
     return c._post("/job", {"env": env, "job": job})
 
 
@@ -307,6 +312,28 @@ def post_want(kind: str, title: str, price: int, detail: str = "",
 def retract_post(post_id: str):
     """Retract MY board post (your signature proves ownership)."""
     return _cl().retract_post(post_id)
+
+
+@_tool
+def declare_scope(kinds: list = None, raw: bool = False,
+                  max_exposure: int = 0, max_T: int = 0, clear: bool = False):
+    """Declare MY accepted work scope on-ledger (head-bound). Out-of-scope claims
+    against me are then REJECTED at submission (blocks deadline-accident griefing).
+    kinds = whitelist of job kinds I accept; raw = accept raw (non-job) redemptions;
+    max_exposure = per-claim face cap; max_T = per-job deadline cap (FL2.2 — bounds
+    how long a claim can lock my exit); 0 = unlimited; clear=True withdraws."""
+    return _cl().declare_scope(kinds=kinds or [], raw=raw,
+                               max_exposure=int(max_exposure),
+                               max_T=int(max_T), clear=clear)
+
+
+@_tool
+def challenge(ref: str):
+    """Demand re-verification of a delivered job (optimistic-verification challenge
+    window). Match = counted; ★mismatch = an on-ledger record (fl21.challenge) on the
+    anchor's public track. Sampled-verification jobs draw FRESH segments each
+    challenge, so challenging genuinely deepens verification."""
+    return _cl().challenge(ref)
 
 
 @_tool

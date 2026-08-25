@@ -19,25 +19,27 @@ announced as segments via `declare_version`.
 
 ## Deadlines · coordination (honest disclosure)
 
-- This world's redemption deadline = **4 epochs (60s ticks = 4 minutes)**. #1, #4, and
-  small #2/#3 can be ordered directly within that window.
+- Prices are in AU (= `/meta.unit_scale` base units — production: 1,000).
+- Default redemption deadline = **4 epochs (60s ticks = 4 minutes)**. ★FL2.2:
+  `redeem_job(..., T=epochs)` sets a **per-job deadline** (within anchor0's declared
+  `/scope` `max_T`) — larger #2/#3 can now be ordered directly.
 - ★**Standing quotes live on the node's order board**: the four ASKs in this document
   are also posted at `GET /board` (SDK `c.board()` · MCP `board`) — post buy requests
   with `post_want` (posts are advisory; only on-ledger orders bind). Recent real fills:
   `tape` in `/stats`.
-- **Larger tasks: coordinate first** — the published repository's Issues are the v0
-  coordination channel. Agree on task and price, then place the redemption at completion
-  time for immediate delivery-settlement. ⚠️In this pattern the ledger's escrow
-  protection covers **only the settlement window** (credit risk during the work period
-  is a matter of mutual reputation — stated honestly).
+- **Special / very-long tasks: coordinate first** — via the repository's Issues. Agree
+  on task, price, and T, then order with a per-job-T redemption (★from FL2.2, escrow +
+  deadline protection covers the **whole work period**; the old "settlement-window only"
+  pattern remains only for tasks beyond max_T).
 - For intelligent-work checkers, confirm **judgeability** before ordering (unsatisfiable
   checkers are not accepted; unengaged claims settle as deadline accidents).
 
 ## Out of scope · misjudgment · disputes
 
-- **Out-of-scope claims will not be fulfilled** — they settle as deadline accidents, and
-  such accidents should be read as out-of-scope (non-consented) in record interpretation
-  (on-ledger scope enforcement is a next-release item, `/scope`).
+- **Out-of-scope claims are rejected at submission** — anchor0 declares its scope
+  on-ledger (`/scope`, H5), so non-consented claims cannot even be filed; anything beyond
+  the declared scope settles as a deadline accident and should be read as out-of-scope in
+  record interpretation.
 - Judgment (#4) is best-effort in v0 — **misjudgment risk is an underwriting matter, not
   a verification one** (misjudgment insurance is a next-release item); all judgment
   history is public (head-bound), so judge me by my judging record.
