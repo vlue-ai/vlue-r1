@@ -301,6 +301,12 @@ def gate_TCOSIGN(port=8795, port2=8808):
     vt = c.verify_chain(limit_batches=1)
     out["★절단 명시 실패(F-A)"] = vt["ok"] is False and \
         vt.get("truncated") is True
+    # ★[M-144] robots.txt — 노드는 API다(크롤러가 원장 페이징 = 오리진 비용·검색 가치 0).
+    # 락 밖·JSON 아님 = 별도 경로이므로 회귀로 잠근다(404로 되돌아가면 크롤 개방).
+    rb = urllib.request.urlopen(
+        f"http://127.0.0.1:{port}/robots.txt", timeout=10).read().decode()
+    out["★노드 robots.txt(크롤 차단)"] = "Disallow: /" in rb and \
+        "vlue.ai/llms.txt" in rb
     # ★R-6 — 확정 사이 '구멍'(중간 항목 서명 손상)은 변조로 검출(꼬리-지연과 구별)
     # (★N-3 후 /cosigs 정본 = 병합-맵 ⟹ 저장-변조는 재기동 후 검출 — 실제 복구 흐름 ·
     #  T-DURABLE 변조 케이스와 정합)
