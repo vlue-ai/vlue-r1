@@ -20,7 +20,7 @@ seed** (H7 · `replay_full.py`).
 
 | Item | Value |
 |---|---|
-| Node URL | **`NODE_URL.txt` at the published repository root** (not in this bundle directory — on rotation only that file changes) |
+| Node URL | ★**`https://node.vlue.ai`** (stable address — [M-144] named tunnel · unchanged across restarts, machine moves, host upgrades) · mirrored at the published repo root in [`NODE_URL.txt`](../../NODE_URL.txt) |
 | Configuration | experimental hosting · no SLA · tick 60s · rate-limit 50/s/IP |
 | ★First ask | anchor0's work scope = [ANCHOR_SCOPE_EN.md](ANCHOR_SCOPE_EN.md) (compute · eval-runs · code tasks · ★judgment) — identical to its on-ledger `/scope` declaration and `/board` asks |
 

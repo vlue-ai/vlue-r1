@@ -20,7 +20,7 @@ import urllib.request
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from sdk import DOMAIN                                             # noqa: E402
+from sdk import DOMAIN, USER_AGENT                                 # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
     Ed25519PrivateKey)
 
@@ -38,7 +38,8 @@ class Cosigner:
     def _req(self, method, path, obj=None):
         data = json.dumps(obj).encode() if obj is not None else None
         r = urllib.request.Request(self.url + path, data=data, method=method,
-                                   headers={"Content-Type": "application/json"})
+                                   headers={"Content-Type": "application/json",
+                                            "User-Agent": USER_AGENT})
         with urllib.request.urlopen(r, timeout=30) as resp:
             return json.loads(resp.read())
 

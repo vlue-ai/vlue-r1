@@ -24,6 +24,11 @@ from cryptography.exceptions import InvalidSignature
 
 DOMAIN = b"FL22-v0.1" + b"\x00" * 7          # 커널 FL22_DOMAIN과 동일(골든 결박)
 BOARD_DOMAIN = b"FL22-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
+# ★[M-144] 명시 User-Agent: ⓐ기계 클라이언트의 정직한 자기-식별(트래픽이 로그에서
+# 읽힌다) ⓑ★실전 필수 — 기본값 `Python-urllib/*`는 CDN·WAF의 봇 차단에 걸린다(실측:
+# node.vlue.ai 이관 직후 SDK만 403 error 1010 · curl·브라우저는 200). 에이전트 경제의
+# 정문이 「기계라서」 닫히면 K5′는 수요 0을 거짓 기록한다.
+USER_AGENT = "vlue-sdk/0.1 (+https://vlue.ai)"
 
 
 def canon(obj) -> bytes:
@@ -99,7 +104,8 @@ class Fl21Client:
     def _req(self, method, path, obj=None):
         data = json.dumps(obj).encode() if obj is not None else None
         r = urllib.request.Request(self.url + path, data=data, method=method,
-                                   headers={"Content-Type": "application/json"})
+                                   headers={"Content-Type": "application/json",
+                                            "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(r, timeout=30) as resp:
                 return json.loads(resp.read())

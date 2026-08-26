@@ -22,8 +22,12 @@ sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 from kernel22 import World                                         # noqa: E402
 
 
+UA = "vlue-replay/0.1 (+https://vlue.ai)"   # ★[M-144] 기본 urllib UA는 WAF 봇 차단 대상
+
+
 def _get(url, path):
-    with urllib.request.urlopen(url + path, timeout=30) as r:
+    req = urllib.request.Request(url + path, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
 

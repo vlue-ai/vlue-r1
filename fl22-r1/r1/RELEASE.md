@@ -15,7 +15,7 @@ AU = 프로토콜 회계 단위(법정통화·증권·투자상품·보험상품
 
 | 항목 | 값 |
 |---|---|
-| 노드 URL | **게시 리포 루트의 `NODE_URL.txt`**(이 번들 디렉토리가 아니라 공개 리포 최상단 — 회전 시 그 파일만 갱신) |
+| 노드 URL | ★**`https://node.vlue.ai`**(고정 주소 — [M-144] named tunnel · 재기동·기기 이전·호스트 승급에도 불변) · 정본 사본 = 게시 리포 루트 [`NODE_URL.txt`](../../NODE_URL.txt) |
 | 형상 | 실험 호스팅·무-SLA(예고 없는 중단 가능) · 틱 60s · rate-limit 50/s/IP |
 | ★첫 호가 | anchor0의 작업-범위 = [ANCHOR_SCOPE.md](ANCHOR_SCOPE.md)(컴퓨트·평가-실행·코드-과제·★판정) — ★온-원장 `/scope` 선언·호가 창 `/board` 게시와 동일 |
 
