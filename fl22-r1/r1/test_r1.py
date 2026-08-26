@@ -296,6 +296,11 @@ def gate_TCOSIGN(port=8795, port2=8808):
     v15 = c.verify_chain()
     out["★장기-원장 페이지 경계(N-3)"] = v15["ok"] is True and \
         v15["confirmed"] + v15["pending"] == c.state()["seq"]
+    # ★F-A([M-143]) — 침묵-절단 금지: 520+ 원장에서 limit_batches=1(한 페이지 = 500)은
+    # 전량을 못 가져온다 — 부분 검증을 ok로 보고하면 「누구나 재검증」의 정직이 깨진다.
+    vt = c.verify_chain(limit_batches=1)
+    out["★절단 명시 실패(F-A)"] = vt["ok"] is False and \
+        vt.get("truncated") is True
     # ★R-6 — 확정 사이 '구멍'(중간 항목 서명 손상)은 변조로 검출(꼬리-지연과 구별)
     # (★N-3 후 /cosigs 정본 = 병합-맵 ⟹ 저장-변조는 재기동 후 검출 — 실제 복구 흐름 ·
     #  T-DURABLE 변조 케이스와 정합)
@@ -484,6 +489,35 @@ def gate_TCOLOR(port=8803):
     out["★배상 = 가해-앵커 색"] = comp_face > 0 and any(
         n["face"] == comp_face and n["color"] == "anchor0"
         for n in cv.notes())
+    # ★F-E([M-143]) — 동액-배상 쌍의 색 분리: 같은 holder의 같은 액면 청구 둘이 서로
+    # 다른 앵커에 걸려 **같은 틱**에 정산되면, 배상 노트 둘의 색이 각자의 가해-앵커여야
+    # 한다(구 휴리스틱[holder·액면 첫-일치 스캔]의 잠재 오귀속 자리 — 위치+검증 귀속의
+    # 회귀 잠금 · 민트-순서 가정이 깨지면 노드가 크게 실패한다).
+    h2 = _client(port, "htwo", data)
+    u2 = _client(port, "utwo", data)
+    h2.join()
+    u2.join()
+    big_a0 = [n for n in wk.notes_of("anchor0") if n["face"] >= 4][0]
+    wk.split(big_a0["nid"], [3, big_a0["face"] - 3])
+    wk.xfer("htwo",
+            [n for n in wk.notes_of("anchor0") if n["face"] == 3][0]["nid"])
+    big_nc2 = [n for n in nc.notes_of("nc") if n["face"] >= 4][0]
+    nc.split(big_nc2["nid"], [3, big_nc2["face"] - 3])
+    nc.xfer("htwo", [n for n in nc.notes_of("nc") if n["face"] == 3][0]["nid"])
+    ja = h2.redeem_job("anchor0", h2.notes_of("anchor0")[0]["nid"],
+                       seed="0a" * 4, n=100)
+    jb = h2.redeem_job("nc", h2.notes_of("nc")[0]["nid"], seed="0b" * 4, n=100)
+    u2.cover(ja["ref"], prem=1)
+    u2.cover(jb["ref"], prem=1)
+    got2 = {}
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        s2 = h2._post("/tick", {})["settle"]
+        for rec in (s2 or {}).get("settled", []):
+            got2[rec["ref"]] = rec["comp"]
+    out["동액-배상 성숙(F-E 전제)"] = got2.get(ja["ref"]) == 3 and \
+        got2.get(jb["ref"]) == 3
+    out["★동액-배상 색 분리(F-E)"] = {n["color"] for n in h2.notes()
+                                     if n["face"] == 3} == {"anchor0", "nc"}
     st = nc.stats()
     out["색-공급 관측"] = "colors" in st["density"] and \
         st["density"]["colors"].get("nc", 0) > 0

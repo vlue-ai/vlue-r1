@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 
-from kernel22 import (World, Fl22Error as Fl21Error, derive_key,   # noqa: E402
+from kernel22 import (World, Fl22Error as Fl21Error,               # noqa: E402
                       FL22_DOMAIN as FL21_DOMAIN, _canon)
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
     Ed25519PublicKey)
@@ -118,6 +118,7 @@ class Node:
         self._export_anchor_key(data_dir)       # 워커 좌석 키(0600 — 워커가 파일로 로드)
         self.jobs = {}               # ref → {job, anchor, holder, deadline, state, output}
         self._stats_cache = None     # ★D-13 — (log_len, stats)
+        self._audit_cache = None     # ★F-B([M-143]) — (log_len, audit 결과)
         self._replay()
         if self.persisted == 0 and self.genesis_issue > 0:   # ★창세 자기-IOU(1회)
             for a in GENESIS:
@@ -126,13 +127,19 @@ class Node:
             self._persist_new()
 
     @staticmethod
+    def _write_secret(path, text):
+        """★F-D([M-143]) — 비밀 파일 원자-권한 생성: write-후-chmod는 umask에 따라
+        짧은 노출 창이 있다 — O_EXCL·0600으로 생성 자체를 잠근다(경합 = 크게 실패)."""
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+
+    @staticmethod
     def _load_secret_int(path):
         if os.path.exists(path):
             return int(open(path).read().strip())
         v = _secrets.randbits(256)   # ★RD-8 — 파생 키의 실효 보안 = 시드 엔트로피(256b)
-        with open(path, "w") as fh:
-            fh.write(str(v))
-        os.chmod(path, 0o600)
+        Node._write_secret(path, str(v))
         return v
 
     @staticmethod
@@ -143,18 +150,14 @@ class Node:
             return Ed25519PrivateKey.from_private_bytes(
                 bytes.fromhex(open(path).read().strip()))
         k = Ed25519PrivateKey.generate()
-        with open(path, "w") as fh:
-            fh.write(k.private_bytes_raw().hex())
-        os.chmod(path, 0o600)
+        Node._write_secret(path, k.private_bytes_raw().hex())
         return k
 
     def _export_anchor_key(self, data_dir):
         for a in GENESIS:
             p = os.path.join(data_dir, f"{a}.key")
             if not os.path.exists(p):
-                with open(p, "w") as fh:
-                    fh.write(self.w._keys[a].private_bytes_raw().hex())
-                os.chmod(p, 0o600)
+                self._write_secret(p, self.w._keys[a].private_bytes_raw().hex())
 
     # ── 영속·복구(A-3) ──
     @staticmethod
@@ -318,18 +321,28 @@ class Node:
                 self.colors[nid] = c or self.w.notes[nid]["owner"]
         elif typ == "TICK":
             force = entry.get("_force") or {}
+            # ★F-E([M-143]) — 배상 색-귀속: 휴리스틱(holder·액면 첫-일치 스캔) →
+            # **위치+검증**. 커널 _settle의 배상 민트는 전 정산의 **마지막** 민트들이고
+            # settled 기록 순서(성숙 ref 정렬 = covered 순서)와 1:1이다 ⟹ added 꼬리
+            # K개(K = comp>0 기록 수)가 정확히 그 배상 노트다. 동일-(holder, 액면) 쌍이
+            # 여럿이어도 순서가 귀속을 확정하고, 가정이 깨지면(세대-교체로 민트 순서
+            # 변경 등) 조용한 오귀속 대신 **크게 실패**한다(색 전체성 불변식과 같은
+            # 철학 — 돈의 귀속에 침묵-오류는 없다).
+            recs = [r for r in force.get("settled", []) if r.get("comp", 0) > 0]
+            comp_nids = added[len(added) - len(recs):] if recs else []
             claimed = set()
-            for rec in sorted(force.get("settled", []), key=lambda r: r["ref"]):
+            if len(comp_nids) != len(recs):
+                raise Fl21Error(f"색 귀속 검증 실패 seq {entry['seq']}: "
+                                f"배상 민트 수 불일치({len(comp_nids)}≠{len(recs)})")
+            for rec, nid in zip(recs, comp_nids):
                 rp = (rp_before or {}).get(rec["ref"])
-                if rec.get("comp", 0) <= 0 or not rp:
-                    continue
-                for nid in added:                          # ★배상 = 가해-앵커 색
-                    if nid not in claimed and \
-                       self.w.notes[nid]["owner"] == rp["holder"] and \
-                       self.w.notes[nid]["face"] == rec["comp"]:
-                        self.colors[nid] = rp["anchor"]
-                        claimed.add(nid)
-                        break
+                n = self.w.notes[nid]
+                if not rp or n["owner"] != rp["holder"] or \
+                        n["face"] != rec["comp"]:
+                    raise Fl21Error(f"색 귀속 검증 실패 seq {entry['seq']}: "
+                                    f"배상 민트-순서 가정 파손(ref {rec['ref']})")
+                self.colors[nid] = rp["anchor"]            # ★배상 = 가해-앵커 색
+                claimed.add(nid)
             for nid in added:                              # 압류 잔돈·담보 잔여
                 if nid not in claimed:
                     self.colors[nid] = self.w.notes[nid]["owner"]
@@ -887,9 +900,17 @@ class Node:
         return {"ok": True, "seq": seq, "signer": name}
 
     def audit(self):
+        # ★F-B([M-143]) — /audit 캐시: audit()은 전-원장 리플레이 O(원장)인데 공개
+        # GET·락 안이라, 원장이 크면 익명 반복 호출이 노드를 세운다(RISK-1 동류).
+        # 같은 로그 길이 = 결정론 동일 결과 ⟹ 길이-키 캐시(신규 기입만 재계산).
+        key = len(self.w.log)
+        if self._audit_cache and self._audit_cache[0] == key:
+            return self._audit_cache[1]
         a = self.w.audit()
         ok = a["ok"] and set(self.colors) == set(self.w.notes)   # ★색 전체성
-        return {"ok": ok, "entries": a.get("entries")}
+        out = {"ok": ok, "entries": a.get("entries")}
+        self._audit_cache = (key, out)
+        return out
 
     # ── ★호가 창(R2-a — [M-116] 발견층 · [시장-미시구조 §6]) ──
     # 게시 = 오프-원장 서명 공표(ASK = 매도 호가 · WANT = 매수 호가) — seq 무접촉.

@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
 sys.path.insert(0, _HERE)
 
 import jobs as JOBS                                                # noqa: E402
-from sdk import Fl21Client, sig_msg                                # noqa: E402
+from sdk import Fl21Client                                         # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
     Ed25519PrivateKey)
 

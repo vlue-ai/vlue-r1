@@ -86,9 +86,10 @@ class Fl21Client:
             raw = bytes.fromhex(open(self.key_path).read().strip())
             return Ed25519PrivateKey.from_private_bytes(raw)
         k = Ed25519PrivateKey.generate()
-        with open(self.key_path, "w") as fh:
+        # ★비밀 원자-권한 생성([M-143] F-D): write-후-chmod의 umask 노출 창 제거
+        fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
             fh.write(k.private_bytes_raw().hex())
-        os.chmod(self.key_path, 0o600)
         return k
 
     def pk_hex(self):
@@ -392,7 +393,8 @@ class Fl21Client:
         ★공동-서명이 아직 부족한 **최신 연속 꼬리**는 위반이 아니라 `pending`(확정 미도달).
         블록체인 confirmation-depth 시맨틱 — 확정 prefix가 정합이면 ok(pending 별도 보고).
         위반은 오직: head 불일치·사슬 단절·운영자 서명 위조·★확정된(공동서명 완비) 항목의
-        서명 실패(= 진짜 변조)."""
+        서명 실패(= 진짜 변조). ★limit_batches 소진 = 절단 명시 실패([M-143] F-A —
+        부분 검증을 ok로 보고하지 않는다 · 큰 원장은 인자를 올려 전량 검증)."""
         meta = self.meta
         op_pk = Ed25519PublicKey.from_public_bytes(
             bytes.fromhex(meta["operator_pk"]))
@@ -422,9 +424,11 @@ class Fl21Client:
             return None
         cos = {}
         s = since
+        cos_complete = False
         for _ in range(limit_batches):
             batch = self._get(f"/cosigs?since={s}")["cosigs"]
             if not batch:
+                cos_complete = True
                 break
             for r in batch:      # ★D-2 병합 — 분리 서명자의 부분-서명 줄들을 합친다
                 m = cos.setdefault(r["seq"], {"head": r["head"], "sigs": {}})
@@ -434,12 +438,22 @@ class Fl21Client:
             s = batch[-1]["seq"] + 1
         entries = []
         s = since
+        log_complete = False
         for _ in range(limit_batches):
             page = self._get(f"/log?since={s}")["entries"]
             if not page:
+                log_complete = True
                 break
             entries += page
             s = page[-1]["seq"] + 1
+        # ★F-A([M-143]) — 침묵-절단 금지: limit_batches가 소진돼 전량을 못 가져왔으면
+        # 부분-검증을 ok로 보고하지 않는다(「전량-아니면-무」 — attest와 같은 규범).
+        # 검증기 자신이 유일한 침묵 상한이던 자리의 봉합 — 명시 실패 + 인자 상향 안내.
+        if not (cos_complete and log_complete):
+            return {"ok": False, "truncated": True,
+                    "fetched": len(entries),
+                    "why": f"절단: limit_batches({limit_batches}) 소진 — 전량 미조회"
+                           "(부분 검증은 판정이 아니다 · 인자를 올려 재실행)"}
         prev = None
         confirmed = 0
         pending = 0
