@@ -1,0 +1,73 @@
+name: gates
+
+# 모든 푸시·PR 에서 번들의 자기-시험을 **번들 안에서** 돌린다.
+# 이 저장소의 주장("검증-완결 최소셋")이 실제로 성립하는지 CI가 매번 재확인한다.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"   # 주 1회 — 의존성 변화로 인한 침묵 파손 감시
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the single dependency
+        run: pip install "cryptography==50.0.0"
+
+      - name: Manifest integrity (per-file sha256)
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, os, sys
+          m = json.load(open("fl22-r1/manifest.json"))
+          bad = [r for r, w in m["files"].items()
+                 if hashlib.sha256(open(os.path.join("fl22-r1", r), "rb").read()).hexdigest() != w]
+          print(f"files: {len(m['files'])} · mismatched: {len(bad)} {bad}")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Manifest signature (operator Ed25519, bound to RELEASE)
+        run: |
+          python3 - <<'PY'
+          import hashlib, re
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+          pk_hex = re.search(r"operator_pk[^0-9a-f]*([0-9a-f]{64})",
+                             open("fl22-r1/r1/RELEASE_EN.md").read()).group(1)
+          sig = bytes.fromhex(open("manifest.sig").read().strip())
+          raw = open("fl22-r1/manifest.json", "rb").read()
+          Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex)).verify(
+              sig, b"FL22-MANIFEST" + hashlib.sha256(raw).digest())
+          print("manifest.sig verified against operator_pk in RELEASE_EN.md")
+          PY
+
+      - name: Kernel selftest (20 gates)
+        working-directory: fl22-r1/fin_lean/lang22
+        run: python3 kernel22_selftest.py | tee /tmp/k.json | tail -3
+
+      - name: Kernel selftest verdict
+        run: |
+          grep -q '"K22_SELFTEST_PASS": true' /tmp/k.json
+
+      - name: Golden vectors (cross-generation law inheritance)
+        working-directory: fl22-r1/fin_lean/lang22
+        run: python3 frontier_vectors.py | tail -3
+
+      - name: R1 gates (22 gates incl. T-ROOT storm, replay differential)
+        working-directory: fl22-r1/r1
+        run: python3 test_r1.py | tee /tmp/r1.json | tail -3
+
+      - name: R1 gates verdict
+        run: |
+          grep -q '"R1_GATES_PASS": true' /tmp/r1.json
+
+      - name: Public demo (eight scenes end-to-end)
+        run: python3 demos/showcase.py | tail -5
