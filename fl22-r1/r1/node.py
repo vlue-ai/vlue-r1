@@ -1036,6 +1036,8 @@ class Handler(BaseHTTPRequestHandler):
     node: Node = None
     protocol_version = "HTTP/1.1"
     timeout = 30                      # ★slow-loris — 소켓 유휴 상한(느린 헤더/본문 절단)
+    own_clock = False                 # ★SEC-1 — 노드가 자기 시계를 돌리면(auto-tick)
+                                      # 외부 /tick 거부(시계는 노드의 것 · 기한-강제 방지)
     rate_limit = 0                    # ★D-6 — 초당 요청 상한/IP(0 = 끔 · 배포 시 켬)
     trust_forwarded = False           # ★D-5 — 프록시 뒤에서만 X-Forwarded-For 신뢰
     join_per_ip = 0                   # ★REACH-3 — join 상한/IP(0 = 끔 · 시빌 속도 제어)
@@ -1221,6 +1223,15 @@ class Handler(BaseHTTPRequestHandler):
                 if p == "/block":
                     return self._send(200, nd.block(body.get("legs")))
                 if p == "/tick":
+                    # ★SEC-1([M-137]): 자기 시계를 가진 노드(배포 = --auto-tick)에서
+                    # 외부 틱은 **기한 강제**의 수단이다 — 익명 난타로 에포크를 밀어
+                    # 미결 주문을 즉시 시한-사고로 만들 수 있다(이행자 배상 유발·보드
+                    # TTL 소각). 시계는 노드의 것으로 못박는다. auto-tick 없는 로컬·
+                    # 데모 세계는 그대로 열려 있다(드라이버가 곧 시계).
+                    if self.own_clock:
+                        return self._send(403, {
+                            "error": "tick: 이 노드는 자기 시계로 돈다"
+                                     "(--auto-tick) — 외부 틱 불가"})
                     return self._send(200, nd.tick())
             return self._send(404, {"error": "미지 경로"})
         except Fl21Error as e:
@@ -1238,6 +1249,7 @@ def serve(data_dir, port, auto_tick=0, join_issue=20, bind="127.0.0.1",
               bridge_ref=bridge_ref, unit_scale=unit_scale)
     Handler.node = nd
     Handler.trust_forwarded = bool(trust_forwarded)   # ★D-5 프록시 뒤 XFF
+    Handler.own_clock = auto_tick > 0  # ★SEC-1 — 자기 시계 = 외부 틱 거부
     Handler.rate_limit = rate_limit   # ★D-6
     Handler.join_per_ip = int(join_per_ip)   # ★REACH-3 — 시빌 속도 제어
     Handler._joins = {}
