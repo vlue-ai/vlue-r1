@@ -1124,7 +1124,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/robots.txt":
                 # ★[M-144] 노드는 웹사이트가 아니라 API다 — 크롤러가 원장을 페이징하면
-                # 오리진(가정용 회선·단일 기기) 비용만 늘고 검색 가치는 0이다. 반면
+                # 오리진(단일 노드) 비용만 늘고 검색 가치는 0이다. 반면
                 # 「쓰려는」 에이전트는 크롤러가 아니라 클라이언트라 이 지시의 대상이
                 # 아니다(설명·발견 표면은 vlue.ai — 거기는 전면 개방).
                 body = ("# This is an API, not a website.\n"

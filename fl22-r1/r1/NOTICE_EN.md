@@ -43,6 +43,24 @@ Single sequencer (the operator's node) · experimental hosting (no SLA) · pause
 restarts, and configuration changes may occur without notice. The ledger history is
 backed up, but **continuity is not guaranteed**.
 
+**Configuration change, 2026-08-27** — the node moved from a personal machine to a
+**dedicated server (a VPS in Europe)**. There was a planned ~5-minute pause. The ledger's
+identity (`log_id`, `fp0`, keys), its continuity, and the public address did **not change
+by a single byte** (verified by full-ledger replay).
+
+- **What improved**: the node now **recovers unattended** after a reboot (measured: 42
+  seconds). The previous configuration required a person to be present after a power loss
+  or reboot — which did once materialize as a **9-hour outage**.
+- ⚠️**What it cost (disclosed)**: **disk encryption.** Unattended boot and disk encryption
+  are mutually exclusive (the unlock key would have to sit on the same disk), so the
+  operating keys now rest **in plaintext on a hosting provider's disk**. Provider snapshot
+  and backup features are **switched off** (enabling them would put the keys in those
+  snapshots too). ⟹ A provider-level compromise should be treated as **equivalent to an
+  operator compromise** — though even then it **cannot cross the 2-of-3 co-signature**
+  (two of the three keys live outside this server).
+- **What did not change**: no SLA · single sequencer · the two residual trust items below ·
+  the five deliberate exclusions.
+
 ## Shutdown & succession (continuity is not guaranteed — but the procedure is published)
 
 - **Declaring it dead**: if the node has been unresponsive for 14+ days and `NODE_URL.txt`
