@@ -677,6 +677,22 @@ def gate_TPYJUDGE(port=8805):
     r3 = a._post("/submit", {"env": a.sign_env(
         "REDEEM_CANCEL", {"ref": j3["ref"]})})      # 즉시(절반 전) = 허용
     out["절반-전 취소 허용"] = "seq" in r3
+    # ★절단 명시-거부([M-149] SR-7): 1MB 초과 stdout은 절단본 심사가 아니라 거부 —
+    # 종전엔 접두-관대 checker가 절단 1MB를 합격시켰다(오수용 재현 확정 후 봉합).
+    nid4 = a.notes_of("jb")[0]["nid"]
+    chk2 = base64.b64encode(
+        b"d = open('output.txt', 'rb').read()\n"
+        b"print('OK' if d[:4] == b'xxxx' else 'NO')\n").decode()
+    j4 = a._post("/job", {"env": a.sign_env(
+        "REDEEM", {"holder": "ja", "note": nid4, "anchor": "jb"}),
+        "job": {"kind": "pyjudge", "checker_b64": chk2}})
+    big = base64.b64encode(
+        b"import sys\nsys.stdout.write('x' * 2_000_000)\n").decode()
+    try:
+        b.deliver_job(j4["ref"], big)
+        out["★절단 명시-거부(SR-7)"] = False
+    except RuntimeError as e:
+        out["★절단 명시-거부(SR-7)"] = "상한 초과" in str(e)
     out["audit"] = a._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
@@ -983,6 +999,19 @@ def gate_THASHBIND(port=8810):
     except RuntimeError as e:
         out["★위조 산출 거부"] = "H2" in str(e)
     wk.deliver_job(j2["ref"], good_out)      # 정상 마감(자동-결박)
+    # ⓓ★워커-경로 결박([M-149] SR-1): 프로덕션 자동-이행 루프(work_once)의 DELIVER도
+    # H2 결박 — 종전엔 봉투 직접 조립으로 운영자 판매 경로만 결박 밖이었다(게이트 사각).
+    big = [n for n in c.notes_of("anchor0") if n["face"] > 1][0]
+    c.split(big["nid"], [1, big["face"] - 1])
+    n3 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j3 = c.redeem_job("anchor0", n3, seed="cd" * 8, n=5000)
+    wk.work_once()
+    st3 = c.job(j3["ref"])
+    d3 = next(e["env"] for e in c._get("/log?since=0")["entries"]
+              if e["env"]["typ"] == "DELIVER"
+              and e["env"]["args"].get("ref") == j3["ref"])
+    out["★워커-경로 결박(SR-1)"] = st3.get("delivered") is True and \
+        d3["args"].get("output_sha256") == output_sha256(st3["output"])
     out["audit"] = c._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

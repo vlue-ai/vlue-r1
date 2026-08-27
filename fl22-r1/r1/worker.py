@@ -44,8 +44,10 @@ class AnchorWorker(Fl21Client):
             if not j["job"]["kind"].startswith("sha256"):
                 continue              # pycheck 등 지능-작업은 워커 몫 아님(P-1 — 외부 앵커)
             out = JOBS.compute(j["job"]["kind"], j["job"]["seed"], j["job"]["n"])
-            env = self.sign_env("DELIVER", {"anchor": self.p, "ref": ref})
-            r = self._post("/deliver", {"env": env, "output": out})
+            # ★[M-149] SR-1 — H2 결박: sdk.deliver_job 경유(output_sha256를 서명에 결박).
+            # 봉투 직접 조립은 운영자 자신의 판매 경로(자동-이행)만 H2 밖에 두던 구멍 —
+            # T-HASHBIND ⓓ(워커-경로)가 이 결박을 게이트로 못박는다.
+            r = self.deliver_job(ref, out)
             done.append({"ref": ref, "seq": r["seq"]})
         return done
 

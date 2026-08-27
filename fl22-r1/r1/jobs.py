@@ -61,7 +61,10 @@ CHK_OUT_MAX = 4096                   # checker/test 판정 출력 상한(수용 
 def _run_capped(argv, cwd, cap, stdin=b""):
     """★H3 — 자식 stdout을 **파일로** 받아(부모 메모리 무접촉 · RLIMIT_FSIZE=5MB가 자식
     쓰기를 강제 캡) 상한 cap 바이트만 되읽는다. capture_output의 무한 버퍼링(악성 산출이
-    수백 MB 뿜어 검증기 OOM) 봉합. 반환 (returncode, stdout[:cap])."""
+    수백 MB 뿜어 검증기 OOM) 봉합. 반환 (returncode, stdout[:cap], truncated).
+    ★truncated([M-149] SR-7): cap 초과분을 무-표지로 절단하면 「전달된 것과 다른
+    바이트열」을 심사하게 된다 — 접두-관대 checker의 절단 오수용이 재현 확정됐다(2MB
+    산출 → 1MB 절단본 합격). 호출자는 절단 시 판정이 아니라 **명시 거부**로 간다."""
     op = os.path.join(cwd, ".stdout")
     with open(op, "w+b") as of:
         try:
@@ -69,9 +72,11 @@ def _run_capped(argv, cwd, cap, stdin=b""):
                                stdout=of, stderr=subprocess.DEVNULL,
                                timeout=PY_TIMEOUT, preexec_fn=_rlimits)
         finally:
+            of.seek(0, 2)
+            size = of.tell()
             of.seek(0)
             data = of.read(cap)
-    return r.returncode, data
+    return r.returncode, data, size > cap
 N_MIN, N_MAX = 1, 5_000_000          # 남용 상한(검증 비용 유계)
 N_PER_AU = 250_000                   # ★P-2 — 1 AU당 작업량(정책 상수)
 CKPT = 50_000                        # sampled — 체크포인트 간격
@@ -203,8 +208,10 @@ def _verify_pycheck(job, output):
             "exec(compile(open('test.py', 'rb').read(), 'test.py', 'exec'),"
             " {'__name__': '__main__'})\n")
         # ⚠️v0 격리 = 프로세스-수준(-I 고립·빈 env·임시 cwd·시간 상한) — D-12 등재
-        rc, out = _run_capped([sys.executable, "-I", "_runner.py"], d,
-                              CHK_OUT_MAX)          # ★H3 — 파일-포획·상한 읽기
+        rc, out, tr = _run_capped([sys.executable, "-I", "_runner.py"], d,
+                                  CHK_OUT_MAX)      # ★H3 — 파일-포획·상한 읽기
+        if tr:                                     # ★SR-7 — 절단본 심사 금지
+            return False, {"why": f"판정 출력 상한 초과({CHK_OUT_MAX}B)", "rc": rc}
         ok = rc == 0 and _accepts(out)             # ★수용 = 마지막 줄 == OK(부분매치 금지)
         return ok, {"rc": rc, "out": out.decode(errors="replace")[-200:]}
     except subprocess.TimeoutExpired:
@@ -233,20 +240,26 @@ def _verify_pyjudge(job, output):
     try:
         open(os.path.join(d1, "solution.py"), "wb").write(sol)
         try:    # ── ①산출 실행(무신뢰 — rc·출력은 참고일 뿐 판정 아님 · ★H3 파일-포획) ──
-            sol_rc, out_b = _run_capped([sys.executable, "-I", "solution.py"], d1,
-                                        SOL_OUT_MAX, stdin=stdin_b)
+            sol_rc, out_b, tr_sol = _run_capped(
+                [sys.executable, "-I", "solution.py"], d1,
+                SOL_OUT_MAX, stdin=stdin_b)
         except subprocess.TimeoutExpired:
             return False, {"why": "산출 실행 시간 상한"}
+        if tr_sol:      # ★SR-7 — 절단 1MB를 심사하면 오수용/불투명-거부(재현 확정)
+            return False, {"why": f"산출 stdout 상한 초과({SOL_OUT_MAX}B — "
+                                  "절단본 심사 거부)", "sol_rc": sol_rc}
         # ── ②판정(별도 프로세스 — checker는 output.txt/input.txt 바이트만 본다) ──
         open(os.path.join(d2, "checker.py"), "wb").write(
             base64.b64decode(job["checker_b64"]))
         open(os.path.join(d2, "output.txt"), "wb").write(out_b)
         open(os.path.join(d2, "input.txt"), "wb").write(stdin_b)
         try:
-            chk_rc, chk_out = _run_capped([sys.executable, "-I", "checker.py"],
-                                          d2, CHK_OUT_MAX)
+            chk_rc, chk_out, tr_chk = _run_capped(
+                [sys.executable, "-I", "checker.py"], d2, CHK_OUT_MAX)
         except subprocess.TimeoutExpired:
             return False, {"why": "판정 시간 상한"}
+        if tr_chk:                                 # ★SR-7 — fail-closed를 명시 사유로
+            return False, {"why": f"판정 출력 상한 초과({CHK_OUT_MAX}B)"}
         ok = chk_rc == 0 and _accepts(chk_out)     # ★수용 = 마지막 줄 == OK
         return ok, {"sol_rc": sol_rc, "checker_rc": chk_rc,
                     "out_bytes": len(out_b),

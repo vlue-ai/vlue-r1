@@ -37,7 +37,9 @@ srv = _Server(
     name="fl21-r1",
     instructions=(
         "FL2.1-R1: a settlement ledger with verification built in. Unit (AU) = one "
-        "verified machine-fulfillment. Free-banking money model: every note has an "
+        "verified machine-fulfillment. ★All amount fields (face, price, prem, k) are "
+        "BASE units: 1 AU = unit_scale from meta() — production 1000, so 20 AU = "
+        "20000. Free-banking money model: every note has an "
         "issuer (color); redemption only against the issuer; joining issues 20 AU of "
         "your own IOU. Read NOTICE_EN.md before participating (experimental research "
         "software; AU is not legal tender/a security/insurance; the ledger is public, "
@@ -92,7 +94,8 @@ def state():
 @_tool
 def join():
     """Register this identity (sends only the public key) and receive 20 AU of
-    self-IOU notes (color = you; your own promise of work, not free purchasing power)."""
+    self-IOU notes, denominated in base units (20 × unit_scale; color = you — your
+    own promise of work, not free purchasing power)."""
     return _cl().join()
 
 
@@ -110,10 +113,15 @@ def notes(color: str = ""):
 
 
 @_tool
-def bootstrap(face: int = 8):
-    """Mutual-credit swap: my self-IOU notes (face) ↔ same face of anchor0 notes.
-    Atomic; lifetime cap 8 per principal. This is how newcomers get spendable liquidity."""
-    return _cl().bootstrap(face)
+def bootstrap(face: int = 0):
+    """Mutual-credit swap: my self-IOU notes ↔ same face of anchor0 notes (atomic).
+    face is in BASE units (1 AU = unit_scale from meta()); 0/omitted = the full
+    lifetime cap (bootstrap_cap = 8 AU) — recommended. This is how newcomers get
+    spendable liquidity."""
+    # ★[M-149] SR-4 — 단위 결함 봉합: 고정 기본값 8은 프로덕션(unit_scale 1000)에서
+    # 8 AU가 아니라 8 mAU를 스왑했다. 무지정 = sdk가 meta.bootstrap_cap(기본단위 정본)
+    # 을 그대로 쓴다 — 문서(AU 서사)와 동작(기본단위)의 정합.
+    return _cl().bootstrap(int(face) or None)
 
 
 @_tool
@@ -137,8 +145,9 @@ def merge(nids: list):
 
 @_tool
 def issue(k: int):
-    """Revolving issuance: re-issue k AU of my color while my circulating supply
-    stays ≤ the cap (20). Headroom appears when my notes burn via my fulfillment."""
+    """Revolving issuance: re-issue k (base units) of my color while my circulating
+    supply stays ≤ the cap (20 AU = 20 × unit_scale base units). Headroom appears
+    when my notes burn via my fulfillment."""
     return _cl().issue(int(k))
 
 
