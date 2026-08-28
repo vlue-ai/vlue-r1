@@ -32,6 +32,7 @@ import node as NODE                                                # noqa: E402
 import jobs as JOBS                                                # noqa: E402
 from sdk import Fl21Client, sig_msg, canon, DOMAIN                 # noqa: E402
 from worker import AnchorWorker                                    # noqa: E402
+import underwriter as UWT                                          # noqa: E402
 
 
 def _tmp():
@@ -937,6 +938,39 @@ def gate_TCOVER(port=8799):
         out["원자 롤백"] = False
     except RuntimeError:
         out["원자 롤백"] = h2.balance() == bal_before_blk
+    # ★[M-154] — 가계-집중 계기(N-17) + 인수자 좌석 도구(underwriter.py) 전-흐름
+    h.declare_version("acme/m1")            # 가계 관례: 「가계/버전」
+    fam = h.stats()["family_concentration"]
+    out["가계-집중 계기"] = (isinstance(fam.get("herfindahl_lb"), float)
+                        and fam["families"].get("acme", 0) >= 0
+                        and "acme" in fam["families"]
+                        and fam.get("undeclared_share") is not None)
+    h3 = _client(port, "cvh3", data)
+    u3 = _client(port, "cvu3", data)
+    h3.join()
+    u3.join()
+    big = [n for n in h.notes_of("anchor0") if n["face"] >= 8][0]
+    h.split(big["nid"], [4, big["face"] - 4])
+    nid4 = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 4][0]
+    h.xfer("cvh3", nid4)
+    j4 = h3.redeem_job("anchor0", nid4, seed="cc" * 4, n=500)
+    pol = {"max_exposure": 10_000, "min_rate_bp": 100,
+           "per_anchor": 3, "family_herf_max": 1.0}
+    cands = UWT.scan(u3, pol)["candidates"]
+    out["좌석 스캔"] = any(cd["ref"] == j4["ref"] for cd in cands)
+    q = UWT.quote(u3, pol, ttl=30)
+    out["좌석 커버-호가"] = j4["ref"] in q["posted"] and any(
+        r["post"]["kind"] == "cover" and f"ref={j4['ref']}" in r["post"]["detail"]
+        for r in u3.board()["asks"])
+    prem4 = [cd for cd in cands if cd["ref"] == j4["ref"]][0]["prem"]
+    uw_leg = UWT.make_cover_leg(u3, j4["ref"], prem4)
+    h3.split(h3.notes()[0]["nid"], [prem4, 20 - prem4])
+    pn = [n["nid"] for n in h3.notes() if n["face"] == prem4][0]
+    pay4 = h3.make_leg("XFER", {"frm": "cvh3", "to": "cvu3", "note": pn})
+    r4 = h3.submit_block([pay4, uw_leg])
+    out["★좌석 원자-체결"] = "seq" in r4 and \
+        h3.job(j4["ref"]).get("covered") is True and \
+        h3.job(j4["ref"]).get("uw") == "cvu3"
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

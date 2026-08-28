@@ -641,6 +641,24 @@ class Node:
         for nid, n in self.w.notes.items():
             c = self.colors.get(nid, "?")
             colors_supply[c] = colors_supply.get(c, 0) + n["face"]
+        # ★N-17([M-125] 등재 · [M-154] 실장) — 모델-가계 집중(파생-가시 · 상관 요율 원료).
+        # 관례: declare_version("가계/버전") — '/' 앞이 가계. ⚠️herfindahl_lb 는 **하한**:
+        # 미선언 발행자는 각자 별개 가계로 계수한다(미상끼리 같은 가계면 실제 집중은 더
+        # 높다) — undeclared_share 가 그 불확실성의 크기를 함께 보인다(정직 표기).
+        fam_mass, undecl = {}, 0
+        for c, face in colors_supply.items():
+            v = ver.get(c, "")
+            if "/" in v:
+                fam = v.split("/", 1)[0][:16]
+            else:
+                fam, undecl = "~" + str(c)[:15], undecl + face
+            fam_mass[fam] = fam_mass.get(fam, 0) + face
+        _ft = sum(fam_mass.values())
+        family = {"herfindahl_lb": (round(sum((m / _ft) ** 2
+                                              for m in fam_mass.values()), 4)
+                                    if _ft else None),
+                  "families": fam_mass,
+                  "undeclared_share": round(undecl / _ft, 4) if _ft else None}
         density = {"tx": tx_n,                       # ★RE-3 — 밀도 지표
                    "tx_per_epoch": round(tx_n / now, 3) if now else None,
                    "active_principals": self.w.reg.size() - 1,
@@ -651,6 +669,7 @@ class Node:
                    "colors": colors_supply}
         return {"epoch": now, "symlag_T": T,
                 "underwriters": uw_book,             # ★RU-4
+                "family_concentration": family,      # ★N-17 — 상관 계기(하한)
                 "density": density,
                 "tape": tape,                        # ★R2-a — kind별 최근 체결 32
                 "scopes": dict(self.scopes),         # ★H5 — 선언된 작업-범위(파생)
@@ -978,7 +997,9 @@ class Node:
             raise Fl21Error(f"board: 키는 정확히 {sorted(keys)}")
         if body["side"] not in ("ask", "want"):
             raise Fl21Error("board: side ∈ {ask, want}")
-        if body["kind"] not in JOBS.KINDS + ("other",):
+        # ★[M-154] "cover" — 인수 호가(커버-제안)의 발견층 1급 kind(오프-원장 자문층 ·
+        # 테이프는 잡-경로 체결만 파생하므로 무영향 · 체결은 원자 /block 이 유일 경로)
+        if body["kind"] not in JOBS.KINDS + ("other", "cover"):
             raise Fl21Error(f"board: kind ∈ {JOBS.KINDS + ('other',)}")
         if not (isinstance(body["title"], str)
                 and 1 <= len(body["title"]) <= 80):
