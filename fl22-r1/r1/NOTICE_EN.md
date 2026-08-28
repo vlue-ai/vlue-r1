@@ -61,6 +61,24 @@ by a single byte** (verified by full-ledger replay).
 - **What did not change**: no SLA · single sequencer · the two residual trust items below ·
   the five deliberate exclusions.
 
+## The two residual trust items · the five deliberate exclusions
+
+- **Two residual trust items** — verify everything else by re-execution instead of trust
+  (H7 full-ledger replay · envelope signatures · 2-of-3):
+  - ⓐ**Availability**: a single sequencer, no SLA — the operator can stop serving or drop
+    your message. What it cannot do is **retroactively rewrite history it already served**
+    (signatures and the hash chain detect that).
+  - ⓑ**Checker execution**: verification code runs on the operator's infrastructure at
+    settlement time. Every settled claim, however, stays **re-checkable by anyone**
+    afterward — by `challenge` and by full replay.
+- **Five deliberate exclusions** — these are decisions, not omissions:
+  ①**SLA** — this is experimental research operation; an availability promise would not
+  be honest ②**consensus redundancy** — a single sequencer + the law's mandatory
+  inclusion + full public replay (H7) is the honest shape at this scale ③**compliance
+  certification** — the notices above state this is not a regulated product ④**fiat
+  on/off-ramps** — as the "Nature of AU" section says, none are provided ⑤**auto-scaling**
+  — capacity is managed by published measurement, not by promises.
+
 ## Shutdown & succession (continuity is not guaranteed — but the procedure is published)
 
 - **Declaring it dead**: if the node has been unresponsive for 14+ days and `NODE_URL.txt`

@@ -166,17 +166,20 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
   law-form**. `verify_chain()` recomputes the whole hash chain and verifies the operator
   signature, the 2-of-3 co-signatures, and participants' envelope signatures on your own
   machine (detecting tampering, reordering, forgery).
-- ⚠️**What you still must trust (honest disclosure)**: whether the **derived state
-  (balances, escrow) is the result of the conservation laws** cannot be independently
-  verified in v0 (the genesis seed is secret, so full-state replay is impossible) — you
-  rely on the node's `/audit` self-check. Details and the mitigation path: `VERIFIER_EN.md`.
-- **What you must trust (current stage, honestly disclosed)**: a single sequencer
-  (censorship is defended by the ledger law's REQUEST/FORCE mandatory-inclusion) ·
-  issuance (self-IOU · swap) is an operator-signed law event · distributed custody of
-  co-signing keys is a deployment-stage property. · ★Your first fetch of `/meta`'s public
-  keys **from the node is trust-on-first-use (TOFU)** — strict verifiers should compare
-  log_id and the operator/co-signer public keys against the out-of-band channel
-  (the public release announcement).
+- ★**You need not trust the derived state either** (FL2.2 — H7 public replay): whether
+  **balances, escrow, and funds are the result of the conservation laws** is verified by
+  `replay_full.py`, which re-executes the full state **from `/meta`'s public keys alone**
+  (no seed, no secrets) — the node's `/audit` is a cross-check, not a dependency.
+  Details: `VERIFIER_EN.md`.
+- **What you must trust (current stage — two things remain)**: ⓐ**availability** — a
+  single sequencer can stop serving or drop your message (censorship is defended by the
+  ledger law's REQUEST/FORCE mandatory-inclusion; history already served cannot be
+  retroactively rewritten) ⓑ**checker execution** — checks run at the node when a job
+  settles (every settled claim stays re-checkable afterward, by `challenge` and by full
+  replay). · ★Your first fetch of `/meta`'s public keys **from the node is
+  trust-on-first-use (TOFU)** — strict verifiers should compare log_id and the
+  operator/co-signer public keys against `RELEASE.md` in the published repository
+  (the out-of-band channel).
 
 ## API reference (summary)
 
