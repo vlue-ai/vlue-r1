@@ -840,6 +840,14 @@ def gate_TSAMPLED(port=8797):
     except RuntimeError:
         out["★위조 재거부(유도-표본)"] = True
     out["★재추첨 흔적 1"] = c.job(j2b["ref"]).get("ocommits") == 1
+    try:                                             # ★[M-165] R4-1 — 형식-쓰레기는
+        e2c = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j2b["ref"]})
+        wk._post("/deliver", {"env": e2c,
+                              "output": {"final": "zz", "ckpts": ["zz"]}})
+        out["형식-쓰레기 거부"] = False
+    except RuntimeError:
+        out["형식-쓰레기 거부"] = True
+    out["★쓰레기는 ocommit 무-랜딩"] = c.job(j2b["ref"]).get("ocommits") == 1
     wk.deliver_job(j2b["ref"], good2b)
     out["★재추첨 공개-계수 2"] = c.job(j2b["ref"]).get("ocommits") == 2 and \
         c.job(j2b["ref"]).get("delivered") is True
@@ -1140,10 +1148,31 @@ def gate_TCOVER(port=8799):
     out["★가계-상한 보류"] = all(cd["anchor"] != "anchor0"
                                  for cd in sc3["candidates"]) and \
         sc3.get("family_open") == {}
+    # ★[M-165] C-1 — 신뢰-람다(기계-경제 신뢰-상한): 이행-부피 0인 앵커는 λ가
+    # 켜지면 전면 보류(빈 이력에 노출 불가 — build-up-burst 방어의 극한)
+    sc4 = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                        "trust_lambda": 0.5})
+    out["★신뢰-람다(무-이행 앵커 보류)"] = sc4["candidates"] == [] and \
+        len(sc2["candidates"]) >= 1
+    # ★[M-165] C-2 — 기간-carry: carry > 0 이면 같은 후보의 요율이 단조 증가
+    scC = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                        "carry_bp_per_epoch": 500})
+    c0 = {cd["ref"]: cd["prem"] for cd in sc2["candidates"]}
+    out["★carry 단조"] = all(cd["prem"] >= c0.get(cd["ref"], 0)
+                             for cd in scC["candidates"]) and \
+        any(cd["prem"] > c0.get(cd["ref"], 0) for cd in scC["candidates"])
+    # ★[M-165] C-3 — 색-실질 계기
+    ch = h.stats().get("color_health", {})
+    out["★색-실질 계기"] = "anchor0" in ch and \
+        ch["anchor0"].get("issuer_exited") is False and \
+        ch["anchor0"].get("issuer_balance", -1) >= 0
     # ★[M-164] U-D — 북 위험 엔진(계기 스모크): 열린 커버 북의 파멸-확률·분위 산출
     bk = UWT.book(u3, {"family_herf_max": 1.0}, trials=200)
     out["★북-엔진"] = bk["open_covers"] >= 1 and 0 <= bk["ruin_prob"] <= 1 \
         and bk["drawdown"]["p50"] <= bk["drawdown"]["p95"] <= bk["drawdown"]["max"]
+    wk.work_pending()                                # 이행 → 이행-부피 생성(맨 뒤)
+    stA = h.stats()["anchors"].get("anchor0", {})
+    out["★이행-부피 계기"] = stA.get("delivered_volume", 0) >= 4
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

@@ -230,6 +230,12 @@ class Node:
         if not a["ok"]:
             raise Fl21Error("기동 audit 실패")
         self.persisted = n
+        for _e in self.w.log:           # ★[M-165] R4-9 — 재기동 시 ocommit 재구성
+            if _e["env"]["typ"] == "TICKMARK" and \
+                    isinstance(_e["env"].get("args"), dict) and \
+                    _e["env"]["args"].get("kind") == "fl21.ocommit":
+                _r = _e["env"]["args"].get("ref")
+                self.ocommits[_r] = self.ocommits.get(_r, 0) + 1
         self._backfill_cosigs()      # ★내구성 자기치유(아래) — 크래시 반쪽-영속 봉합
 
     def _backfill_cosigs(self):
@@ -565,9 +571,16 @@ class Node:
             k = (a, ver.get(a, "v0"))
             return seg.setdefault(k, {"delivered": 0, "failed": 0, "mature": 0})
 
+        dvol = {}                     # ★[M-165] C-1 — 앵커별 이행-부피(액면 합):
+                                      #   기계-경제 신뢰-상한(λ×이행-부피)의 원료
+        dlast = {}                    # 앵커별 마지막 이행 에포크(색-실질 신호)
+
         def _deliver(a, ref, e):
             j = self.jobs.get(ref)
             t0 = j["t0"] if j and "t0" in j else None
+            if j:
+                dvol[a] = dvol.get(a, 0) + j["exposure"]
+                dlast[a] = max(dlast.get(a, 0), e["w_epoch"])
             s = _seg(a)
             s["delivered"] += 1
             # ★대칭-시차 계수([M-94] — 성숙 가시 = t0+T 통일 · t0 미상은 즉시)
@@ -633,6 +646,9 @@ class Node:
         for a, n in chal.items():                   # ★P-11 — 확인-불일치 공개 실적
             anchors.setdefault(a, {"version": ver.get(a, "v0"),
                                    "segments": {}})["challenged"] = n
+        for a, v in dvol.items():                   # ★[M-165] C-1 — 신뢰-상한 원료
+            anchors.setdefault(a, {"version": ver.get(a, "v0"),
+                                   "segments": {}})["delivered_volume"] = v
         prem_in = sum(c["prem"] for c in self.w.uw_open.values())
         # ★UW-1([M-113]·[M-126] 집행): prem은 인수자 자기-선언(커널 자기적립 —
         # 홀더→인수자 실지급에 비결박)이라 손해율의 분모로 신뢰 불가 ⟹ 정직 강등:
@@ -675,6 +691,16 @@ class Node:
         for nid, n in self.w.notes.items():
             c = self.colors.get(nid, "?")
             colors_supply[c] = colors_supply.get(c, 0) + n["face"]
+        # ★[M-165] C-3 — 색-실질 계기(기계-화폐 고유): 노트의 실질 = 발행자의
+        # 상환-가능성이다. 배상 노트가 가해-앵커 색으로 발행되는 설계(위험 꼬리표)에서
+        # 「도주한 색」을 들고 있는 피해자·매수자가 즉시 볼 수 있어야 정직하다.
+        color_health = {}
+        for c0, sup in colors_supply.items():
+            color_health[c0] = {
+                "supply": sup,
+                "issuer_exited": c0 in self.w.exited,
+                "issuer_balance": self.w.bal(c0) if isinstance(c0, str) else 0,
+                "last_delivery_epoch": dlast.get(c0)}
         # ★N-17([M-125] 등재 · [M-154] 실장) — 모델-가계 집중(파생-가시 · 상관 요율 원료).
         # 관례: declare_version("가계/버전") — '/' 앞이 가계. ⚠️herfindahl_lb 는 **하한**:
         # 미선언 발행자는 각자 별개 가계로 계수한다(미상끼리 같은 가계면 실제 집중은 더
@@ -704,6 +730,7 @@ class Node:
         return {"epoch": now, "symlag_T": T,
                 "underwriters": uw_book,             # ★RU-4
                 "family_concentration": family,      # ★N-17 — 상관 계기(하한)
+                "color_health": color_health,        # ★[M-165] C-3 — 색-실질(기계-화폐)
                 "density": density,
                 "tape": tape,                        # ★R2-a — kind별 최근 체결 32
                 "scopes": dict(self.scopes),         # ★H5 — 선언된 작업-범위(파생)
@@ -945,10 +972,18 @@ class Node:
         # 액면을 **커밋 전 라이브 원장**에서 포획(UW-1 자기-선언 한정어의 해소 —
         # 이 값은 노트 실물에서 읽은 것이라 위조-불가·H7 재유도 가능).
         pv = []
+        uw_count = {}
+        for lg in legs:
+            if lg.get("typ") == "UW":
+                u0 = (lg.get("args") or {}).get("uw")
+                uw_count[u0] = uw_count.get(u0, 0) + 1
         for lg in legs:
             if lg.get("typ") == "UW":
                 a = lg.get("args") or {}
                 uwp, ref = a.get("uw"), a.get("ref")
+                if uw_count.get(uwp, 0) != 1:
+                    continue          # ★[M-165] R4-3 — 다중-UW 블록은 귀속 모호:
+                                      #   보수적으로 포획 생략(과대-계상 금지)
                 fee = sum((self.w.notes.get(str((x.get("args") or {})
                                                 .get("note")), {})
                            .get("face", 0))
@@ -1383,6 +1418,12 @@ class Handler(BaseHTTPRequestHandler):
                     spec = nd.deliver_lookup(env)
                     idxs = None
                     if spec["kind"] == "sha256_chain_sampled":
+                        # ★[M-165] R4-1 — 형식-사전검사(암호-무·락 안 짧게):
+                        # 쓰레기-형식이 무-비용으로 ocommit 원장-비대를 만들지 못하게
+                        pok, pwhy = JOBS.precheck_sampled(spec, output)
+                        if not pok:
+                            raise Fl21Error(f"산출 검증 실패 — 이행 불인정"
+                                            f"({pwhy.get('why', '형식')})")
                         # ★[M-164] 커밋-표본: 커밋 랜딩 후 head-유도 인덱스로 검증
                         idxs, cseq = nd.ocommit_and_derive(env, output)
                 if idxs is not None:  # 2) 락 밖: 유도-표본으로 무거운 검증

@@ -48,7 +48,17 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   # ★[M-162] 요율 로딩(% · 100 = 무-로딩): LSFULL 실측 권장 = 125
                   "loading_pct": 100,
                   # ★[M-164] 가계별 열린-커버 상한(None = 끔 · E-FAM 실증 — 상관 축)
-                  "family_cap": None}
+                  "family_cap": None,
+                  # ★[M-165] C-1 기계-경제 신뢰-상한: 앵커당 내 열린-노출 ≤ λ ×
+                  # 그 앵커의 누적 이행-부피(원장-파생). 인간-보험의 「시간이 신뢰를
+                  # 만든다」를 기각 — 기계는 명성을 분 단위로 쌓고 한 번에 태울 수
+                  # 있으므로(build-up-burst) 신뢰는 시간이 아니라 **정산된 부피**에
+                  # 결박한다: X를 털려면 먼저 X/λ를 실제로 이행해야 한다. None = 끔.
+                  "trust_lambda": None,
+                  # ★[M-165] C-2 기간-비례 자본-비용(bp/에포크 · 0 = 끔): 담보 β·E가
+                  # T 동안 잠긴다 — 기계-경제의 이자율 = 담보 회전율. 장기-T 커버가
+                  # 공짜가 아니게 하는 항(인간-보험의 기간-보험료의 기계판).
+                  "carry_bp_per_epoch": 0}
 
 
 def _premium(c, ref, exposure, policy, ctx=None):
@@ -80,7 +90,13 @@ def _premium(c, ref, exposure, policy, ctx=None):
     except Exception:
         pass
     fair = -(-sug * delta_pct // 100)
-    return max(-(-fair * load // 100), floor, 1)
+    carry = 0
+    cbp = policy.get("carry_bp_per_epoch", 0)
+    if cbp and ctx and "job" in ctx:
+        t_rem = max(0, ctx["job"].get("deadline", 0)
+                    - ctx.get("epoch", ctx["job"].get("deadline", 0)))
+        carry = -(-(exposure // 2) * t_rem * cbp // 10_000)   # 담보 β·E × T × bp
+    return max(-(-fair * load // 100) + carry, floor, 1)
 
 
 def scan(c, policy=None):
@@ -110,7 +126,8 @@ def scan(c, policy=None):
         v = an.get("version") or ""
         fam_of[a2] = v.split("/", 1)[0] if "/" in v else None
     fam_open = {}
-    per_open = {}                  # 앵커별 열린-노출 선-계상(δ의 r 분모)
+    per_open = {}                  # 앵커별 열린 부보-노출(δ의 r 분모 — R4-2)
+    mine_exp = {}                  # 앵커별 내 열린-노출(신뢰-람다 분자)
     epoch = st["epoch"]
     mine = 0                       # 내 미결 커버(앵커당 계수용 — job 조회로 파악)
     per_anchor = {}
@@ -125,6 +142,12 @@ def scan(c, policy=None):
             continue
         for ref in sorted(js):
             j = c.job(ref)
+            if j.get("covered") and not j.get("delivered"):
+                # ★[M-165] R4-2 — δ의 r-분모는 「폭포에 들어올 열린 부보-노출 전부」다:
+                # 후보만 세면 분모 과소 → r 과대 → δ 과소 → **요율 과소**(인수자 손해).
+                per_open[a] = per_open.get(a, 0) + j["exposure"]
+                if j.get("uw") == c.p:
+                    mine_exp[a] = mine_exp.get(a, 0) + j["exposure"]
             if j.get("covered") or j.get("delivered"):
                 continue
             if j.get("holder") == c.p:
@@ -138,6 +161,11 @@ def scan(c, policy=None):
                 continue
             if per_anchor.get(a, 0) >= policy["per_anchor"]:
                 continue
+            lam = policy.get("trust_lambda")
+            if lam is not None:
+                dv = (st["anchors"].get(a) or {}).get("delivered_volume", 0)
+                if mine_exp.get(a, 0) + j["exposure"] > lam * dv:
+                    continue            # ★C-1 — 이행-부피가 신뢰의 상한
             fam = fam_of.get(a)
             fcap = policy.get("family_cap")
             if fcap is not None and fam is not None and \
@@ -146,7 +174,7 @@ def scan(c, policy=None):
             per_anchor[a] = per_anchor.get(a, 0) + 1
             if fam is not None:
                 fam_open[fam] = fam_open.get(fam, 0) + 1
-            ctx = {"job": j, "bal": {}, "open_exp": per_open}
+            ctx = {"job": j, "bal": {}, "open_exp": per_open, "epoch": epoch}
             out.append({"ref": ref, "anchor": a, "exposure": j["exposure"],
                         "deadline": j["deadline"],
                         "prem": _premium(c, ref, j["exposure"], policy, ctx)})
@@ -364,11 +392,17 @@ def main():
                     help="요율 로딩 %%(100=무-로딩 · LSFULL 실측 권장 125)")
     ap.add_argument("--family-cap", type=int, default=None,
                     help="가계별 열린-커버 상한(상관 축 — E-FAM 실증·기본 끔)")
+    ap.add_argument("--trust-lambda", type=float, default=None,
+                    help="앵커당 내 노출 ≤ λ×이행-부피(기계-경제 신뢰-상한·기본 끔)")
+    ap.add_argument("--carry-bp", type=int, default=0,
+                    help="기간-비례 자본-비용 bp/에포크(담보 회전율의 가격·기본 0)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
            "max_concurrent": a.max_concurrent,
-           "loading_pct": a.loading_pct, "family_cap": a.family_cap}
+           "loading_pct": a.loading_pct, "family_cap": a.family_cap,
+           "trust_lambda": a.trust_lambda,
+           "carry_bp_per_epoch": a.carry_bp}
     c = _mk_client(a.url, a.key, a.name)
     if a.cmd == "book":
         print(json.dumps(book(c, pol), ensure_ascii=False, indent=1))

@@ -178,7 +178,9 @@ def validate_spec(job):
     return spec
 
 
-def _verify_sampled(job, output, idxs=None):
+def precheck_sampled(job, output):
+    """★[M-165] 형식-사전검사(암호-무): 커밋-표본이 원장에 커밋을 **먼저** 박으므로,
+    형식-쓰레기가 무-비용으로 원장을 비대화하지 못하게 커밋 전에 거른다(R4-1)."""
     if not (isinstance(output, dict) and "final" in output and "ckpts" in output):
         return False, {"why": "산출 형식"}
     n = job["n"]
@@ -187,8 +189,6 @@ def _verify_sampled(job, output, idxs=None):
     if not (isinstance(ck, list) and len(ck) == want
             and ck[-1] == output["final"]):
         return False, {"why": "체크포인트 형식"}
-    # ★hex 유효성 선검증(완결성 점검 low): 비정형 원소가 표본 인덱스에 따라 비결정적으로
-    # uncaught ValueError를 던지던 것 봉합 — 형식 불량은 결정론적 거부.
     if not all(isinstance(x, str) and len(x) == 64 for x in ck):
         return False, {"why": "체크포인트 형식(hex 64)"}
     try:
@@ -196,6 +196,16 @@ def _verify_sampled(job, output, idxs=None):
             bytes.fromhex(x)
     except ValueError:
         return False, {"why": "체크포인트 비-hex"}
+    return True, {}
+
+
+def _verify_sampled(job, output, idxs=None):
+    ok, why = precheck_sampled(job, output)
+    if not ok:
+        return ok, why
+    n = job["n"]
+    want = -(-n // CKPT)
+    ck = output["ckpts"]
     # ★표본: 노드-경로 = 원장-유도(ocommit head — [M-164] 커밋-표본 · 재추첨 흔적 +
     # H7 재검증-가능) · 외부/챌린지 = 호출자-측 신선 무작위(검증자 자신의 몫)
     if idxs is None:

@@ -110,9 +110,15 @@ python3 underwriter.py watch --url ... --key ... --name me --poll 60
 premium)` together with your UW leg via `/block` — premium and cover land
 **all-or-nothing** (the exact flow the T-COVER gate verifies). Policy dials:
 `--max-exposure` (default 2,000 units) · `--min-rate-bp` (10) · `--per-anchor` (3) ·
-`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — the time-concentration axis) · ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 —
-LSFULL measured: at δ→1 a p̂-matched rate is zero-margin, so an experience book
-survives on loading · measured recommendation **125**).
+`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — the time-concentration axis) · ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
+★`--trust-lambda` ([M-165] — a **machine-economy trust cap**: my exposure per anchor
+≤ λ × that anchor's cumulative delivered volume [`/stats.anchors[a].delivered_volume`].
+Human insurance lets time build trust; machines build reputation in minutes and can
+burn it all at once (build-up-burst) — so bind trust to **settled volume**, not time:
+to steal X one must first actually deliver X/λ · off by default) · ★`--carry-bp`
+([M-165] — term-proportional capital cost, bp/epoch: collateral β·E is locked for T.
+**The machine economy's interest rate is collateral turnover** — long-T cover stops
+being free · default 0).
 
 ## §5 Honest limits (v0)
 
@@ -131,5 +137,13 @@ survives on loading · measured recommendation **125**).
   `/stats`): F_uw = **0** · one anchor (anchor0, free balance 40,000 units = 40 AU).
   The fund layer is empty until premiums fill it — thin-at-micro-scale is the design,
   not an accident. Cap your own storm exposure via `--per-anchor` and `--max-exposure`.
+- ★**What compensation is really worth** (native to work-money — honesty
+  strengthened): compensation notes are minted in the **offender's color** (the risk
+  tag). In an absconding scenario cover pays **face, but that face's redemption value
+  can be zero** (redeemable only against the absconded issuer) — victims and buyers
+  should price notes with `/stats.color_health` (per-color supply, issuer EXIT flag,
+  balance, last delivery). Redesigning compensation color (offender vs underwriter —
+  the underwriter is alive, so their color has redemption substance) is **referred to
+  FL2.3**.
 - Misjudgment cover (insurance on judge jobs) is the next installment
   (`ANCHOR_SCOPE_EN` notice — arrives with the deviation metric).
