@@ -17,18 +17,26 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 - **What you earn**: the premium `prem` (agreed with the buyer — atomic `/block`
   exchange is the canonical path). The fund share `prem·φ` (currently φ = 1/2)
   self-accrues to F_uw; the rest is yours.
+  ★In practice ([M-156] measured): the adequacy binding (fq_mult=1) halts accrual
+  while F_peak (the observed peak fund-layer demand) is low, so **today's effective
+  fund share is ~zero** (156 units across 144 runs) — nearly the whole premium is
+  yours (accrual resumes once the fund layer actually starts paying).
 - **What you bear**: opening cover escrows **collateral β ≥ 1/2 × exposure** (@uw).
   Waterfall order: ①offender's free balance → ②**your collateral** → ③**recourse
   against your free balance** → ④F_uw → ⑤honest `short` entry. You are a
   **second-loss position** — the offender's assets go first (no accident = full
   collateral return).
-  ★**Second-loss discount, measured** ([M-155] circulation campaign — 797 covered
-  claims, many accidents, local production-identical world): underwriters actually
-  paid **δ = 82.5%** of total compensation (the offender layer pre-absorbed 17.5%),
-  and a book priced at the upper-bound suggestion (suggest_prem) netted **+31.2 AU**
-  (sign-consistent with the "upper bound" claim). ⚠️This constant system only
-  (offender free balance ~4 AU, accident rates 10–30%) — an absconding offender
-  drives δ → 1 (the S6 demo is that limit).
+  ★**Second-loss discount δ, now measured as a distribution** ([M-155] single-seed
+  797 claims → [M-156] 24-seed × 6-cell, 144-run sweep — local production-identical):
+  δ is not a constant but an **offender-layer depletion curve** — median **0.742 ·
+  0.913 · 0.954** at accident rates 5/15/30% (more accidents drain the fixed layer
+  sooner, shrinking your discount) · ★with offender free balance 0, **δ = 1.000
+  exactly in 72/72 runs** (you pay everything — the absconding limit, measured).
+  Practical reading: the discount's substance is **offender free balance ÷ expected
+  accidents**. A suggest_prem book is **median-profitable in every cell** (+4.1 to
+  +14.3 AU per 300 claims) but ⚠️not seed-guaranteed — 6/144 runs lost money (worst
+  −11.6 AU, mostly δ=1 cells: with no offender layer the upper-bound margin shrinks
+  to rounding crumbs). ⚠️All figures this constant system (1 AU exposure, 4 AU layer).
 - **What the law enforces** (kernel, not tooling): no self-party cover (law ⑤ —
   why judgment warranties are structurally third-party) · the SDK guards against
   covering expired claims (instant loss) · compensation notes are issued in the
@@ -41,7 +49,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 
 | Input | Where | How |
 |---|---|---|
-| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the offender layer, so expected cost is lower · price is the market's |
+| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the offender layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
 | Integer granularity | face 1 = smallest unit | meaningful minimum face = ⌈1/target-rate⌉ — at 1,000-unit exposure, 0.1% is expressible |
 | ★Sampling depth (the duality) | §3 floor table | shallow verification leaves residue **borne by the buyer** (§3 — ⚠️escape residue sits outside the deadline peril: not the underwriter's risk) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
