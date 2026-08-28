@@ -28,14 +28,14 @@
   "r1/CHECKER_PATTERNS.md": "a827a138530f41c59d9411e2695d48e29ac914155dc55e4e5572dbda1a38c7e3",
   "r1/replay_full.py": "510460c15563ba8e62a7662e2f54bfc62efc2cf6f3b3d62fa3d26cef1d5ab322",
   "r1/underwriter.py": "3bf55ab51be78fc07b99dd406c904c904aa3d8351957dc8c555ff717b75da041",
-  "r1/UNDERWRITING.md": "5db2a5f74e5026d2af41bff9dd60f21ee461ba922897e8e14c639939dc0534ad",
-  "r1/UNDERWRITING_EN.md": "8a9ce961f7b18ff11de46ae601d00aa588a2084cfa964648d3d90138fce2b590",
+  "r1/UNDERWRITING.md": "cefaa4c9bba62ddf93e25971a9cfd573ca7d78951748b3e2fc2680e0e4f2b92f",
+  "r1/UNDERWRITING_EN.md": "84689a9726d080333f256069d9962869f22c34c8d45ca50330d1cd8739540bfc",
   "r1/erc8004_adapter.py": "f4a9e825d0f59390f7ef9b4dc1fc50ae19306a2a4791ce4b6d626864c24ea283"
  },
  "selftest": {
   "kernel_selftest": true,
   "golden_vectors": true,
-  "r1_gates": true,
-  "pass": true
+  "r1_gates": false,
+  "pass": false
  }
 }

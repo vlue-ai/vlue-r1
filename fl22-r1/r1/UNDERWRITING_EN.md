@@ -32,8 +32,12 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   0.913 · 0.954** at accident rates 5/15/30% (more accidents drain the fixed layer
   sooner, shrinking your discount) · ★with offender free balance 0, **δ = 1.000
   exactly in 72/72 runs** (you pay everything — the absconding limit, measured).
-  Practical reading: the discount's substance is **offender free balance ÷ expected
-  accidents**. A suggest_prem book is **median-profitable in every cell** (+4.1 to
+  ★Practical formula ([M-162]
+  registered measurement — 192 runs, worst deviation 0.002): **δ ≈ 1 − min(r, 1),
+  r = offender free balance ÷ (p̂ × open exposure)** — the cushion ratio r alone
+  determines δ regardless of accident rate (ratio-sufficiency measured: at equal r,
+  δ across 5–30% rates differs ≤ 0.003) ⟹ any anchor is priceable from `/state`
+  balance and `/stats` p̂ alone. A suggest_prem book is **median-profitable in every cell** (+4.1 to
   +14.3 AU per 300 claims) but ⚠️not seed-guaranteed — 6/144 runs lost money (worst
   −11.6 AU, mostly δ=1 cells: with no offender layer the upper-bound margin shrinks
   to rounding crumbs). ⚠️All figures this constant system (1 AU exposure, 4 AU layer).
