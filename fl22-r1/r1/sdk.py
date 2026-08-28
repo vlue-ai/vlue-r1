@@ -349,24 +349,32 @@ class Fl21Client:
         cap = g["fq_mult"] * max(st["F_peak"], g["fq_base"])
         if g["fq_mult"] > 0 and st["F_uw"] + prem_f > cap:
             prem_f = 0                            # ★흡입-결박 미러(커널 v0.3 동형)
-        want = need + prem_f + 2                  # ★[M-129] — 기금 몫까지 선-충당
-        ones = [n["nid"] for n in self.notes() if n["face"] == 1]
-        if len(ones) < want:
-            big = max(self.notes(), key=lambda x: x["face"])
-            if big["face"] >= 2:
-                parts = [1] * min(big["face"], want + 2 - len(ones))
-                rest = big["face"] - len(parts)
-                if rest > 0:
-                    parts.append(rest)
-                self.split(big["nid"], parts)
-                ones = [n["nid"] for n in self.notes() if n["face"] == 1]
-        if len(ones) < need:
-            raise RuntimeError(f"담보 부족: 1-노트 {len(ones)} < {need}")
-        cov = ones[:need]
-        fund = ones[need:need + prem_f]
-        if len(fund) < prem_f:
-            raise RuntimeError(f"기금 노트 부족({len(fund)} < {prem_f} — "
-                               "잔고 확인)")
+        # ★[M-155] F-1 — 정확-액면 담보: 커널은 담보를 **합계**로 검증하고 정산은
+        # 잉여를 mint-back 한다(U-2 — 유통 캠페인에서 원문 재확인) ⟹ 종전 1-단위
+        # 쪼개기(구현 선택)는 커버당 노트 O(need) 증식 = state_root 천장 낭비였다.
+        # 필요 액면을 정확히 깎아 담보 1장 + 기금 ≤1장으로 연다(경제 동일 — T-COVER).
+        used = set()
+
+        def _carve(face):
+            if face <= 0:
+                return None
+            for n in self.notes():
+                if n["face"] == face and n["nid"] not in used:
+                    used.add(n["nid"])
+                    return n["nid"]
+            frees = [n for n in self.notes() if n["nid"] not in used]
+            big = max(frees, key=lambda x: x["face"]) if frees else None
+            if big is None or big["face"] < face:
+                raise RuntimeError(
+                    f"담보·기금 재원 부족(필요 액면 {face} · "
+                    f"최대 가용 {big['face'] if big else 0})")
+            self.split(big["nid"], [face, big["face"] - face])
+            nid = next(n["nid"] for n in self.notes()
+                       if n["face"] == face and n["nid"] not in used)
+            used.add(nid)
+            return nid
+        cov = [_carve(need)]
+        fund = [f for f in [_carve(prem_f)] if f]
         env = self.sign_env("UW", {"uw": self.p, "ref": ref,
                                    "cov_notes": cov, "prem": prem,
                                    "prem_fund_notes": fund})

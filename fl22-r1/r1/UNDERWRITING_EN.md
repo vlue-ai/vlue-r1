@@ -22,6 +22,13 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   against your free balance** → ④F_uw → ⑤honest `short` entry. You are a
   **second-loss position** — the offender's assets go first (no accident = full
   collateral return).
+  ★**Second-loss discount, measured** ([M-155] circulation campaign — 797 covered
+  claims, many accidents, local production-identical world): underwriters actually
+  paid **δ = 82.5%** of total compensation (the offender layer pre-absorbed 17.5%),
+  and a book priced at the upper-bound suggestion (suggest_prem) netted **+31.2 AU**
+  (sign-consistent with the "upper bound" claim). ⚠️This constant system only
+  (offender free balance ~4 AU, accident rates 10–30%) — an absconding offender
+  drives δ → 1 (the S6 demo is that limit).
 - **What the law enforces** (kernel, not tooling): no self-party cover (law ⑤ —
   why judgment warranties are structurally third-party) · the SDK guards against
   covering expired claims (instant loss) · compensation notes are issued in the
@@ -36,7 +43,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 |---|---|---|
 | p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the offender layer, so expected cost is lower · price is the market's |
 | Integer granularity | face 1 = smallest unit | meaningful minimum face = ⌈1/target-rate⌉ — at 1,000-unit exposure, 0.1% is expressible |
-| ★Sampling depth (the duality) | §3 floor table | shallow verification leaves residue — **premium floor = escape rate × exposure** |
+| ★Sampling depth (the duality) | §3 floor table | shallow verification leaves residue **borne by the buyer** (§3 — ⚠️escape residue sits outside the deadline peril: not the underwriter's risk) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
 | Challenge record | `/stats.anchors[a].challenged` | public re-verification mismatches — grounds for surcharge |
 
@@ -58,15 +65,19 @@ with the hypergeometric theory within 3σ:
 | 20 (1M) | **0.893** (0.900) | **~9,000bp** | 0.828 | 0.620 |
 
 How to read it: **the residual risk of k=2 sampling is large** — a single-segment
-forgery passes 60–89% of the time. So ⓐ the fair premium floor for sampled jobs =
-escape rate × exposure (taking them uncovered means bearing that risk for free)
-ⓑ deeper verification (k↑) cuts the premium steeply, and verification cost is
-exactly linear in k (measured: k 2→16 = 37.6→298.9ms, R² = 1.00) — the
-**depth-versus-premium exchange now has measured prices on both sides**. m=2
-forgeries escape less in every cell (see the JSON) — one corrupted segment is the
-forger's optimum, so the table is a conservative floor.
-⚠️Qualifiers: chain-consistent forgery model · this constant system (CKPT 50,000,
-uniform random sampling) only · exact numbers in
+forgery passes 60–89% of the time. ⚠️★**That residue is borne by the buyer**
+(correction [M-155], finding #0): an escaped forgery settles as *success*, so the
+**deadline-accident cover does not pay** — underwriters carry no escape risk (your
+peril is non-delivery only). What the table is for: ⓐ **buyers** should discount
+sampled jobs by the escape rate, raise k, or make `challenge` a habit (each
+re-verification draws a fresh sample — escape compounds down multiplicatively)
+ⓑ the cost of deeper verification is exactly linear in k (measured: k 2→16 =
+37.6→298.9ms, R² = 1.00) — the **depth-versus-residue exchange now has measured
+prices on both sides** ⓒ turning the escape residue into an insurance product
+(challenge-triggered cover) is a registered R2 item. m=2 forgeries escape less in
+every cell — one corrupted segment is the forger's optimum, so the table is
+conservative. ⚠️Qualifiers: chain-consistent forgery model · this constant system
+(CKPT 50,000, uniform random sampling) only · exact numbers in
 `research/results/rsample_2026-08-28.json`.
 
 ## §4 Running the seat — underwriter.py

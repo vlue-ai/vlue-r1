@@ -6,7 +6,7 @@
   "fin_lean/lang22/kernel22_selftest.py": "5695642ae9532b3ce431ec34dbca5a5e62e6a5809647d41e61e0e2dedd73e94c",
   "fin_lean/lang22/frontier_vectors.py": "9c3cc347ffa3120c7f8a36ba203853ae7811e4c67193bf79b8fcedb5d74893c0",
   "r1/node.py": "8f769f3102c43a05fb46ec9030e4ff7fdaac23a49987f7ab3ed889f20ef65d7a",
-  "r1/sdk.py": "35c7815b16a2de389f1e2df54cf6259db621ddc9af946e90ae2ad3acf3732757",
+  "r1/sdk.py": "ad4abedb9332bf13de32ee746875fc84c7bcb9a248ad1ba5fc90a09615ee07bf",
   "r1/jobs.py": "a2d02b5da8cc2f7eb7e652e69a8c4dd336315bff1ed17032747bfa1ff762d566",
   "r1/worker.py": "8ccc147a5aed51a508589feb95dec53af9e7dabb15c523940ac90d0ef0c8813c",
   "r1/cosigner.py": "73b4dd6f46713db9ce60a11e533aa2fd32a341afb494f9de6bdf13ca16d6bcb3",
@@ -28,8 +28,8 @@
   "r1/CHECKER_PATTERNS.md": "a827a138530f41c59d9411e2695d48e29ac914155dc55e4e5572dbda1a38c7e3",
   "r1/replay_full.py": "510460c15563ba8e62a7662e2f54bfc62efc2cf6f3b3d62fa3d26cef1d5ab322",
   "r1/underwriter.py": "066452e7b003d98694da9909c09e9561114951d01aa54e36dbe7ab0b63a86c56",
-  "r1/UNDERWRITING.md": "3a97ac87bfd5dbb17ed8049553c5efe7bf4db75183e74332ece8c75e59aed1a4",
-  "r1/UNDERWRITING_EN.md": "3a24209b9133e19195369652276f67febee16b2f674032787407320325d8d411"
+  "r1/UNDERWRITING.md": "4085ec6cb1e2bb09637c738adda2717b4f04abea74a885e34a5355d062681655",
+  "r1/UNDERWRITING_EN.md": "73f28b57a9d7556ae04264ec855fd9acbda0faaab03098fa174f84d15773c2ce"
  },
  "selftest": {
   "kernel_selftest": true,
