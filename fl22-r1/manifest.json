@@ -35,7 +35,7 @@
  "selftest": {
   "kernel_selftest": true,
   "golden_vectors": true,
-  "r1_gates": false,
-  "pass": false
+  "r1_gates": true,
+  "pass": true
  }
 }
