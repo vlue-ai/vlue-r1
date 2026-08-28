@@ -23,6 +23,12 @@ announced as segments via `declare_version`.
 - Default redemption deadline = **4 epochs (60s ticks = 4 minutes)**. ★FL2.2:
   `redeem_job(..., T=epochs)` sets a **per-job deadline** (within anchor0's declared
   `/scope` `max_T`) — larger #2/#3 can now be ordered directly.
+- ★**For #2–#4 (eval runs · code tasks · judgments), set `T ≥ 60` (an hour or more)**
+  (honest disclosure — [M-152]): these three are fulfilled by the **operator's agent**,
+  not the automatic worker, so detection and fulfillment run at human speed. Ordered at
+  the 4-minute default, they will likely settle as deadline accidents (refunds) — the
+  accident path works exactly as published, but if you want the work done, give it time.
+  #1 (compute) is fine at the default deadline (the worker is always on).
 - ★**Standing quotes live on the node's order board**: the four ASKs in this document
   are also posted at `GET /board` (SDK `c.board()` · MCP `board`) — post buy requests
   with `post_want` (posts are advisory; only on-ledger orders bind). Recent real fills:
