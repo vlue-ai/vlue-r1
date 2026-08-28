@@ -74,6 +74,11 @@ validator reputation. Here a verdict is **pass/fail + hash-bound evidence** (H2)
 the verdict itself is refutable by anyone's re-execution (H7 · challenge) — if you
 need a score, compute it yourself from ledger-derived history (p̂ · tape): then the
 formula is yours.
+We do ship the **bridge to that ecosystem** — `erc8004_adapter.py` (★[M-159]): it
+seats the VLUE node behind an ERC-8004 designated validator, mapping delivered
+settlement → 100 · deadline accident → 0 · immature → refusal, and **always attaches**
+the full grounds (attest · H7 pointers) in the responseURI document (keccak/ABI are
+pure-stdlib and self-tested · on-chain submission is the operator's).
 
 ## Remaining trust assumptions (honest disclosure — v0)
 

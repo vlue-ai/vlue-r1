@@ -1790,6 +1790,49 @@ def gate_TROOT():
     return out
 
 
+def gate_TERC8004(port=8821):
+    """★V-1([M-159]) — ERC-8004 지목-검증자 어댑터: keccak·ABI 자기검증 ∧ 판정 사상
+    실동(이행→100 · 시한-사고→0 · ★미성숙(open)→응답 거부) ∧ responseHash 결박."""
+    import erc8004_adapter as EA
+    out = dict(EA.selftest())
+    del out["pass"]
+    nd, srv, data = _serve(port)
+    c = _client(port, "e8", data)
+    c.join()
+    c.bootstrap(8)
+    a8 = c.notes_of("anchor0")[0]
+    c.split(a8["nid"], [1, 1, a8["face"] - 2])
+    n1, n2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][:2]
+    outdir = os.path.join(data, "e8out")
+    url = f"http://127.0.0.1:{port}"
+    # ⓐ 이행 잡 → 100
+    j1 = c.redeem_job("anchor0", n1, seed="ee" * 8, n=5000)
+    wk = AnchorWorker(url, os.path.join(data, "anchor0.key"))
+    wk.work_pending()
+    r1_ = EA.respond(url, j1["ref"], "11" * 32, "u://1", outdir)
+    doc = json.load(open(r1_["doc"]))
+    out["이행→100"] = r1_["response"] == 100 and doc["verdict"] == 100
+    out["responseHash 결박"] = EA.keccak256(
+        open(r1_["doc"], "rb").read()).hex() == r1_["responseHash"]
+    # ⓑ 미성숙 → 거부
+    j2 = c.redeem_job("anchor0", n2, seed="ef" * 8, n=5000)
+    try:
+        EA.respond(url, j2["ref"], "11" * 32, "u://2", outdir)
+        out["★미성숙 거부"] = False
+    except SystemExit as ex:
+        out["★미성숙 거부"] = "미성숙" in str(ex)
+    # ⓒ 시한-사고 정산 → 0
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        nd.tick()
+    r0 = EA.respond(url, j2["ref"], "22" * 32, "u://2", outdir)
+    out["사고→0"] = r0["response"] == 0
+    cd = open(r0["calldata"]).read().strip()
+    out["calldata 접두"] = cd.startswith(r0["selector"])
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -1809,7 +1852,8 @@ def main():
              "T-ROOT 뿌리(무작위×불변식)": gate_TROOT(),
              "T-SCOPE 범위결박": gate_TSCOPE(),
              "T-CHALLENGE 챌린지창": gate_TCHALLENGE(),
-             "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22()}
+             "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22(),
+             "T-ERC8004 어댑터": gate_TERC8004()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)
