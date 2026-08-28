@@ -41,7 +41,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
 
 
 DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
-                  "per_anchor": 3, "family_herf_max": 0.95}
+                  "per_anchor": 3, "family_herf_max": 0.95,
+                  # ★U-1([M-157]) — 동시-열린-커버 상한: 층 ③(소구)은 자유 잔고를
+                  # 같은 틱 동시-성숙분이 나눠 쓴다([ADR-388] 실측 — 폭풍의 실제 다이얼)
+                  "max_concurrent": 8}
 
 
 def _premium(c, ref, exposure, policy):
@@ -55,13 +58,21 @@ def scan(c, policy=None):
 
     필터(전부 앞단 정책 — 법이 아닌 것): ⓐ자기-당사자 아님(커널 법 ⑤가 최종 강제)
     ⓑ노출 ≤ max_exposure ⓒ기한 전 ⓓ앵커당 내 미결 커버 수 < per_anchor
-    ⓔ가계-집중 하한 ≤ family_herf_max(초과 시 전면 보류 — 상관 폭풍 노출 억제)."""
+    ⓔ가계-집중 하한 ≤ family_herf_max(초과 시 전면 보류 — 상관 폭풍 노출 억제)
+    ⓕ★내 동시-열린-커버 < max_concurrent(U-1 계기 소비 — 시간-집중 상한 · [ADR-388])."""
     policy = {**DEFAULT_POLICY, **(policy or {})}
     st = c.stats()
     herf = (st.get("family_concentration") or {}).get("herfindahl_lb")
     if herf is not None and herf > policy["family_herf_max"]:
         return {"candidates": [], "held": "family_herf_lb %.4f > %.4f — 상관 보류"
                 % (herf, policy["family_herf_max"])}
+    me = (st.get("underwriters") or {}).get(c.p, {})
+    oc = me.get("open_covers", 0)
+    if oc >= policy["max_concurrent"]:
+        return {"candidates": [], "open_mine": oc,
+                "held": "open_covers %d ≥ max_concurrent %d — 동시-집중 보류"
+                % (oc, policy["max_concurrent"]),
+                "maturity_peak": me.get("maturity_peak")}
     epoch = st["epoch"]
     mine = 0                       # 내 미결 커버(앵커당 계수용 — job 조회로 파악)
     per_anchor = {}
@@ -155,9 +166,13 @@ def main():
     ap.add_argument("--per-anchor", type=int, default=DEFAULT_POLICY["per_anchor"])
     ap.add_argument("--family-herf-max", type=float,
                     default=DEFAULT_POLICY["family_herf_max"])
+    ap.add_argument("--max-concurrent", type=int,
+                    default=DEFAULT_POLICY["max_concurrent"],
+                    help="동시-열린-커버 상한(U-1 시간-집중 · 가계-상한과 직교)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
-           "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max}
+           "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
+           "max_concurrent": a.max_concurrent}
     c = _mk_client(a.url, a.key, a.name)
     if a.cmd == "scan":
         print(json.dumps(scan(c, pol), ensure_ascii=False, indent=1))

@@ -637,6 +637,28 @@ class Node:
         for u_, b in uw_book.items():
             b["loss_ratio_selfdecl"] = round(b["paid"] / b["prem"], 3) \
                 if b["prem"] else None
+        # ★U-1([M-157] · [ADR-388] 계보) — 동시-성숙 집중 계기: 폭포 층 ④·⑤를 여는
+        # 실측 다이얼은 자본이 아니라 「같은 틱에 함께 성숙하는 노출」이다. 인수자별
+        # ⓐopen_covers = 열린 커버 수 ⓑmaturity_peak = 단일 성숙-틱 노출 합의 최대
+        # (소구-층은 자유 잔고를 그 틱의 동시-성숙분이 나눠 쓴다 — 원장-파생·위조-불가).
+        mat_buckets = {}                             # uw → {deadline: Σexposure}
+        for ref, o in self.w.uw_open.items():
+            rp = self.w.redeem_pending.get(ref)
+            if not rp:
+                continue
+            u_ = o["uw"]
+            b = uw_book.setdefault(u_, {"covered": 0, "prem": 0, "paid": 0,
+                                        "loss_ratio_selfdecl": None})
+            b["open_covers"] = b.get("open_covers", 0) + 1
+            dl = (rp["t0"] + rp["T"]) if rp.get("T") else None
+            if dl is not None:
+                face = self.w.notes[rp["nid"]]["face"]
+                mb = mat_buckets.setdefault(u_, {})
+                mb[dl] = mb.get(dl, 0) + face
+        for u_, b in uw_book.items():
+            b.setdefault("open_covers", 0)
+            b["maturity_peak"] = max(mat_buckets.get(u_, {}).values(),
+                                     default=0)
         colors_supply = {}                           # ★[M-103] 발행자별 미결 부채(집적 관측)
         for nid, n in self.w.notes.items():
             c = self.colors.get(nid, "?")

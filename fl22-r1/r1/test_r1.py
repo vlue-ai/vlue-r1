@@ -971,6 +971,40 @@ def gate_TCOVER(port=8799):
     out["★좌석 원자-체결"] = "seq" in r4 and \
         h3.job(j4["ref"]).get("covered") is True and \
         h3.job(j4["ref"]).get("uw") == "cvu3"
+    # ★U-1([M-157]) — 동시-성숙 집중 계기: 열린 커버가 open_covers·maturity_peak로
+    # 원장-파생 공개 + 정책 max_concurrent가 계기를 소비해 스캔을 보류
+    stu = h.stats()["underwriters"].get("cvu3", {})
+    out["★U-1 계기"] = stu.get("open_covers", 0) >= 1 and \
+        stu.get("maturity_peak", 0) >= 1
+    hold = UWT.scan(u3, {"max_concurrent": 1})
+    out["★U-1 동시-보류"] = hold.get("candidates") == [] and \
+        "max_concurrent" in str(hold.get("held", ""))
+    # ★M-3([M-157]) — 매수자-정책 캡슐(선언적 가드 · 클라이언트-측 — HTTP 전 발화)
+    big2 = [n for n in h.notes_of("anchor0") if n["face"] >= 3][0]
+    h.split(big2["nid"], [1, 1, big2["face"] - 2])
+    m1, m2 = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 1][:2]
+    h.xfer("cvh3", m1)
+    h.xfer("cvh3", m2)
+    h3.set_policy(anchors={"anchor0"}, max_exposure=1, max_spend=1,
+                  sampled_ok=False)
+    try:
+        h3.redeem_job("zzz", m1, seed="cd" * 8, n=100)
+        out["★M-3 허용목록"] = False
+    except RuntimeError as ex:
+        out["★M-3 허용목록"] = "허용목록" in str(ex)
+    try:
+        h3.redeem_job("anchor0", m1, seed="cd" * 8, n=100,
+                      kind="sha256_chain_sampled")
+        out["★M-3 표본-거부"] = False
+    except RuntimeError as ex:
+        out["★M-3 표본-거부"] = "표본" in str(ex)
+    r5 = h3.redeem_job("anchor0", m1, seed="cd" * 8, n=100)  # 정상(상한 안)
+    try:
+        h3.redeem_job("anchor0", m2, seed="ce" * 8, n=100)   # 누적 초과
+        out["★M-3 누적-상한"] = False
+    except RuntimeError as ex:
+        out["★M-3 누적-상한"] = "누적" in str(ex)
+    out["★M-3 정상-통과"] = "ref" in r5
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

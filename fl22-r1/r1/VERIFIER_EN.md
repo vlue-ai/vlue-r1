@@ -65,6 +65,16 @@ python3 fin_lean/lang22/frontier_vectors.py      # golden vectors (incl. FL2.1 l
 python3 r1/test_r1.py                            # full service-layer acceptance gates
 ```
 
+**★Why verdicts are not 0–100 scores (design rationale — [M-157])**: agent-trust
+standards (e.g., on-chain Validation Registry designs) record verification as a
+**designated validator's 0–100 scalar response**, with evidence URIs optional. This
+ledger does not adopt that form — ⓐ a scalar **launders the verdict's grounds** (the
+contract assigns no meaning to "87") ⓑ optional evidence returns the trust root to
+validator reputation. Here a verdict is **pass/fail + hash-bound evidence** (H2), and
+the verdict itself is refutable by anyone's re-execution (H7 · challenge) — if you
+need a score, compute it yourself from ledger-derived history (p̂ · tape): then the
+formula is yours.
+
 ## Remaining trust assumptions (honest disclosure — v0)
 
 | Assumption | Content | Mitigation |

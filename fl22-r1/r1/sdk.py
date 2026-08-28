@@ -97,6 +97,41 @@ class Fl21Client:
             fh.write(k.private_bytes_raw().hex())
         return k
 
+    # ── ★M-3([M-157]) 매수자-정책 캡슐 — AP2 IntentMandate 형상의 선언적 가드 ──
+    # 조작-채널(보드 detail 등 자유문)의 마지막 방어선을 「판단」이 아니라 「선언」으로.
+    # 전부 클라이언트-측(법 아님 — 커널·노드 무접촉) · 인수자 정책(underwriter.py)의
+    # 매수자판. 미설정 = 무가드(기존 행동 불변).
+    def set_policy(self, anchors=None, max_exposure=None, max_spend=None,
+                   expiry_epoch=None, sampled_ok=True):
+        """anchors = 허용목록(None=전체) · max_exposure = 청구당 액면 상한 ·
+        max_spend = 누적 액면 상한 · expiry_epoch = 이 에포크 이후 발주 거부 ·
+        sampled_ok=False = 표본-검증 kind 거부(깊이-하한의 이진형 — §R-SAMPLE 잔여)."""
+        self.policy = {"anchors": set(anchors) if anchors else None,
+                       "max_exposure": max_exposure, "max_spend": max_spend,
+                       "expiry_epoch": expiry_epoch, "sampled_ok": sampled_ok,
+                       "spent": 0}
+
+    def _policy_guard(self, anchor, nid, kind):
+        pol = getattr(self, "policy", None)
+        if pol is None:
+            return
+        if pol["anchors"] is not None and anchor not in pol["anchors"]:
+            raise RuntimeError(f"정책: 앵커 {anchor} 허용목록 밖")
+        if not pol["sampled_ok"] and kind.endswith("_sampled"):
+            raise RuntimeError("정책: 표본-검증 kind 거부(탈출-잔여 = 매수자 몫)")
+        if pol["expiry_epoch"] is not None and \
+                self.state()["epoch"] >= pol["expiry_epoch"]:
+            raise RuntimeError(f"정책: 유효기한 경과(≥ {pol['expiry_epoch']})")
+        face = next((m["face"] for m in self.notes() if m["nid"] == nid), None)
+        if face is not None:
+            if pol["max_exposure"] is not None and face > pol["max_exposure"]:
+                raise RuntimeError(f"정책: 노출 {face} > 상한 {pol['max_exposure']}")
+            if pol["max_spend"] is not None and \
+                    pol["spent"] + face > pol["max_spend"]:
+                raise RuntimeError(f"정책: 누적 {pol['spent']}+{face} > "
+                                   f"{pol['max_spend']}")
+            pol["spent"] += face
+
     def pk_hex(self):
         return self.key.public_key().public_bytes_raw().hex()
 
@@ -179,6 +214,7 @@ class Fl21Client:
     def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain", T=None):
         """★T = 잡별 시한(FL2.2 J-1 — 에포크 · 무지정 = 세계 기본 redeem_T ·
         법-조항: T > window_L ∧ T ≤ redeem_T_max — 장시간 작업의 커널-법 개방)."""
+        self._policy_guard(anchor, nid, kind)        # ★M-3 — 선언적 매수자-가드
         job = {"kind": kind, "seed": seed, "n": n}
         args = {"holder": self.p, "note": nid, "anchor": anchor,
                 "spec_sha256": spec_sha256(job)}                  # ★H2 결박
