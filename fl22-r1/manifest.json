@@ -10,7 +10,7 @@
   "r1/jobs.py": "a2d02b5da8cc2f7eb7e652e69a8c4dd336315bff1ed17032747bfa1ff762d566",
   "r1/worker.py": "8ccc147a5aed51a508589feb95dec53af9e7dabb15c523940ac90d0ef0c8813c",
   "r1/cosigner.py": "73b4dd6f46713db9ce60a11e533aa2fd32a341afb494f9de6bdf13ca16d6bcb3",
-  "r1/test_r1.py": "8a321585afcfc35a35418a844745de3cd18f1b3102604880c4e410dac77e5283",
+  "r1/test_r1.py": "88dbbcb6a8e96f164488f61eb53578063e43c6e917509b4a5bbc16a904a1f04c",
   "r1/EXTERNAL_QUICKSTART.md": "fab4a00ff797614b4e01d9124f64e0e055a82a9c897a5adfb3f9bc1ef1b1020f",
   "r1/RUNBOOK.md": "de617e45f902f86545101ce12a5f742a0bcb452b20b6657d1d808758cbda56e9",
   "r1/README.md": "5586f96bd936fcb63ba60bccea834497545334f269dcfe3872ca63c94686decb",
@@ -30,7 +30,7 @@
   "r1/underwriter.py": "0114e6c86f24dc1a15ca6bc762c05b58093eaeb4c068542134e844ba4e2d8d1f",
   "r1/UNDERWRITING.md": "add070e9cee06a1ad7fe410dc2e6ae428e8310293c406655256e18ec7033ad01",
   "r1/UNDERWRITING_EN.md": "d5dba1ba3c1ce4fe94fc7b3293a36786a937122549cad69c0c576eaf89d397a6",
-  "r1/erc8004_adapter.py": "84a6b3134c9b7fddb79217714a2eb024b29b76bce194ced7fe40b931c3bb08a8"
+  "r1/erc8004_adapter.py": "f4a9e825d0f59390f7ef9b4dc1fc50ae19306a2a4791ce4b6d626864c24ea283"
  },
  "selftest": {
   "kernel_selftest": true,

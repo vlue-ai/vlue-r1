@@ -1833,6 +1833,55 @@ def gate_TERC8004(port=8821):
     return out
 
 
+
+def gate_TVALVE():
+    """★단방향 밸브([M-160] 결합 규율의 게이트화) — 체인은 게시판이지 입력이 아니다.
+    ⓐ커널 = 네트워크-무 ⓑ번들 파이썬 전 파일 = 체인-RPC 어휘 0(송신 도구는 deploy/
+    운영자-측 — 번들 밖) ⓒ어댑터 = 오프라인 생성기(하드코딩 URL 무) ⓓ어댑터 응답 =
+    증거-선행(문서 쓰기가 calldata 쓰기보다 코드상 먼저) ⓔ자기-당사자 가드 실동."""
+    out = {}
+    kern = open(os.path.join(_HERE, "..", "fin_lean", "lang22",
+                             "kernel22.py"), encoding="utf-8").read()
+    out["커널 네트워크-무"] = not any(
+        f"import {m}" in kern for m in ("urllib", "socket", "http",
+                                        "requests", "asyncio"))
+    forb = ("eth_sendRawTransaction", "eth_chainId", "eth_getBalance",
+            "publicnode", "drpc.org", "1rpc.io", "blastapi", "web3")
+    hits = []
+    for fn in sorted(os.listdir(_HERE)):
+        if not fn.endswith(".py"):
+            continue
+        src = open(os.path.join(_HERE, fn), encoding="utf-8").read()
+        me = fn == "test_r1.py"                    # 이 게이트 자신의 어휘는 제외
+        for w in forb:
+            if not me and w in src:
+                hits.append(f"{fn}:{w}")
+    out["번들 체인-RPC 어휘 0"] = hits == []
+    ad = open(os.path.join(_HERE, "erc8004_adapter.py"),
+              encoding="utf-8").read()
+    urls = [ln for ln in ad.splitlines() if "https://" in ln]
+    out["어댑터 하드코딩 URL 무"] = (          # 독스트링 자기-노드 사용례 1건만 허용
+        len(urls) <= 1 and all("node.vlue.ai" in u for u in urls))
+    i_doc = ad.index('open(fp, "wb")')
+    i_cd = ad.index("calldata.hex")
+    out["증거-선행(문서→calldata)"] = i_doc < i_cd
+    import erc8004_adapter as EA
+    meta = {"genesis": ["anchor0"], "cosigners": ["cosign1"]}
+    try:
+        EA._party_guard({"holder": "operator"}, meta, False)
+        out["자기-당사자 거부"] = False
+    except SystemExit as ex:
+        out["자기-당사자 거부"] = "무-오염" in str(ex)
+    out["라벨-표기"] = EA._party_guard(
+        {"holder": "anchor0"}, meta, True) == "operator-demonstration (labeled)"
+    out["참여자 통과"] = EA._party_guard(
+        {"holder": "someone"}, meta, False) == "participant"
+    out["송신도구 번들-밖"] = not os.path.exists(
+        os.path.join(_HERE, "erc8004_submit.py"))
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -1853,7 +1902,8 @@ def main():
              "T-SCOPE 범위결박": gate_TSCOPE(),
              "T-CHALLENGE 챌린지창": gate_TCHALLENGE(),
              "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22(),
-             "T-ERC8004 어댑터": gate_TERC8004()}
+             "T-ERC8004 어댑터": gate_TERC8004(),
+             "T-VALVE 단방향밸브": gate_TVALVE()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

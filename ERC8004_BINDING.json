@@ -1,0 +1,19 @@
+{
+ "binding": {
+  "address": "0x4cb02cbd7fea59f81d09f04eac55fd1312106dc1",
+  "agent_id": null,
+  "bound_at": "2026-08-28",
+  "chain": "eip155:11155111 (Sepolia testnet — mainnet requires a separate, explicitly recorded decision)",
+  "identity_registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+  "ledger": {
+   "log_id": "e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e",
+   "node": "https://node.vlue.ai"
+  },
+  "operator_pk": "657d1b88beae764d8630e9c56346388232b2705423ed2bbfdc7b9a9324266747",
+  "purpose": "Binds the ERC-8004 on-chain identity below to the VLUE r1 ledger operator. Any transaction from this address that is not an attestation of a settled entry on this ledger is unauthorized (one-way valve: outbound attestations only; chain state is never an input to this ledger).",
+  "standard": "VLUE-ERC8004-BINDING v1",
+  "verify": "ed25519_verify(operator_pk from https://node.vlue.ai/meta, sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json_of_everything_except_sig))"
+ },
+ "operator_sig": "1d3530d5342fc4f5bc29abdd9a4ffc58ea9bdbe368c099bbcb5c8871f54e61a2893bf94b64455fbfa467383b474960cc70630c4d0d1f8b1443418ffeb9051303",
+ "note": "sig covers canonical(binding) — sorted keys, compact separators"
+}

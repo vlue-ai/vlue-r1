@@ -110,9 +110,27 @@ def _get(url, path):
         return json.loads(r.read())
 
 
-def respond(url, ref, request_hash_hex, response_uri, out_dir, tag="vlue-r1"):
+def _party_guard(job, meta, self_demo):
+    """★무-오염 가드([M-161]) — 운영자-당사자 항목의 무라벨 attestation 차단.
+
+    프로덕션의 공개 주장(「자기-체결 0」·K5′ 비-운영자 지표)을 attestation 경로가
+    희석하지 못하게: 보유자(holder)가 운영자-좌석이면 `--self-demo` 라벨 없이는 거부,
+    라벨이 있으면 응답 문서에 origin 필드로 **명시 표기**된다(정직-표기 계보)."""
+    seats = {"operator"} | set(meta.get("genesis") or [])         | set(meta.get("cosigners") or [])
+    holder = job.get("holder")
+    if holder in seats:
+        if not self_demo:
+            raise SystemExit(f"⛔자기-당사자(holder={holder}) — 무-오염: "
+                             "--self-demo 라벨 없이는 attestation 금지")
+        return "operator-demonstration (labeled)"
+    return "participant"
+
+
+def respond(url, ref, request_hash_hex, response_uri, out_dir, tag="vlue-r1",
+            self_demo=False):
     j = _get(url, f"/job/{ref}")
     meta = _get(url, "/meta")
+    origin = _party_guard(j, meta, self_demo)
     state = j.get("state")
     if state == "open":
         raise SystemExit(f"⛔미성숙(open) — 판정 전 응답 금지(ref={ref})")
@@ -124,7 +142,8 @@ def respond(url, ref, request_hash_hex, response_uri, out_dir, tag="vlue-r1"):
         raise SystemExit(f"⛔미지 상태 {state!r}")
     anchor = j.get("anchor") or (j.get("job") or {}).get("anchor")
     doc = {"standard": "ERC-8004 validationResponse (prepared by vlue-r1)",
-           "verdict": resp, "basis": "deadline-peril settlement on ledger "
+           "verdict": resp, "origin": origin,
+           "basis": "deadline-peril settlement on ledger "
            "(pass/fail + hash-bound evidence — not a scalar opinion)",
            "log_id": meta["log_id"], "ref": ref, "job": j,
            "attest_hint": f"{url}/attest/{anchor}" if anchor else None,
@@ -170,6 +189,8 @@ def main():
     ap.add_argument("--request-hash", default="00" * 32)
     ap.add_argument("--response-uri", default="")
     ap.add_argument("--out", default="./erc8004_out")
+    ap.add_argument("--self-demo", action="store_true",
+                    help="운영자-당사자 항목의 라벨-attestation(문서에 명시 표기)")
     a = ap.parse_args()
     if a.cmd == "selftest":
         r = selftest()
@@ -178,7 +199,8 @@ def main():
     if not (a.url and a.ref):
         raise SystemExit("respond: --url·--ref 필수")
     print(json.dumps(respond(a.url, a.ref, a.request_hash, a.response_uri,
-                             a.out), ensure_ascii=False, indent=1))
+                             a.out, self_demo=a.self_demo),
+                     ensure_ascii=False, indent=1))
     return 0
 
 
