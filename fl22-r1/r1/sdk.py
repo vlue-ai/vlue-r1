@@ -24,6 +24,7 @@ from cryptography.exceptions import InvalidSignature
 
 DOMAIN = b"FL22-v0.1" + b"\x00" * 7          # 커널 FL22_DOMAIN과 동일(골든 결박)
 BOARD_DOMAIN = b"FL22-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
+RELAY_DOMAIN = b"FL22-RELAY"                 # ★[M-162] leg-릴레이(서명 사서함)
 # ★[M-144] 명시 User-Agent: ⓐ기계 클라이언트의 정직한 자기-식별(트래픽이 로그에서
 # 읽힌다) ⓑ★실전 필수 — 기본값 `Python-urllib/*`는 CDN·WAF의 봇 차단에 걸린다(실측:
 # node.vlue.ai 이관 직후 SDK만 403 error 1010 · curl·브라우저는 200). 에이전트 경제의
@@ -45,8 +46,11 @@ def spec_norm(job: dict) -> dict:
     제출자·노드·외부 검증자가 같은 바이트를 해싱하기 위한 유일 정의."""
     k = job.get("kind")
     if k in ("sha256_chain", "sha256_chain_sampled"):
-        return {"kind": k, "seed": str(job.get("seed", "")).lower(),
+        spec = {"kind": k, "seed": str(job.get("seed", "")).lower(),
                 "n": int(job.get("n"))}
+        if k == "sha256_chain_sampled" and "k" in job:
+            spec["k"] = int(job["k"])    # ★[M-162] 검증-깊이도 H2 결박(노드와 동일)
+        return spec
     if k == "pycheck":
         return {"kind": "pycheck", "test_b64": job["test_b64"]}
     spec = {"kind": "pyjudge", "checker_b64": job["checker_b64"]}
@@ -102,16 +106,17 @@ class Fl21Client:
     # 전부 클라이언트-측(법 아님 — 커널·노드 무접촉) · 인수자 정책(underwriter.py)의
     # 매수자판. 미설정 = 무가드(기존 행동 불변).
     def set_policy(self, anchors=None, max_exposure=None, max_spend=None,
-                   expiry_epoch=None, sampled_ok=True):
+                   expiry_epoch=None, sampled_ok=True, min_k=None):
         """anchors = 허용목록(None=전체) · max_exposure = 청구당 액면 상한 ·
         max_spend = 누적 액면 상한 · expiry_epoch = 이 에포크 이후 발주 거부 ·
-        sampled_ok=False = 표본-검증 kind 거부(깊이-하한의 이진형 — §R-SAMPLE 잔여)."""
+        sampled_ok=False = 표본-검증 kind 전면 거부 · ★min_k = 표본-깊이 하한
+        ([M-162] — 표본-잡을 사되 깊이 k ≥ min_k 를 선언으로 강제)."""
         self.policy = {"anchors": set(anchors) if anchors else None,
                        "max_exposure": max_exposure, "max_spend": max_spend,
                        "expiry_epoch": expiry_epoch, "sampled_ok": sampled_ok,
-                       "spent": 0}
+                       "min_k": min_k, "spent": 0}
 
-    def _policy_guard(self, anchor, nid, kind):
+    def _policy_guard(self, anchor, nid, kind, k=None):
         pol = getattr(self, "policy", None)
         if pol is None:
             return
@@ -119,6 +124,9 @@ class Fl21Client:
             raise RuntimeError(f"정책: 앵커 {anchor} 허용목록 밖")
         if not pol["sampled_ok"] and kind.endswith("_sampled"):
             raise RuntimeError("정책: 표본-검증 kind 거부(탈출-잔여 = 매수자 몫)")
+        if pol.get("min_k") is not None and kind.endswith("_sampled") and \
+                (k is None or k < pol["min_k"]):
+            raise RuntimeError(f"정책: 표본-깊이 k={k} < 하한 {pol['min_k']}")
         if pol["expiry_epoch"] is not None and \
                 self.state()["epoch"] >= pol["expiry_epoch"]:
             raise RuntimeError(f"정책: 유효기한 경과(≥ {pol['expiry_epoch']})")
@@ -211,11 +219,14 @@ class Fl21Client:
         return self._post("/submit", {"env": self.sign_env(
             "XFER", {"frm": self.p, "to": to, "note": nid})})
 
-    def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain", T=None):
-        """★T = 잡별 시한(FL2.2 J-1 — 에포크 · 무지정 = 세계 기본 redeem_T ·
-        법-조항: T > window_L ∧ T ≤ redeem_T_max — 장시간 작업의 커널-법 개방)."""
-        self._policy_guard(anchor, nid, kind)        # ★M-3 — 선언적 매수자-가드
+    def redeem_job(self, anchor, nid, seed, n, kind="sha256_chain", T=None,
+                   k=None):
+        """★T = 잡별 시한(FL2.2 J-1) · ★k = 표본-검증 깊이([M-162] — 2~16 ·
+        무지정 = 서버 기본 2 · H2가 깊이까지 결박: 깊이↔가격 쌍대의 매수자-다이얼)."""
+        self._policy_guard(anchor, nid, kind, k)     # ★M-3 — 선언적 매수자-가드
         job = {"kind": kind, "seed": seed, "n": n}
+        if k is not None:
+            job["k"] = int(k)
         args = {"holder": self.p, "note": nid, "anchor": anchor,
                 "spec_sha256": spec_sha256(job)}                  # ★H2 결박
         if T is not None:
@@ -320,6 +331,29 @@ class Fl21Client:
     def _board_send(self, body):
         sig = self.key.sign(BOARD_DOMAIN + self.log_id + canon(body)).hex()
         return self._post("/board", {"post": body, "sig": sig})
+
+    # ── ★[M-162] leg-릴레이 — 원자-체결의 대역-외 leg 교환 자기-서비스 ──
+    def send_leg(self, to, payload):
+        """서명-leg(들)를 상대 사서함으로 — payload = 임의 JSON(관례: {"ref", "legs"}).
+        ⚠️노드는 무해석·무구속(자문층) · leg 봉투는 nonce-1회용이라 중계 탈취 이득 0."""
+        body = {"p": self.p, "to": to,
+                "blob": json.dumps(payload, ensure_ascii=False)}
+        sig = self.key.sign(RELAY_DOMAIN + self.log_id + canon(body)).hex()
+        return self._post("/relay", {"msg": body, "sig": sig})
+
+    def fetch_legs(self):
+        """내 사서함 수신(읽고-지움) — [{frm, payload, epoch}]."""
+        body = {"p": self.p, "fetch": True}
+        sig = self.key.sign(RELAY_DOMAIN + self.log_id + canon(body)).hex()
+        r = self._post("/relay/fetch", {"msg": body, "sig": sig})
+        out = []
+        for m in r["msgs"]:
+            try:
+                out.append({"frm": m["frm"], "epoch": m["epoch"],
+                            "payload": json.loads(m["blob"])})
+            except Exception:
+                continue                     # 비-JSON blob = 조용히 버림(자문층)
+        return out
 
     def post_ask(self, kind, title, price, detail="", ttl=1440):
         """매도 호가 게시: 「kind 작업을 price AU(최소)부터 이행하겠다」.

@@ -44,13 +44,19 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   "per_anchor": 3, "family_herf_max": 0.95,
                   # ★U-1([M-157]) — 동시-열린-커버 상한: 층 ③(소구)은 자유 잔고를
                   # 같은 틱 동시-성숙분이 나눠 쓴다([ADR-388] 실측 — 폭풍의 실제 다이얼)
-                  "max_concurrent": 8}
+                  "max_concurrent": 8,
+                  # ★[M-162] 요율 로딩(% · 100 = 무-로딩): LSFULL 실측 권장 = 125
+                  "loading_pct": 100}
 
 
 def _premium(c, ref, exposure, policy):
-    """권고 보험료 = max(suggest_prem 상한-제안, 정책 최저요율) — 정수-입도 상향."""
+    """권고 보험료 = max(suggest × 로딩, 정책 최저요율) — 정수-입도 상향.
+    ★로딩([M-162] · LSFULL F2 실측): δ→1 세계에서 p̂-정합 요율은 무-마진이라 경험-요율
+    북의 생존은 로딩 몫이다(측정 상수 1.25에서 흑자 실증 — 기본 1.0 = 행동 불변·선택)."""
     floor = -(-exposure * policy["min_rate_bp"] // 10_000)
-    return max(c.suggest_prem(ref), floor, 1)
+    sug = c.suggest_prem(ref)
+    load = policy.get("loading_pct", 100)
+    return max(-(-sug * load // 100), floor, 1)
 
 
 def scan(c, policy=None):
@@ -124,11 +130,56 @@ def quote(c, policy=None, ttl=60):
             continue
         c.post_ask("cover", f"cover {cand['ref'][:12]}", cand["prem"],
                    detail=(f"{tag} prem={cand['prem']} "
-                           "· settle atomically via /block "
-                           "(leg out-of-band — UNDERWRITING.md)"),
+                           f"· send XFER leg via /relay to {c.p} "
+                           "· atomic /block (UNDERWRITING.md)"),
                    ttl=ttl)
         posted.append(cand["ref"])
     return {**res, "posted": posted}
+
+
+def auto_fill(c, policy=None):
+    """★[M-162] 릴레이 자기-서비스 체결: 매수자가 /relay 로 보낸 {"ref","legs":[XFER]}
+    를 검증(내 앞 XFER · 보험료 ≥ 재-산정 호가 · 잡 유효 · 정책 상한) 후 내 UW leg 를
+    결합해 /block 원자 제출 — 낯선 상대와의 커버가 사람-개입 없이 닫힌다."""
+    policy = {**DEFAULT_POLICY, **(policy or {})}
+    st = c.stats()
+    oc = (st.get("underwriters") or {}).get(c.p, {}).get("open_covers", 0)
+    filled, skipped = [], []
+    for m in c.fetch_legs():
+        pl = m.get("payload") or {}
+        ref, legs = pl.get("ref"), pl.get("legs")
+        if not (isinstance(ref, str) and isinstance(legs, list) and legs):
+            skipped.append("형식")
+            continue
+        try:
+            if oc + len(filled) >= policy["max_concurrent"]:
+                skipped.append(f"{ref[:8]} 동시-상한")
+                continue
+            j = c.job(ref)
+            if j.get("covered") or j.get("delivered") or                     st["epoch"] > j["deadline"]:
+                skipped.append(f"{ref[:8]} 상태")
+                continue
+            if j["exposure"] > policy["max_exposure"]:
+                skipped.append(f"{ref[:8]} 노출 상한")
+                continue
+            xfer = legs[0]
+            if not (xfer.get("typ") == "XFER"
+                    and (xfer.get("args") or {}).get("to") == c.p):
+                skipped.append(f"{ref[:8]} XFER 아님")
+                continue
+            face = next((n["face"] for n in
+                         c._get(f"/notes/{xfer['args']['frm']}")["notes"]
+                         if n["nid"] == xfer["args"]["note"]), 0)
+            want = _premium(c, ref, j["exposure"], policy)
+            if face < want:
+                skipped.append(f"{ref[:8]} 보험료 {face} < {want}")
+                continue
+            uw_leg = make_cover_leg(c, ref, face)
+            r = c.submit_block([xfer, uw_leg])
+            filled.append({"ref": ref, "prem": face, "seq": r.get("seq")})
+        except Exception as e:
+            skipped.append(f"{str(ref)[:8]}:{str(e)[:40]}")
+    return {"filled": filled, "skipped": skipped}
 
 
 def make_cover_leg(c, ref, prem):
@@ -169,10 +220,14 @@ def main():
     ap.add_argument("--max-concurrent", type=int,
                     default=DEFAULT_POLICY["max_concurrent"],
                     help="동시-열린-커버 상한(U-1 시간-집중 · 가계-상한과 직교)")
+    ap.add_argument("--loading-pct", type=int,
+                    default=DEFAULT_POLICY["loading_pct"],
+                    help="요율 로딩 %%(100=무-로딩 · LSFULL 실측 권장 125)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
-           "max_concurrent": a.max_concurrent}
+           "max_concurrent": a.max_concurrent,
+           "loading_pct": a.loading_pct}
     c = _mk_client(a.url, a.key, a.name)
     if a.cmd == "scan":
         print(json.dumps(scan(c, pol), ensure_ascii=False, indent=1))
@@ -198,6 +253,9 @@ def main():
                     print(f"커버-호가 게시: {r['posted']}", flush=True)
                 elif r.get("held"):
                     print(r["held"], flush=True)
+                f = auto_fill(c, pol)             # ★[M-162] 릴레이 자기-서비스
+                if f["filled"]:
+                    print(f"★원자-체결: {f['filled']}", flush=True)
             except Exception as e:
                 print(json.dumps({"watch_error": str(e)[:120]}), flush=True)
             time.sleep(a.poll)

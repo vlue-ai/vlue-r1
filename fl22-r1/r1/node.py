@@ -51,6 +51,7 @@ BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다
 # 게시판 = **오프-원장** 서명 봉투(비용 ~0 · seq 무접촉 · 매칭·정산은 온-원장 그대로).
 # 도메인 분리: 게시 서명은 원장 봉투로 재생 불가(역방향도) — 별도 도메인 + log_id 결박.
 BOARD_DOMAIN = b"FL22-BOARD"
+RELAY_DOMAIN = b"FL22-RELAY"         # ★[M-162] leg-릴레이(오프-원장 서명 사서함)
 BOARD_TTL_MAX = 10080                # 게시 수명 상한(에포크 — 60s 틱 기준 1주)
 BOARD_PER_P = 8                      # 주체당 활성 게시 상한(스팸 — 예치금은 R2 등재)
 BOARD_MAX = 4096                     # 전역 게시 상한(자원 가드)
@@ -79,6 +80,7 @@ class Node:
         self.cosig_p = os.path.join(data_dir, "cosigs.jsonl")
         self.jobs_p = os.path.join(data_dir, "jobs.json")
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
+        self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
         self.board_p = os.path.join(data_dir, "board.json")
         self.board = {}              # id → {post, sig, id}
         if os.path.exists(self.board_p):
@@ -973,6 +975,47 @@ class Node:
     def _board_verify(self, body, sig):
         self._offledger_verify(BOARD_DOMAIN, body, sig, "board")
 
+    # ── ★[M-162] leg-릴레이 — 서명 사서함(대역-외 leg 교환의 자기-서비스화) ──
+    # 원자-체결(RU-2)의 마지막 마디: 매수자·인수자가 서명-leg를 노드 경유로 주고받는다.
+    # 순수 저장-전달(내용 무해석·무구속) · 수신자-서명 fetch = 읽고-지움(단일 소비자) ·
+    # ⚠️leg 봉투는 nonce-1회용이라 중계자·노드가 가로채도 「같은 체결」만 성립한다
+    # (탈취 이득 0 — RU-2 원자성의 부수 성질 · 그래서 릴레이에 신뢰가 안 실린다).
+    RELAY_TTL = 240                   # 에포크(60s 틱 = 4시간) — 짧게(만료 = 무해)
+    RELAY_CAP = 32                    # 수신자당 미소비 상한(폭주 방어)
+    RELAY_MAX_B = 8192                # blob 상한(leg 2~3개 + 여유)
+
+    def relay_send(self, body, sig):
+        if not isinstance(body, dict) or not isinstance(sig, str):
+            raise Fl21Error("relay: {msg: 서명-본문, sig: hex}")
+        self._offledger_verify(RELAY_DOMAIN, body, sig, "relay")
+        to = body.get("to")
+        blob = body.get("blob")
+        if not (isinstance(to, str) and self.w.reg.pk(to) is not None):
+            raise Fl21Error("relay: 수신자 미등록")
+        if not (isinstance(blob, str) and len(blob) <= self.RELAY_MAX_B):
+            raise Fl21Error(f"relay: blob ≤ {self.RELAY_MAX_B}자")
+        box = self.relay.setdefault(to, [])
+        now = self.w.epoch
+        box[:] = [m for m in box if m["expires"] > now]
+        if len(box) >= self.RELAY_CAP:
+            raise Fl21Error("relay: 수신함 가득(미소비 상한)")
+        box.append({"frm": body["p"], "blob": blob, "epoch": now,
+                    "expires": now + self.RELAY_TTL})
+        return {"queued": len(box)}
+
+    def relay_fetch(self, body, sig):
+        """수신자-서명 fetch — 읽고-지움(사서함 의미론)."""
+        if not isinstance(body, dict) or not isinstance(sig, str):
+            raise Fl21Error("relay: {msg: 서명-본문, sig: hex}")
+        self._offledger_verify(RELAY_DOMAIN, body, sig, "relay")
+        if body.get("fetch") is not True:
+            raise Fl21Error("relay: fetch 본문 아님")
+        me = body["p"]
+        now = self.w.epoch
+        box = [m for m in self.relay.get(me, []) if m["expires"] > now]
+        self.relay[me] = []
+        return {"msgs": box, "epoch": now}
+
     def _board_gc(self):
         now = self.w.epoch
         dead = [i for i, r in self.board.items()
@@ -1292,6 +1335,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, nd.issue(body.get("env")))
                 if p == "/cosig":                     # ★[M-105] D-2 원격 공동-서명 수신
                     return self._send(200, nd.cosig_add(body))
+                if p == "/relay":                     # ★[M-162] leg-릴레이 송신
+                    return self._send(200, nd.relay_send(body.get("msg"),
+                                                         body.get("sig")))
+                if p == "/relay/fetch":               # ★[M-162] 수신(읽고-지움)
+                    return self._send(200, nd.relay_fetch(body.get("msg"),
+                                                          body.get("sig")))
                 if p == "/board":                     # ★R2-a — 오프-원장 서명 게시
                     return self._send(200, nd.board_post(body.get("post"),
                                                          body.get("sig")))

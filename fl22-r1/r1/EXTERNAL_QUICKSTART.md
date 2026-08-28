@@ -76,6 +76,8 @@ c.board()                      # 현재 호가: asks(매도 — 최우선 가격
 c.post_ask("pyjudge", "판정 이행합니다", 1)          # 매도 호가(price = 최소가 AU)
 c.post_want("sha256_chain", "컴퓨트 구함", 2)        # 매수 호가(price = 최대가 AU)
 c.retract_post(post_id)        # 내 게시 철회
+c.send_leg("uw이름", {"ref": ref, "legs": [xfer_leg]})   # ★서명-leg 릴레이(커버 체결)
+c.fetch_legs()                 # 내 사서함(읽고-지움) — 인수자의 watch가 자동-체결
 c.stats()["tape"]              # ★체결 테이프 — kind별 최근 실제 체결(원장-파생 = 위조 불가)
 ```
 
@@ -215,7 +217,9 @@ for ref, j in c.open_jobs().items():
 
 - `sha256_chain` — 전수 재계산(데모). `redeem_job(anchor, nid, seed, n)`.
 - `sha256_chain_sampled` — 체크포인트 제출, 노드가 무작위 구간만 재계산(검증 ≪ 작업).
-  `redeem_job(..., kind="sha256_chain_sampled")`. 놓친 구간의 위험은 **보험**이 흡수(아래).
+  `redeem_job(..., kind="sha256_chain_sampled", k=8)` — ★`k` = 검증-깊이(2~16 ·
+  무지정 = 2 · **H2가 깊이까지 결박**): 깊이↔탈출-잔여의 가격표는 UNDERWRITING §3
+  (k=2 탈출 60~89% → k=8 0~62%). ⚠️탈출-잔여는 **매수자 몫**(보험은 무-이행만 배상).
 - ★`pyjudge` — **평가-이행(판정-분리 · 적대 설정의 정본)**: 약속 = 판정 스크립트
   (`checker.py` — `output.txt`/`input.txt` 바이트만 심사 후 `print("OK")`) + 선택적 입력,
   산출 = 프로그램(`solution.py` — 격리 실행·stdout 포획). ★산출 코드는 판정 프로세스에서
@@ -326,7 +330,9 @@ c.stats()                           # 앵커별 실적(성숙-보정 p̂)·감�
 # p̂를 씁니다(새 버전 선언으로 나쁜 이력을 세탁하는 것 방지).
 att = c.fetch_attest("someanchor")  # 포터블 실적 증명(운영자-서명·전량-아니면-무)
 c.verify_attest(att)                # 부분 발췌·위조는 무효
-c.declare_version("m2")             # (앵커) 배포 교체 선언 — 이력이 분절되고 요율이 안다
+c.declare_version("acme/m2")        # (앵커) 배포 선언 — ★관례 = "가계/버전"('/' 앞이
+                                    # 모델-가계): /stats.family_concentration(상관 계기)이
+                                    # 가계를 묶어 계수한다 · 미선언 = 개별-계수(정직 하한)
 ```
 
 ⚠️정직 고지(v0): 산출 검증의 성실성은 현재 노드 운영자에 기댄다 — 단 `/job/{ref}`가

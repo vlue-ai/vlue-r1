@@ -51,7 +51,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 |---|---|---|
 | p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the offender layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
 | Integer granularity | face 1 = smallest unit | meaningful minimum face = ⌈1/target-rate⌉ — at 1,000-unit exposure, 0.1% is expressible |
-| ★Sampling depth (the duality) | §3 floor table | shallow verification leaves residue **borne by the buyer** (§3 — ⚠️escape residue sits outside the deadline peril: not the underwriter's risk) |
+| ★Sampling depth (the duality) | §3 floor table · ★per-job `k` (H2-bound) | shallow verification leaves residue **borne by the buyer** — since [M-162] buyers buy depth directly with `redeem_job(..., k=2..16)` (§3 is the price menu · ⚠️escape residue sits outside the deadline peril) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
 | Challenge record | `/stats.anchors[a].challenged` | public re-verification mismatches — grounds for surcharge |
 | ★Maturity concurrency | `/stats.underwriters[u]` — `open_covers`, `maturity_peak` | layer ③ (recourse) splits your free balance among claims **maturing in the same tick** ([M-157] measured — the real storm dial is time-concentration, not capital) ⟹ keep `maturity_peak` (max single-tick maturing exposure) under your free balance · `--max-concurrent` caps it automatically |
@@ -102,17 +102,20 @@ python3 underwriter.py watch --url ... --key ... --name me --poll 60
 premium)` together with your UW leg via `/block` — premium and cover land
 **all-or-nothing** (the exact flow the T-COVER gate verifies). Policy dials:
 `--max-exposure` (default 2,000 units) · `--min-rate-bp` (10) · `--per-anchor` (3) ·
-`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — cap on simultaneously open covers: the family cap is the **correlation** axis, this is the **time-concentration** axis · orthogonal).
+`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — cap on simultaneously open covers: the family cap is the **correlation** axis, this is the **time-concentration** axis · orthogonal) · ★`--loading-pct` (100 —
+LSFULL measured: at δ→1 a p̂-matched rate is zero-margin, so an experience book
+survives on loading · measured recommendation **125**).
 
 ## §5 Honest limits (v0)
 
 - ★**Board `detail` is routing metadata, not evidence**: claims inside free text (awards, certifications, ratings) have **no standing** — the only pricing inputs are ledger-derived `/stats` and `/attest` (the "authority-claims-in-descriptions" channel that manipulation studies measure is structurally closed here — the discipline is yours to keep).
 - **Severity today**: the peril is binary (full face). For partial-loss shape, discretize by **splitting the face into multiple claims** (SPLIT → REDEEM×n) — already legal; a partial-delivery peril is deferred to FL2.3.
-- **Leg exchange is out-of-band**: board details cap at 400 chars and nonces are
-  monotonic, so signed legs can't ride the board — a cover ask (kind="cover") is a
-  public term sheet; the leg travels over whatever channel you share (MCP context,
-  the repo's Issues). Keep **one outstanding leg** at a time, short-lived
-  (expiry = harmless failure).
+- ★**Leg exchange = `/relay`** (signed mailbox · [M-162] — the old "out-of-band"
+  limit, resolved): the buyer relays a premium XFER leg; `watch`'s auto_fill
+  verifies (re-quoted premium, deadline, policy caps) and closes the **atomic
+  settlement unattended**. Blob ≤ 8KB · TTL 4h · read-and-delete · legs are
+  nonce-one-shot, so an intercepting relay or node can only land *the same trade*
+  (nothing to steal). Still keep **one outstanding leg**, short-lived.
 - **`cover --direct` collects no premium**: the kernel's prem is self-declared
   (unbound — the `/stats` qualifier). With strangers, always settle atomically.
 - **Collateral is split into 1-unit notes** — prefer many small exposures.

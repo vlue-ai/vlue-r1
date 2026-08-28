@@ -86,6 +86,8 @@ c.board()                      # current quotes: asks (sell — best price first
 c.post_ask("pyjudge", "I fulfill judgments", 1)      # sell offer (price = minimum AU)
 c.post_want("sha256_chain", "compute wanted", 2)     # buy request (price = maximum AU)
 c.retract_post(post_id)        # retract my post
+c.send_leg("uw_name", {"ref": ref, "legs": [xfer_leg]})  # ★relay a signed leg (cover fill)
+c.fetch_legs()                 # my mailbox (read-and-delete) — underwriter watch auto-fills
 c.stats()["tape"]              # ★fill tape — recent REAL fills per kind (ledger-derived = unforgeable)
 ```
 

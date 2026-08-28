@@ -135,7 +135,13 @@ def validate_spec(job):
         n = job.get("n")
         if not (isinstance(n, int) and N_MIN <= n <= N_MAX):
             raise ValueError(f"n ∈ [{N_MIN}, {N_MAX}]")
-        return {"kind": kind, "seed": seed.lower(), "n": n}
+        spec = {"kind": kind, "seed": seed.lower(), "n": n}
+        if kind == "sha256_chain_sampled" and "k" in job:
+            k = job["k"]                 # ★[M-162] 잡별 검증-깊이(매수자-선택 ·
+            if not (isinstance(k, int) and 2 <= k <= 16):   # H2가 깊이를 결박)
+                raise ValueError("k ∈ [2, 16]")
+            spec["k"] = k
+        return spec
     def _b64_field(name, allow_empty=False):
         v = job.get(name, "")
         if not isinstance(v, str) or len(v) > PY_MAX_B * 2 or \
@@ -177,8 +183,9 @@ def _verify_sampled(job, output):
     except ValueError:
         return False, {"why": "체크포인트 비-hex"}
     # ★검증-시점 무작위 표본(이행자는 제출 전에 알 수 없다) — 구간 재계산
+    k_eff = job.get("k", SAMPLE_K)       # ★잡별-깊이(무지정 = 현행 상수 2)
     idxs = sorted(random.SystemRandom().sample(range(want),
-                                               min(SAMPLE_K, want)))
+                                               min(k_eff, want)))
     for i in idxs:
         start = (bytes.fromhex(job["seed"]) if i == 0
                  else bytes.fromhex(ck[i - 1]))

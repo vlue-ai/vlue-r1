@@ -804,6 +804,32 @@ def gate_TSAMPLED(port=8797):
                                "seed": "ef" * 4, "n": 300_000})
     r2 = wk.deliver_job(j2["ref"], good2)
     out["★sub-1 표본(검증≪작업)"] = 0 < r2["verify"]["coverage"] < 1
+    # ★[M-162] k-가변 깊이 — 매수자-선택 k가 H2에 결박되고 검증 표본 수가 실제로 커진다
+    wk.split(wk.notes()[0]["nid"], [3, 3, wk.notes()[0]["face"] - 6])
+    for n in [x for x in wk.notes() if x["face"] == 3][:2]:
+        wk.xfer("sa", n["nid"])
+    nid3 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 3][0]
+    j3 = c.redeem_job("anchor0", nid3, seed="ab" * 4, n=300_000,
+                      kind="sha256_chain_sampled", k=6)
+    good3 = wk.compute_sha256({"kind": "sha256_chain_sampled",
+                               "seed": "ab" * 4, "n": 300_000})
+    r3 = wk.deliver_job(j3["ref"], good3)
+    out["★k-가변(6구간 검사)"] = len(r3["verify"]["checked"]) == 6
+    try:
+        c.redeem_job("anchor0", nid3, seed="ab" * 4, n=300_000,
+                     kind="sha256_chain_sampled", k=99)
+        out["k-경계 거부"] = False
+    except RuntimeError as ex:
+        out["k-경계 거부"] = "k ∈" in str(ex)
+    c.set_policy(min_k=4)
+    try:
+        nid4 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 3][0]
+        c.redeem_job("anchor0", nid4, seed="cd" * 4, n=300_000,
+                     kind="sha256_chain_sampled", k=2)
+        out["★정책 min_k 하한"] = False
+    except RuntimeError as ex:
+        out["★정책 min_k 하한"] = "깊이" in str(ex)
+    c.policy = None
     out["audit"] = c._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
@@ -1005,6 +1031,28 @@ def gate_TCOVER(port=8799):
     except RuntimeError as ex:
         out["★M-3 누적-상한"] = "누적" in str(ex)
     out["★M-3 정상-통과"] = "ref" in r5
+    # ★[M-162] leg-릴레이 자기-서비스 체결 — 보드 발견 → /relay leg → auto_fill 원자
+    h3.policy = None                                 # M-3 캡슐 해제(별개 축)
+    big3 = [n for n in h.notes_of("anchor0") if n["face"] >= 9][0]
+    h.split(big3["nid"], [4, 4, big3["face"] - 8])
+    n4s = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 4][:2]
+    nid5, pr5 = n4s[0], n4s[1]
+    h.xfer("cvh3", nid5)
+    h.xfer("cvh3", pr5)
+    j5 = h3.redeem_job("anchor0", nid5, seed="dd" * 4, n=500)
+    pay5 = h3.make_leg("XFER", {"frm": "cvh3", "to": "cvu3", "note": pr5})
+    h3.send_leg("cvu3", {"ref": j5["ref"], "legs": [pay5]})
+    f = UWT.auto_fill(u3, {"min_rate_bp": 100, "family_herf_max": 1.0})
+    out["★릴레이 자기-체결"] = any(x["ref"] == j5["ref"] for x in f["filled"]) \
+        and h3.job(j5["ref"]).get("covered") is True \
+        and h3.job(j5["ref"]).get("uw") == "cvu3"
+    out["릴레이 소비(읽고-지움)"] = u3.fetch_legs() == []
+    try:                                             # 미서명/타인-서명 거부
+        u3._post("/relay", {"msg": {"p": "cvh3", "to": "cvu3", "blob": "x"},
+                            "sig": "00" * 64})
+        out["릴레이 위조 거부"] = False
+    except RuntimeError as ex:
+        out["릴레이 위조 거부"] = "서명" in str(ex)
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
