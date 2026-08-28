@@ -804,6 +804,45 @@ def gate_TSAMPLED(port=8797):
                                "seed": "ef" * 4, "n": 300_000})
     r2 = wk.deliver_job(j2["ref"], good2)
     out["★sub-1 표본(검증≪작업)"] = 0 < r2["verify"]["coverage"] < 1
+    # ★[M-164] V-B 커밋-표본 — 표본이 원장-유도이고, 제3자가 로그만으로 재유도-검증
+    out["★표본=원장-유도"] = r2["verify"].get("sample") == "ledger-derived"
+    ent = next(e for e in nd.w.log
+               if e["env"]["typ"] == "TICKMARK"
+               and e["env"]["args"].get("kind") == "fl21.ocommit"
+               and e["env"]["args"].get("ref") == j2["ref"])
+    import hashlib
+    want2 = -(-300_000 // JOBS.CKPT)
+    seed = bytes.fromhex(ent["head"]) + j2["ref"].encode()
+    idxs, ctr = [], 0
+    while len(idxs) < min(JOBS.SAMPLE_K, want2):
+        v = int.from_bytes(hashlib.sha256(
+            seed + ctr.to_bytes(4, "big")).digest(), "big") % want2
+        ctr += 1
+        if v not in idxs:
+            idxs.append(v)
+    out["★H7 재유도 일치"] = sorted(idxs) == r2["verify"]["checked"]
+    # 위조-시도 → 거부되지만 ocommit 흔적이 남고, 재시도는 공개 계수된다
+    big = [n for n in wk.notes() if n["face"] >= 3][0]
+    wk.split(big["nid"], [2, big["face"] - 2])
+    wk.xfer("sa", [n["nid"] for n in wk.notes() if n["face"] == 2][0])
+    nid2b = [n["nid"] for n in c.notes_of("anchor0") if n["face"] >= 2][0]
+    j2b = c.redeem_job("anchor0", nid2b, seed="fa" * 4, n=300_000,
+                       kind="sha256_chain_sampled")
+    good2b = wk.compute_sha256({"kind": "sha256_chain_sampled",
+                                "seed": "fa" * 4, "n": 300_000})
+    # ⚠️결정론 요건: 1-구간 위조는 표본이 비껴가면 「탈출」한다(그게 §R-SAMPLE의
+    # 잔여 그 자체) — 게이트는 확률이 아니라 성질을 재므로 **전-구간 위조**로 박는다.
+    bad2b = {"final": "11" * 32, "ckpts": ["11" * 32] * len(good2b["ckpts"])}
+    env2b = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j2b["ref"]})
+    try:
+        wk._post("/deliver", {"env": env2b, "output": bad2b})
+        out["★위조 재거부(유도-표본)"] = False
+    except RuntimeError:
+        out["★위조 재거부(유도-표본)"] = True
+    out["★재추첨 흔적 1"] = c.job(j2b["ref"]).get("ocommits") == 1
+    wk.deliver_job(j2b["ref"], good2b)
+    out["★재추첨 공개-계수 2"] = c.job(j2b["ref"]).get("ocommits") == 2 and \
+        c.job(j2b["ref"]).get("delivered") is True
     # ★[M-162] k-가변 깊이 — 매수자-선택 k가 H2에 결박되고 검증 표본 수가 실제로 커진다
     wk.split(wk.notes()[0]["nid"], [3, 3, wk.notes()[0]["face"] - 6])
     for n in [x for x in wk.notes() if x["face"] == 3][:2]:
@@ -1079,6 +1118,32 @@ def gate_TCOVER(port=8799):
         out["릴레이 위조 거부"] = False
     except RuntimeError as ex:
         out["릴레이 위조 거부"] = "서명" in str(ex)
+    # ★[M-164] U-C — 결박-보험료: 원자-체결(j4=prem4 · 릴레이 j5=4)의 보험료가
+    # 커밋-전 노트 실물에서 포획돼 자기-선언과 분리된 검증-분모로 선다
+    stx = h.stats()["underwriters"].get("cvu3", {})
+    out["★결박-보험료"] = stx.get("prem_verified") == prem4 + 4 and \
+        "loss_ratio_verified" in stx
+    # ★[M-164] U-A — δ-반영 요율 v2: 공정가 ≤ suggest 상한(δ ≤ 1 구조 검증)
+    big4 = [n for n in h.notes_of("anchor0") if n["face"] >= 5][0]
+    h.split(big4["nid"], [4, big4["face"] - 4])
+    nid6 = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 4][0]
+    h.xfer("cvh3", nid6)
+    j6 = h3.redeem_job("anchor0", nid6, seed="ee" * 4, n=500)
+    sc2 = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0})
+    cand6 = next(cd for cd in sc2["candidates"] if cd["ref"] == j6["ref"])
+    out["★δ-요율 ≤ suggest"] = 1 <= cand6["prem"] <= u3.suggest_prem(j6["ref"])
+    # ★[M-164] U-B — 가계-상한: 앵커가 가계를 선언하면 cap=0이 후보를 보류
+    env_v = wk.sign_env("TICKMARK", {"kind": "fl21.version", "v": "acme/m1"})
+    wk._post("/submit", {"env": env_v})
+    sc3 = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                        "family_cap": 0})
+    out["★가계-상한 보류"] = all(cd["anchor"] != "anchor0"
+                                 for cd in sc3["candidates"]) and \
+        sc3.get("family_open") == {}
+    # ★[M-164] U-D — 북 위험 엔진(계기 스모크): 열린 커버 북의 파멸-확률·분위 산출
+    bk = UWT.book(u3, {"family_herf_max": 1.0}, trials=200)
+    out["★북-엔진"] = bk["open_covers"] >= 1 and 0 <= bk["ruin_prob"] <= 1 \
+        and bk["drawdown"]["p50"] <= bk["drawdown"]["p95"] <= bk["drawdown"]["max"]
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
@@ -1956,6 +2021,69 @@ def gate_TVALVE():
     return out
 
 
+
+def gate_TSIGV(port=8851):
+    """★[M-164] V-A — ed25519_verify 1급 kind(암호-확실 사다리 최상단의 상품화):
+    정상 수령증 수리 ∧ 위조-서명 거부 ∧ 약속-밖 메시지(해시 불일치) 거부 ∧ 스펙 경계."""
+    import base64
+    import hashlib as _h
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey)
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "sv", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    wk.split(wk.notes()[0]["nid"], [1, 1, wk.notes()[0]["face"] - 2])
+    for n in [x for x in wk.notes() if x["face"] == 1][:2]:
+        wk.xfer("sv", n["nid"])
+    ek = Ed25519PrivateKey.generate()
+    msg = b"service-receipt: job#42 endorsed"
+    spec = {"kind": "ed25519_verify",
+            "pk": ek.public_key().public_bytes_raw().hex(),
+            "msg_sha256": _h.sha256(msg).hexdigest()}
+    nid = c.notes_of("anchor0")[0]["nid"]
+    from sdk import spec_sha256
+    env = c.sign_env("REDEEM", {"holder": "sv", "note": nid,
+                                "anchor": "anchor0",
+                                "spec_sha256": spec_sha256(spec)})
+    j = c._post("/job", {"env": env, "job": spec})
+    good = {"msg_b64": base64.b64encode(msg).decode(), "sig": ek.sign(msg).hex()}
+    try:                                             # 위조-서명 거부
+        e2 = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j["ref"]})
+        wk._post("/deliver", {"env": e2, "output": dict(good, sig="00" * 64)})
+        out["위조-서명 거부"] = False
+    except RuntimeError as ex:
+        out["위조-서명 거부"] = "검증 실패" in str(ex)
+    try:                                             # 약속-밖 메시지 거부
+        m2 = b"other message"
+        e3 = wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j["ref"]})
+        wk._post("/deliver", {"env": e3,
+                              "output": {"msg_b64":
+                                         base64.b64encode(m2).decode(),
+                                         "sig": ek.sign(m2).hex()}})
+        out["약속-밖 메시지 거부"] = False
+    except RuntimeError as ex:
+        out["약속-밖 메시지 거부"] = "해시 불일치" in str(ex)
+    r = wk.deliver_job(j["ref"], good)               # 정상 수령증 수리
+    out["★수령증 수리(암호-확실)"] = r["verify"].get("certainty") == "cryptographic"
+    out["정산 상태"] = c.job(j["ref"]).get("delivered") is True
+    try:                                             # 스펙 경계
+        c._post("/job", {"env": c.sign_env(
+            "REDEEM", {"holder": "sv",
+                       "note": c.notes_of("anchor0")[0]["nid"],
+                       "anchor": "anchor0"}),
+            "job": {"kind": "ed25519_verify", "pk": "zz", "msg_sha256": "00"}})
+        out["스펙 경계 거부"] = False
+    except RuntimeError:
+        out["스펙 경계 거부"] = True
+    out["audit"] = c._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -1977,7 +2105,8 @@ def main():
              "T-CHALLENGE 챌린지창": gate_TCHALLENGE(),
              "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22(),
              "T-ERC8004 어댑터": gate_TERC8004(),
-             "T-VALVE 단방향밸브": gate_TVALVE()}
+             "T-VALVE 단방향밸브": gate_TVALVE(),
+             "T-SIGV 암호-확실 kind": gate_TSIGV()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

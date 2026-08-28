@@ -53,7 +53,8 @@ def _rlimits():
     except (ValueError, OSError):
         pass
 
-KINDS = ("sha256_chain", "sha256_chain_sampled", "pycheck", "pyjudge")
+KINDS = ("sha256_chain", "sha256_chain_sampled", "pycheck", "pyjudge",
+         "ed25519_verify")
 SOL_OUT_MAX = 1 << 20                # pyjudge — 산출 stdout 포획 상한(1MB)
 CHK_OUT_MAX = 4096                   # checker/test 판정 출력 상한(수용 토큰만 필요)
 
@@ -127,6 +128,19 @@ def validate_spec(job):
     kind = job.get("kind")
     if kind not in KINDS:
         raise ValueError("작업 클래스 밖")
+    if kind == "ed25519_verify":
+        # ★[M-164] 증명-앵커의 1급화(R-6 레시피 → 상품): 약속 = 「이 키(pk)가 이
+        # 정확한 메시지(msg_sha256)에 서명한 수령증을 가져오라」. 검증 = 암호-확실
+        # (~0.2ms · 사다리 최상단) · 탈출-잔여 = 0(표본 아님 — 전수-암호 검증).
+        pk = job.get("pk", "")
+        ms = job.get("msg_sha256", "")
+        if not (isinstance(pk, str) and len(pk) == 64):
+            raise ValueError("pk = 32바이트 hex")
+        bytes.fromhex(pk)
+        if not (isinstance(ms, str) and len(ms) == 64):
+            raise ValueError("msg_sha256 = 32바이트 hex")
+        bytes.fromhex(ms)
+        return {"kind": kind, "pk": pk.lower(), "msg_sha256": ms.lower()}
     if kind in ("sha256_chain", "sha256_chain_sampled"):
         seed = job.get("seed", "")
         if not (isinstance(seed, str) and 2 <= len(seed) <= 128):
@@ -164,7 +178,7 @@ def validate_spec(job):
     return spec
 
 
-def _verify_sampled(job, output):
+def _verify_sampled(job, output, idxs=None):
     if not (isinstance(output, dict) and "final" in output and "ckpts" in output):
         return False, {"why": "산출 형식"}
     n = job["n"]
@@ -182,10 +196,12 @@ def _verify_sampled(job, output):
             bytes.fromhex(x)
     except ValueError:
         return False, {"why": "체크포인트 비-hex"}
-    # ★검증-시점 무작위 표본(이행자는 제출 전에 알 수 없다) — 구간 재계산
-    k_eff = job.get("k", SAMPLE_K)       # ★잡별-깊이(무지정 = 현행 상수 2)
-    idxs = sorted(random.SystemRandom().sample(range(want),
-                                               min(k_eff, want)))
+    # ★표본: 노드-경로 = 원장-유도(ocommit head — [M-164] 커밋-표본 · 재추첨 흔적 +
+    # H7 재검증-가능) · 외부/챌린지 = 호출자-측 신선 무작위(검증자 자신의 몫)
+    if idxs is None:
+        k_eff = job.get("k", SAMPLE_K)   # ★잡별-깊이(무지정 = 현행 상수 2)
+        idxs = sorted(random.SystemRandom().sample(range(want),
+                                                   min(k_eff, want)))
     for i in idxs:
         start = (bytes.fromhex(job["seed"]) if i == 0
                  else bytes.fromhex(ck[i - 1]))
@@ -278,15 +294,43 @@ def _verify_pyjudge(job, output):
         shutil.rmtree(d2, ignore_errors=True)
 
 
-def verify_output(job, output):
-    """약속-일치 판정 — (ok, detail)."""
+def _verify_sig(job, output):
+    """ed25519_verify — output = {"msg_b64", "sig"}: sha256(msg) 결박 + 서명 검증."""
+    if not (isinstance(output, dict) and isinstance(output.get("msg_b64"), str)
+            and isinstance(output.get("sig"), str)):
+        return False, {"why": "산출 형식({msg_b64, sig})"}
+    if len(output["msg_b64"]) > PY_MAX_B * 2:
+        return False, {"why": "메시지 크기 상한"}
+    try:
+        msg = base64.b64decode(output["msg_b64"], validate=True)
+        sig = bytes.fromhex(output["sig"])
+    except Exception:
+        return False, {"why": "비정형(msg_b64/sig)"}
+    if hashlib.sha256(msg).hexdigest() != job["msg_sha256"]:
+        return False, {"why": "메시지 해시 불일치(약속 밖 메시지)"}
+    if len(sig) != 64:
+        return False, {"why": "서명 64바이트"}
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PublicKey)
+    try:
+        Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(job["pk"])).verify(sig, msg)
+    except Exception:
+        return False, {"why": "서명 검증 실패"}
+    return True, {"certainty": "cryptographic", "cost": "O(1)"}
+
+
+def verify_output(job, output, idxs=None):
+    """약속-일치 판정 — (ok, detail). idxs = sampled의 외부-유도 표본(노드 커밋-표본)."""
     k = job["kind"]
+    if k == "ed25519_verify":
+        return _verify_sig(job, output)
     if k == "sha256_chain":
         ok = (isinstance(output, str)
               and compute(k, job["seed"], job["n"]) == output.lower())
         return ok, {}
     if k == "sha256_chain_sampled":
-        return _verify_sampled(job, output)
+        return _verify_sampled(job, output, idxs=idxs)
     if k == "pyjudge":
         return _verify_pyjudge(job, output)
     return _verify_pycheck(job, output)

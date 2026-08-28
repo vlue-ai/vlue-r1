@@ -156,7 +156,7 @@ def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
                seed: str = "", n: int = 5000, checker_py: str = "",
                test_py: str = "", input_text: str = "", checker_b64: str = "",
                test_b64: str = "", input_b64: str = "", T: int = 0,
-               k: int = 0):
+               k: int = 0, pk: str = "", msg_sha256: str = ""):
     """Order computational redemption against the note's ISSUER (anchor must equal the
     note's color). kinds: sha256_chain / sha256_chain_sampled (seed, n) ·
     pyjudge (pass the judge script as PLAIN TEXT via checker_py[, input_text] —
@@ -166,6 +166,15 @@ def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
     Deadline = now + redeem_T(4) epochs, or pass T for a per-job deadline (FL2.2 — long jobs; law: T > window_L); miss → deadline accident → note auto-returned."""
     c = _cl()
     Tj = int(T) if T else None            # ★FL2.2 — 잡별 시한(0 = 세계 기본)
+    if kind == "ed25519_verify":          # ★[M-164] 암호-확실 kind(수령증-취득)
+        from sdk import spec_sha256
+        job = {"kind": kind, "pk": pk, "msg_sha256": msg_sha256}
+        args = {"holder": c.p, "note": nid, "anchor": anchor,
+                "spec_sha256": spec_sha256(job)}
+        if Tj is not None:
+            args["T"] = Tj
+        return c._post("/job", {"env": c.sign_env("REDEEM", args),
+                                "job": job})
     if kind in ("sha256_chain", "sha256_chain_sampled"):
         return c.redeem_job(anchor, nid, seed=seed or "ab" * 8, n=int(n),
                             kind=kind, T=Tj, k=(int(k) or None))

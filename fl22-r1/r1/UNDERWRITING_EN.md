@@ -45,8 +45,12 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   why judgment warranties are structurally third-party) · the SDK guards against
   covering expired claims (instant loss) · compensation notes are issued in the
   offender's color (the risk tag stays in circulation).
-- ★**Track record = asset**: your covered/paid history is ledger-derived at
-  `/stats.underwriters` and portable via `/attest` — a **forgery-proof underwriting
+- ★**Track record = asset**: your history is ledger-derived at
+  `/stats.underwriters` and portable via `/attest` · ★since [M-164] a **bound
+  premium** rides along: premiums settled atomically (/block) are captured from the
+  live notes pre-commit and served as `prem_verified` / `loss_ratio_verified` — a
+  forge-proof loss-ratio denominator, separate from self-declared prem (UW-1); the
+  more you settle atomically, the stronger your résumé — a **forgery-proof underwriting
   résumé**. "History is the money" applies to underwriters too.
 
 ## §2 Pricing primer (v0 honesty: priors and upper-bound suggestions, not experience)
@@ -106,7 +110,7 @@ python3 underwriter.py watch --url ... --key ... --name me --poll 60
 premium)` together with your UW leg via `/block` — premium and cover land
 **all-or-nothing** (the exact flow the T-COVER gate verifies). Policy dials:
 `--max-exposure` (default 2,000 units) · `--min-rate-bp` (10) · `--per-anchor` (3) ·
-`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — cap on simultaneously open covers: the family cap is the **correlation** axis, this is the **time-concentration** axis · orthogonal) · ★`--loading-pct` (100 —
+`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — the time-concentration axis) · ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 —
 LSFULL measured: at δ→1 a p̂-matched rate is zero-margin, so an experience book
 survives on loading · measured recommendation **125**).
 

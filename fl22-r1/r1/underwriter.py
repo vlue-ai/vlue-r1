@@ -46,17 +46,41 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   # 같은 틱 동시-성숙분이 나눠 쓴다([ADR-388] 실측 — 폭풍의 실제 다이얼)
                   "max_concurrent": 8,
                   # ★[M-162] 요율 로딩(% · 100 = 무-로딩): LSFULL 실측 권장 = 125
-                  "loading_pct": 100}
+                  "loading_pct": 100,
+                  # ★[M-164] 가계별 열린-커버 상한(None = 끔 · E-FAM 실증 — 상관 축)
+                  "family_cap": None}
 
 
-def _premium(c, ref, exposure, policy):
-    """권고 보험료 = max(suggest × 로딩, 정책 최저요율) — 정수-입도 상향.
+def _premium(c, ref, exposure, policy, ctx=None):
+    """권고 보험료 v2([M-164]) = max(★δ-반영 공정가 × 로딩, 정책 최저요율).
+
+    v1은 suggest = p̂·E(가해자-층 무시 = 총-기대손실 상한)였다. v2는 측정된 2차-손실
+    구조를 쓴다: 공정가 = p̂·E·δ(r) · δ = 1 − min(r,1) · r = 가해자 자유잔고 ÷
+    (p̂ × 열린-노출 + E)(내 커버 선-계상 — LSDELTA2 폐형·이탈 0.0019) · 계기 실패 =
+    δ=1 보수 폴백.
     ★로딩([M-162] · LSFULL F2 실측): δ→1 세계에서 p̂-정합 요율은 무-마진이라 경험-요율
     북의 생존은 로딩 몫이다(측정 상수 1.25에서 흑자 실증 — 기본 1.0 = 행동 불변·선택)."""
     floor = -(-exposure * policy["min_rate_bp"] // 10_000)
     sug = c.suggest_prem(ref)
     load = policy.get("loading_pct", 100)
-    return max(-(-sug * load // 100), floor, 1)
+    delta_pct = 100
+    try:
+        j = ctx["job"] if ctx else c.job(ref)
+        a = j.get("anchor")
+        if ctx is not None and a in ctx.setdefault("bal", {}):
+            bal = ctx["bal"][a]
+        else:
+            bal = c._get(f"/balance/{a}")["balance"]
+            if ctx is not None:
+                ctx["bal"][a] = bal
+        open_exp = (ctx.get("open_exp", {}).get(a, 0) if ctx else 0) + exposure
+        p_hat = max(sug / exposure, 1e-9)
+        r = bal / (p_hat * open_exp) if open_exp else 0.0
+        delta_pct = max(1, round((1 - min(r, 1.0)) * 100))
+    except Exception:
+        pass
+    fair = -(-sug * delta_pct // 100)
+    return max(-(-fair * load // 100), floor, 1)
 
 
 def scan(c, policy=None):
@@ -79,6 +103,14 @@ def scan(c, policy=None):
                 "held": "open_covers %d ≥ max_concurrent %d — 동시-집중 보류"
                 % (oc, policy["max_concurrent"]),
                 "maturity_peak": me.get("maturity_peak")}
+    # ★U-B([M-164]) — 가계별 상한(--family-cap): E-FAM 실증(같은-주문열 드로다운
+    # 0 vs 2,032)의 정책화 · 앵커→가계 = declare_version("가계/버전") 관례.
+    fam_of = {}
+    for a2, an in (st.get("anchors") or {}).items():
+        v = an.get("version") or ""
+        fam_of[a2] = v.split("/", 1)[0] if "/" in v else None
+    fam_open = {}
+    per_open = {}                  # 앵커별 열린-노출 선-계상(δ의 r 분모)
     epoch = st["epoch"]
     mine = 0                       # 내 미결 커버(앵커당 계수용 — job 조회로 파악)
     per_anchor = {}
@@ -106,11 +138,21 @@ def scan(c, policy=None):
                 continue
             if per_anchor.get(a, 0) >= policy["per_anchor"]:
                 continue
+            fam = fam_of.get(a)
+            fcap = policy.get("family_cap")
+            if fcap is not None and fam is not None and \
+                    fam_open.get(fam, 0) >= fcap:
+                continue                        # ★U-B 가계-상한(상관 축)
             per_anchor[a] = per_anchor.get(a, 0) + 1
+            if fam is not None:
+                fam_open[fam] = fam_open.get(fam, 0) + 1
+            ctx = {"job": j, "bal": {}, "open_exp": per_open}
             out.append({"ref": ref, "anchor": a, "exposure": j["exposure"],
                         "deadline": j["deadline"],
-                        "prem": _premium(c, ref, j["exposure"], policy)})
-    return {"candidates": out, "open_mine": mine, "herfindahl_lb": herf}
+                        "prem": _premium(c, ref, j["exposure"], policy, ctx)})
+            per_open[a] = per_open.get(a, 0) + j["exposure"]
+    return {"candidates": out, "open_mine": mine, "herfindahl_lb": herf,
+            "family_open": fam_open}
 
 
 def quote(c, policy=None, ttl=60):
@@ -183,6 +225,101 @@ def auto_fill(c, policy=None):
     return {"filled": filled, "skipped": skipped}
 
 
+def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7):
+    """★[M-164] U-D 북 위험 엔진 — 내 열린 커버 포트폴리오의 파멸-확률·드로다운 분위.
+
+    개별-청구 규칙(노출·per-anchor·가계·동시 상한)은 각 축의 상한일 뿐 「이 북이 폭풍을
+    사는가」를 말하지 않는다 — 이 계기가 그 하나를 말한다. 원료 = 전부 원장-파생:
+    내 열린 커버(앵커·노출·기한) · 앵커별 성숙-최악 p̂ · δ(r) 폐형(LSDELTA2) · 가계
+    (declare 관례) · 내 자유잔고. 모형(정직 한정): 사고 = 가계-1인자 공통충격(혼합
+    fam_rho — 미선언 가계는 독립) · 내 지급 ≈ E×δ(r)(기금-층 0 근사 = 현행 실측) ·
+    파멸 = 총지급 > 자유잔고 + 총담보(β·E). ⚠️계기이지 등록-측정이 아니다 — 상수계
+    한정·결정론 시드(재현 가능)."""
+    import random as _rnd
+    policy = {**DEFAULT_POLICY, **(policy or {})}
+    st = c.stats()
+    rng = _rnd.Random(seed)
+    fam_of = {}
+    for a2, an in (st.get("anchors") or {}).items():
+        v = an.get("version") or ""
+        fam_of[a2] = v.split("/", 1)[0] if "/" in v else f"~{a2}"
+    covers, bal_cache, phat = [], {}, {}
+    for a in sorted(set(st.get("anchors", {})) | set(st.get("scopes", {}))):
+        try:
+            js = c._get(f"/jobs?anchor={a}")["jobs"]
+        except Exception:
+            continue
+        for ref in js:
+            j = c.job(ref)
+            if j.get("uw") != c.p or j.get("delivered") or                     j.get("state") != "open":
+                continue
+            covers.append({"ref": ref, "anchor": a, "E": j["exposure"],
+                           "dl": j["deadline"], "fam": fam_of.get(a, f"~{a}")})
+    my_bal = c.balance()
+    if not covers:
+        return {"open_covers": 0, "balance": my_bal,
+                "note": "열린 커버 없음 — 북 위험 0(기준선)"}
+    open_exp = {}
+    for cv in covers:
+        open_exp[cv["anchor"]] = open_exp.get(cv["anchor"], 0) + cv["E"]
+    for a in open_exp:
+        segs = (st["anchors"].get(a) or {}).get("segments") or {}
+        phat[a] = max([s.get("p_hat", 0.5) for s in segs.values()] or [0.5])
+        try:
+            bal_cache[a] = c._get(f"/balance/{a}")["balance"]
+        except Exception:
+            bal_cache[a] = 0
+    delta = {}
+    for a in open_exp:
+        r = bal_cache[a] / max(phat[a] * open_exp[a], 1e-9)
+        delta[a] = 1.0 - min(r, 1.0)
+    coll = sum(-(-cv["E"] // 2) for cv in covers)     # β=1/2 담보(이미 에스크로)
+    cap = my_bal + coll
+    dds, ruins, tick_peaks = [], 0, []
+    fams = sorted({cv["fam"] for cv in covers})
+    for _ in range(trials):
+        uf = {f: rng.random() for f in fams}
+        dd = 0
+        tick_demand = {}
+        for cv in covers:
+            p = phat[cv["anchor"]]
+            hit = (uf[cv["fam"]] < p) if (not cv["fam"].startswith("~")
+                                          and rng.random() < fam_rho)                 else (rng.random() < p)
+            if hit:
+                pay = cv["E"] * delta[cv["anchor"]]
+                dd += pay
+                tick_demand[cv["dl"]] = tick_demand.get(cv["dl"], 0) + pay
+        dds.append(dd)
+        tick_peaks.append(max(tick_demand.values(), default=0))
+        if dd > cap:
+            ruins += 1
+    dds.sort()
+    tick_peaks.sort()
+    n = len(dds)
+    p95_tick = tick_peaks[int(n * 0.95)]
+    hint = []
+    if ruins:
+        fam_share = {}
+        for cv in covers:
+            fam_share[cv["fam"]] = fam_share.get(cv["fam"], 0) + cv["E"]
+        top = max(fam_share.values()) / sum(fam_share.values())
+        if top > 0.5:
+            hint.append(f"가계-집중 {top:.0%} — --family-cap 권고")
+    if p95_tick > my_bal:
+        hint.append("동시-성숙 p95가 자유잔고 초과 — --max-concurrent 권고")
+    return {"open_covers": len(covers), "exposure_total": sum(
+                cv["E"] for cv in covers),
+            "balance": my_bal, "collateral_escrowed": coll,
+            "delta_by_anchor": {a: round(d, 3) for a, d in delta.items()},
+            "drawdown": {"p50": dds[n // 2], "p95": dds[int(n * 0.95)],
+                         "max": dds[-1]},
+            "same_tick_demand_p95": p95_tick,
+            "ruin_prob": round(ruins / n, 4),
+            "hint": hint or ["ok — 현 정책 상한 안"],
+            "model": f"trials={trials} fam_rho={fam_rho} seed={seed} "
+                     "(계기 — 등록-측정 아님·δ(r) 폐형·기금-층 0 근사)"}
+
+
 def make_cover_leg(c, ref, prem):
     """서명된 UW 다리 — 매수자가 보험료 XFER 다리와 함께 /block 원자 제출.
     ⚠️nonce 단조·담보 노트-결박 ⟹ 미결 leg 는 동시 1건·짧게 유지(만료 = 무해 실패)."""
@@ -202,7 +339,8 @@ def _mk_client(url, key_path, name):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["scan", "quote", "leg", "watch", "cover"])
+    ap.add_argument("cmd", choices=["scan", "quote", "leg", "watch", "cover",
+                                    "book"])
     ap.add_argument("--url", required=True)
     ap.add_argument("--key", required=True)
     ap.add_argument("--name", required=True, help="내 principal 이름(JOIN 완료 전제)")
@@ -224,13 +362,17 @@ def main():
     ap.add_argument("--loading-pct", type=int,
                     default=DEFAULT_POLICY["loading_pct"],
                     help="요율 로딩 %%(100=무-로딩 · LSFULL 실측 권장 125)")
+    ap.add_argument("--family-cap", type=int, default=None,
+                    help="가계별 열린-커버 상한(상관 축 — E-FAM 실증·기본 끔)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
            "max_concurrent": a.max_concurrent,
-           "loading_pct": a.loading_pct}
+           "loading_pct": a.loading_pct, "family_cap": a.family_cap}
     c = _mk_client(a.url, a.key, a.name)
-    if a.cmd == "scan":
+    if a.cmd == "book":
+        print(json.dumps(book(c, pol), ensure_ascii=False, indent=1))
+    elif a.cmd == "scan":
         print(json.dumps(scan(c, pol), ensure_ascii=False, indent=1))
     elif a.cmd == "quote":
         print(json.dumps(quote(c, pol, ttl=a.ttl), ensure_ascii=False, indent=1))

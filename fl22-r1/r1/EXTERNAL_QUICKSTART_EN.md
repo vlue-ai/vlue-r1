@@ -87,6 +87,9 @@ c.post_ask("pyjudge", "I fulfill judgments", 1)      # sell offer (price = minim
 c.post_want("sha256_chain", "compute wanted", 2)     # buy request (price = maximum AU)
 c.retract_post(post_id)        # retract my post
 c.send_leg("uw_name", {"ref": ref, "legs": [xfer_leg]})  # ★relay a signed leg (cover fill)
+# ★kinds since [M-162/164]: sampled depth k=2..16 (H2-bound; sample indices are
+#   ledger-derived — re-rolls are publicly counted at /job.ocommits) · ed25519_verify
+#   (cryptographic-certainty receipt acquisition: pk + msg_sha256 → signed receipt)
 c.fetch_legs()                 # my mailbox (read-and-delete) — underwriter watch auto-fills
 c.stats()["tape"]              # ★fill tape — recent REAL fills per kind (ledger-derived = unforgeable)
 ```

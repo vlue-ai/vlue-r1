@@ -81,6 +81,7 @@ class Node:
         self.jobs_p = os.path.join(data_dir, "jobs.json")
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
         self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
+        self.ocommits = {}              # ★[M-164] ref → 산출-커밋 수(재추첨 흔적)
         self.board_p = os.path.join(data_dir, "board.json")
         self.board = {}              # id → {post, sig, id}
         if os.path.exists(self.board_p):
@@ -636,9 +637,18 @@ class Node:
         # ★UW-1([M-113]·[M-126] 집행): prem은 인수자 자기-선언(커널 자기적립 —
         # 홀더→인수자 실지급에 비결박)이라 손해율의 분모로 신뢰 불가 ⟹ 정직 강등:
         # loss_ratio → loss_ratio_selfdecl(한정어) · 검증-분모판은 face-사map 필요(등재)
+        pvsum = {}                    # ★U-C — 원자-체결 결박-보험료(잡-기록 파생)
+        for ref2, j2 in self.jobs.items():
+            u2 = (j2.get("cover") or {}).get("uw") or ref_uw.get(ref2)
+            f2 = j2.get("prem_verified")
+            if u2 and f2:
+                pvsum[u2] = pvsum.get(u2, 0) + f2
         for u_, b in uw_book.items():
             b["loss_ratio_selfdecl"] = round(b["paid"] / b["prem"], 3) \
                 if b["prem"] else None
+            if pvsum.get(u_):
+                b["prem_verified"] = pvsum[u_]        # 위조-불가 분모
+                b["loss_ratio_verified"] = round(b["paid"] / pvsum[u_], 3)
         # ★U-1([M-157] · [ADR-388] 계보) — 동시-성숙 집중 계기: 폭포 층 ④·⑤를 여는
         # 실측 다이얼은 자본이 아니라 「같은 틱에 함께 성숙하는 노출」이다. 인수자별
         # ⓐopen_covers = 열린 커버 수 ⓑmaturity_peak = 단일 성숙-틱 노출 합의 최대
@@ -862,6 +872,38 @@ class Node:
             raise Fl21Error("이미 이행된 청구")
         return dict(j["job"])         # 스펙 스냅샷(검증 중 공유 상태 무접촉)
 
+    # ── ★[M-164] V-B 커밋-표본 — 표본-무작위성을 원장-유도로(천장-깊이) ──
+    # 문제(직접 정독으로 확정): 표본을 검증 직전 SystemRandom으로 뽑으면 실패한 시도가
+    # **무-흔적**이라, 악의 운영자+앵커는 통과할 때까지 재추첨해 탈출률을 부양할 수
+    # 있고 H7 재실행자는 「그 표본이 그 표본이었는지」를 재검증할 수 없다.
+    # 해법: 검증 전에 TICKMARK fl21.ocommit{ref, output_sha256}을 **원장에 먼저 박고**,
+    # 표본 = PRF(그 항의 head ‖ ref ‖ i) — ⓐ앵커는 커밋 전에 인덱스를 모른다(산출-
+    # 그라인딩 차단: head는 커밋이 랜딩해야 정해진다) ⓑ재시도는 ocommit이 **하나 더
+    # 쌓인다**(재추첨 = 공개 계수 · /job의 ocommits) ⓒH7 재실행자가 같은 인덱스를
+    # 재유도해 같은 구간을 재검증할 수 있다(무작위성 자체의 공개-리플레이화).
+    def ocommit_and_derive(self, env, output):
+        """락 안: 산출-커밋 랜딩 → 커밋-head에서 표본 인덱스 유도. (want, idxs) 반환."""
+        ref = (env.get("args") or {}).get("ref")
+        j = self.jobs.get(ref)
+        spec = j["job"]
+        osha = hashlib.sha256(_canon(output)).hexdigest()
+        tm = self.w.sign_env("operator", "TICKMARK",
+                             {"kind": "fl21.ocommit", "ref": ref,
+                              "output_sha256": osha})
+        entry = self._ksubmit(tm)
+        self.ocommits[ref] = self.ocommits.get(ref, 0) + 1
+        want = -(-spec["n"] // JOBS.CKPT)
+        k_eff = min(spec.get("k", JOBS.SAMPLE_K), want)
+        seed = bytes.fromhex(entry["head"]) + ref.encode()
+        idxs, ctr = [], 0
+        while len(idxs) < k_eff:
+            v = int.from_bytes(hashlib.sha256(
+                seed + ctr.to_bytes(4, "big")).digest(), "big") % want
+            ctr += 1
+            if v not in idxs:
+                idxs.append(v)
+        return sorted(idxs), entry["seq"]
+
     def deliver_commit(self, env, output, detail):
         """락 안(짧게): 잡 재확인 후 커널 DELIVER(시한·판정 내구성은 법이 강제)."""
         ref = (env.get("args") or {}).get("ref")
@@ -899,8 +941,26 @@ class Node:
                 note = self.w.notes.get(str(a.get("note"))) or {}
                 self._scope_check(a.get("anchor"), "raw", note.get("face", 0),
                                   T=a.get("T"))
+        # ★[M-164] U-C 결박-보험료: 같은 블록의 UW(ref)+XFER(→uw) 쌍에서 보험료
+        # 액면을 **커밋 전 라이브 원장**에서 포획(UW-1 자기-선언 한정어의 해소 —
+        # 이 값은 노트 실물에서 읽은 것이라 위조-불가·H7 재유도 가능).
+        pv = []
+        for lg in legs:
+            if lg.get("typ") == "UW":
+                a = lg.get("args") or {}
+                uwp, ref = a.get("uw"), a.get("ref")
+                fee = sum((self.w.notes.get(str((x.get("args") or {})
+                                                .get("note")), {})
+                           .get("face", 0))
+                          for x in legs
+                          if x.get("typ") == "XFER"
+                          and (x.get("args") or {}).get("to") == uwp)
+                if fee > 0 and ref in self.jobs:
+                    pv.append((ref, fee))
         entry = self._ksubmit(self.w.sign_env("operator", "BLOCK",
                                               {"legs": legs}))
+        for ref, fee in pv:
+            self.jobs[ref]["prem_verified"] = fee
         self._sync_jobs()
         self._persist_new()
         return {"seq": entry["seq"], "head": entry["head"]}
@@ -1302,6 +1362,8 @@ class Handler(BaseHTTPRequestHandler):
                            if c else {"covered": False})
                     if not c and j.get("cover"):      # ★정산 후 이력(맥락-0 C-2)
                         cov["cover_history"] = j["cover"]
+                    if ref in nd.ocommits:            # ★[M-164] 재추첨 공개 계수
+                        cov["ocommits"] = nd.ocommits[ref]
                     return self._send(200, {"ref": ref, **j, **cov})
             return self._send(404, {"error": "미지 경로"})
         except Exception as e:                   # 경계 격리(A-4) — 노드 생존
@@ -1319,7 +1381,17 @@ class Handler(BaseHTTPRequestHandler):
                 output = body.get("output", "")
                 with nd.lock:         # 1) 짧게: 잡 확인·스펙 복사
                     spec = nd.deliver_lookup(env)
-                ok, detail = JOBS.verify_output(spec, output)   # 2) 락 밖: 무거운 검증
+                    idxs = None
+                    if spec["kind"] == "sha256_chain_sampled":
+                        # ★[M-164] 커밋-표본: 커밋 랜딩 후 head-유도 인덱스로 검증
+                        idxs, cseq = nd.ocommit_and_derive(env, output)
+                if idxs is not None:  # 2) 락 밖: 유도-표본으로 무거운 검증
+                    ok, detail = JOBS.verify_output(spec, output, idxs=idxs)
+                    if ok:
+                        detail["ocommit_seq"] = cseq
+                        detail["sample"] = "ledger-derived"
+                else:
+                    ok, detail = JOBS.verify_output(spec, output)
                 if not ok:
                     raise Fl21Error(
                         f"산출 검증 실패 — 이행 불인정({detail.get('why', '불일치')})")

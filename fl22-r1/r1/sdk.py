@@ -51,6 +51,9 @@ def spec_norm(job: dict) -> dict:
         if k == "sha256_chain_sampled" and "k" in job:
             spec["k"] = int(job["k"])    # ★[M-162] 검증-깊이도 H2 결박(노드와 동일)
         return spec
+    if k == "ed25519_verify":
+        return {"kind": k, "pk": str(job.get("pk", "")).lower(),
+                "msg_sha256": str(job.get("msg_sha256", "")).lower()}
     if k == "pycheck":
         return {"kind": "pycheck", "test_b64": job["test_b64"]}
     spec = {"kind": "pyjudge", "checker_b64": job["checker_b64"]}
