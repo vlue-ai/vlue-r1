@@ -156,7 +156,8 @@ def auto_fill(c, policy=None):
                 skipped.append(f"{ref[:8]} 동시-상한")
                 continue
             j = c.job(ref)
-            if j.get("covered") or j.get("delivered") or                     st["epoch"] > j["deadline"]:
+            if j.get("covered") or j.get("delivered") \
+                    or st["epoch"] > j["deadline"]:
                 skipped.append(f"{ref[:8]} 상태")
                 continue
             if j["exposure"] > policy["max_exposure"]:

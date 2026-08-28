@@ -179,6 +179,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★계산-이행 상환 주문(color = anchor 필수 · ★T = 잡별 기한[FL2.2]) |
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖

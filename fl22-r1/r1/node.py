@@ -982,6 +982,8 @@ class Node:
     # (탈취 이득 0 — RU-2 원자성의 부수 성질 · 그래서 릴레이에 신뢰가 안 실린다).
     RELAY_TTL = 240                   # 에포크(60s 틱 = 4시간) — 짧게(만료 = 무해)
     RELAY_CAP = 32                    # 수신자당 미소비 상한(폭주 방어)
+    RELAY_SENDER_CAP = 4              # ★R-2([M-163]) 발신자→수신함당 상한(표적-스팸 방어)
+    RELAY_FRESH = 8                   # ★R-1([M-163]) 서명-본문 epoch 신선도 창
     RELAY_MAX_B = 8192                # blob 상한(leg 2~3개 + 여유)
 
     def relay_send(self, body, sig):
@@ -990,16 +992,32 @@ class Node:
         self._offledger_verify(RELAY_DOMAIN, body, sig, "relay")
         to = body.get("to")
         blob = body.get("blob")
+        now = self.w.epoch
+        # ★R-1 — 재전송 차단: 서명-본문에 epoch 필수(신선도 창) + 창-내 중복 지문 거부
+        #   (관찰자가 같은 서명-msg를 재-POST해 수신함을 재충전하는 경로 봉쇄 · leg 자체는
+        #    nonce-1회용이라 정산 중복은 원래 불가 — 이것은 스팸-재충전 방어다)
+        be = body.get("epoch")
+        if not (isinstance(be, int) and abs(now - be) <= self.RELAY_FRESH):
+            raise Fl21Error(f"relay: epoch 신선도(±{self.RELAY_FRESH}) 필수")
+        fp = hashlib.sha256(_canon(body)).hexdigest()[:24]
+        self.relay_seen = {h: e for h, e in getattr(self, "relay_seen", {})
+                           .items() if e > now - self.RELAY_FRESH * 2}
+        if fp in self.relay_seen:
+            raise Fl21Error("relay: 중복 송신(재전송 차단)")
         if not (isinstance(to, str) and self.w.reg.pk(to) is not None):
             raise Fl21Error("relay: 수신자 미등록")
         if not (isinstance(blob, str) and len(blob) <= self.RELAY_MAX_B):
             raise Fl21Error(f"relay: blob ≤ {self.RELAY_MAX_B}자")
         box = self.relay.setdefault(to, [])
-        now = self.w.epoch
         box[:] = [m for m in box if m["expires"] > now]
         if len(box) >= self.RELAY_CAP:
             raise Fl21Error("relay: 수신함 가득(미소비 상한)")
-        box.append({"frm": body["p"], "blob": blob, "epoch": now,
+        frm = body["p"]
+        if sum(1 for m in box if m["frm"] == frm) >= self.RELAY_SENDER_CAP:
+            raise Fl21Error(f"relay: 발신자당 미소비 ≤ {self.RELAY_SENDER_CAP}"
+                            "(표적-스팸 방어)")
+        self.relay_seen[fp] = now
+        box.append({"frm": frm, "blob": blob, "epoch": now,
                     "expires": now + self.RELAY_TTL})
         return {"queued": len(box)}
 

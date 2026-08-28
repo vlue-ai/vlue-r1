@@ -203,6 +203,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★Order a computational redemption (color = anchor · ★T = per-job deadline [FL2.2]) |
 | `GET /job/{ref}` | Job status (including output and verification detail) |
 | `GET /board` · `POST /board {post, sig}` | ★Order board (off-ledger — ask/want posts · retraction body `{rm, p}`) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) |
 | `GET /stats` | Records (p̂) · loss ratios · supply by color · ★fill tape (`tape`) |
 
 Envelope signature format (if you want to implement it yourself):

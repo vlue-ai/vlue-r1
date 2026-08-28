@@ -138,7 +138,7 @@ class Fl21Client:
                     pol["spent"] + face > pol["max_spend"]:
                 raise RuntimeError(f"정책: 누적 {pol['spent']}+{face} > "
                                    f"{pol['max_spend']}")
-            pol["spent"] += face
+        return face                                  # ★R-3 — 계상은 성공 후(호출자)
 
     def pk_hex(self):
         return self.key.public_key().public_bytes_raw().hex()
@@ -223,7 +223,7 @@ class Fl21Client:
                    k=None):
         """★T = 잡별 시한(FL2.2 J-1) · ★k = 표본-검증 깊이([M-162] — 2~16 ·
         무지정 = 서버 기본 2 · H2가 깊이까지 결박: 깊이↔가격 쌍대의 매수자-다이얼)."""
-        self._policy_guard(anchor, nid, kind, k)     # ★M-3 — 선언적 매수자-가드
+        _pg_face = self._policy_guard(anchor, nid, kind, k)   # ★M-3 선언-가드
         job = {"kind": kind, "seed": seed, "n": n}
         if k is not None:
             job["k"] = int(k)
@@ -232,7 +232,12 @@ class Fl21Client:
         if T is not None:
             args["T"] = int(T)
         env = self.sign_env("REDEEM", args)
-        return self._post("/job", {"env": env, "job": job})
+        r = self._post("/job", {"env": env, "job": job})
+        pol = getattr(self, "policy", None)          # ★R-3 — 성공 후에만 누적 계상
+        if pol is not None and _pg_face is not None and \
+                pol.get("max_spend") is not None:
+            pol["spent"] += _pg_face
+        return r
 
     def job(self, ref):
         return self._get(f"/job/{ref}")
@@ -337,7 +342,8 @@ class Fl21Client:
         """서명-leg(들)를 상대 사서함으로 — payload = 임의 JSON(관례: {"ref", "legs"}).
         ⚠️노드는 무해석·무구속(자문층) · leg 봉투는 nonce-1회용이라 중계 탈취 이득 0."""
         body = {"p": self.p, "to": to,
-                "blob": json.dumps(payload, ensure_ascii=False)}
+                "blob": json.dumps(payload, ensure_ascii=False),
+                "epoch": self.state()["epoch"]}   # ★R-1 신선도(재전송 차단)
         sig = self.key.sign(RELAY_DOMAIN + self.log_id + canon(body)).hex()
         return self._post("/relay", {"msg": body, "sig": sig})
 

@@ -155,7 +155,8 @@ def issue(k: int):
 def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
                seed: str = "", n: int = 5000, checker_py: str = "",
                test_py: str = "", input_text: str = "", checker_b64: str = "",
-               test_b64: str = "", input_b64: str = "", T: int = 0):
+               test_b64: str = "", input_b64: str = "", T: int = 0,
+               k: int = 0):
     """Order computational redemption against the note's ISSUER (anchor must equal the
     note's color). kinds: sha256_chain / sha256_chain_sampled (seed, n) ·
     pyjudge (pass the judge script as PLAIN TEXT via checker_py[, input_text] —
@@ -167,7 +168,7 @@ def redeem_job(anchor: str, nid: str, kind: str = "sha256_chain",
     Tj = int(T) if T else None            # ★FL2.2 — 잡별 시한(0 = 세계 기본)
     if kind in ("sha256_chain", "sha256_chain_sampled"):
         return c.redeem_job(anchor, nid, seed=seed or "ab" * 8, n=int(n),
-                            kind=kind, T=Tj)
+                            kind=kind, T=Tj, k=(int(k) or None))
     import base64 as _b
     job = {"kind": kind}
     if checker_py:                       # 평문 편의(도구-호출-만 에이전트용 — 서버가 인코딩)
@@ -239,6 +240,24 @@ def suggest_prem(ref: str):
 
 
 @_tool
+@_tool
+def send_leg(to: str, ref: str, legs_json: str):
+    """★Relay signed leg(s) to a counterparty's mailbox (self-service cover fill).
+    legs_json = JSON array of signed envelope legs (e.g. your premium XFER from
+    make_leg). The underwriter's watch verifies and closes the atomic /block
+    settlement unattended. Legs are nonce-one-shot: interception can only land the
+    same trade. Mailbox: 8KB/msg, TTL 4h, read-and-delete."""
+    legs = json.loads(legs_json)
+    return _cl().send_leg(to, {"ref": ref, "legs": legs})
+
+
+@_tool
+def fetch_legs():
+    """★My relay mailbox (read-and-delete): [{frm, epoch, payload}] — counterparty
+    legs for atomic settlement. Underwriters: prefer underwriter.py watch (auto)."""
+    return _cl().fetch_legs()
+
+
 def cover(ref: str, prem: int):
     """Underwrite someone ELSE's open redemption (third parties only — never the
     holder or the anchor). Stages collateral (β ≥ 1/2). Second-loss position:

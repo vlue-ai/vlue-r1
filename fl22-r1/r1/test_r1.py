@@ -1047,6 +1047,32 @@ def gate_TCOVER(port=8799):
         and h3.job(j5["ref"]).get("covered") is True \
         and h3.job(j5["ref"]).get("uw") == "cvu3"
     out["릴레이 소비(읽고-지움)"] = u3.fetch_legs() == []
+    # ★R-1([M-163]) — 재전송·신선도: 같은 서명-msg 재-POST 거부 · epoch-무 본문 거부
+    from sdk import RELAY_DOMAIN, canon
+    bd = {"p": "cvh3", "to": "cvu3", "blob": "{}",
+          "epoch": h3.state()["epoch"]}
+    sg = h3.key.sign(RELAY_DOMAIN + h3.log_id + canon(bd)).hex()
+    h3._post("/relay", {"msg": bd, "sig": sg})
+    try:
+        h3._post("/relay", {"msg": bd, "sig": sg})
+        out["★재전송 거부"] = False
+    except RuntimeError as ex:
+        out["★재전송 거부"] = "중복" in str(ex)
+    bd2 = {"p": "cvh3", "to": "cvu3", "blob": "{}"}
+    sg2 = h3.key.sign(RELAY_DOMAIN + h3.log_id + canon(bd2)).hex()
+    try:
+        h3._post("/relay", {"msg": bd2, "sig": sg2})
+        out["★신선도 필수"] = False
+    except RuntimeError as ex:
+        out["★신선도 필수"] = "신선도" in str(ex)
+    for i in range(3):                               # 기존 1 + 3 = 상한 4 도달
+        h3.send_leg("cvu3", {"i": i})
+    try:
+        h3.send_leg("cvu3", {"i": 9})
+        out["★발신자-상한"] = False
+    except RuntimeError as ex:
+        out["★발신자-상한"] = "발신자당" in str(ex)
+    u3.fetch_legs()                                  # 소비(뒤 케이스 오염 방지)
     try:                                             # 미서명/타인-서명 거부
         u3._post("/relay", {"msg": {"p": "cvh3", "to": "cvu3", "blob": "x"},
                             "sig": "00" * 64})
