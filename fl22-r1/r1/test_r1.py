@@ -2311,6 +2311,24 @@ def gate_TPROV(port=8858):
     # ★[M-181] v1 hop-감쇠: ⓑh=1(w 1.0)·ⓒh=2(0.85)·ⓓh=1(1.0) → 0.95 · 중앙값 1
     out["★hop-가중 v1"] = (ra.get("hops_med") == 1
                           and abs(ra.get("w085_share", 0) - 0.95) < 1e-9)
+    # ★[M-182] v2 용량-결박: ⓑ직접(indep ∅ → 0)·ⓒC-경유(용량 1 ≥ face 1 → 0.85)·
+    # ⓓ홀더=C(indep ∅ → 0) ⟹ w_eh_share = 0.85/3
+    out["★v2 용량-결박"] = abs(ra.get("w_eh_share", 0) - round(0.85 / 3, 4)) \
+        < 1e-9
+    # ★[M-182] 출처-λ 다이얼: 분모 할인으로 후보가 걸러진다(v0 trust-λ 대비)
+    pvu = _client(port, "pvu", data)
+    pvu.join()
+    nb4 = [n for n in A.notes() if n["face"] >= 2][0]
+    A.split(nb4["nid"], [1, nb4["face"] - 1])
+    a4 = [n["nid"] for n in A.notes() if n["face"] == 1][0]
+    A.xfer("pvb", a4)
+    j4 = B.redeem_job("pva", a4, seed="cd" * 4, n=500)
+    pol0 = {"min_rate_bp": 0, "family_herf_max": 1.0, "trust_lambda": 1.0}
+    sc_off = UWT.scan(pvu, pol0)
+    sc_on = UWT.scan(pvu, {**pol0, "prov_lambda": "v2"})
+    refs_off = {cd["ref"] for cd in sc_off.get("candidates", [])}
+    refs_on = {cd["ref"] for cd in sc_on.get("candidates", [])}
+    out["★출처-λ 할인"] = (j4["ref"] in refs_off) and (j4["ref"] not in refs_on)
     rc = pr["anchors"].get("pvc", {})
     out["이력자-앵커 행"] = rc.get("V") == 1 and rc.get("direct_cycle") == 1
     srv.shutdown()

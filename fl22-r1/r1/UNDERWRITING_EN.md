@@ -244,8 +244,15 @@ same status as §6.
    — no fairness hole, PD1), the multi-hop laundering penalty is **≥ d^ℓ** (measured
    heavier than the bound — the return leg decays acquired weight again, LSPROV3), and
    ⚠️**one-hop laundering meets only one hop of decay** — swap friction (f\*) remains
-   the first defense on the shortest path. Coupling into the λ denominator stays off
-   by default, separate authorization.
+   the first defense on the shortest path. ★**v2 = capacity-bound earned×hop**
+   (`w_eh_share` — [M-182] LSPROV4, **3/3 dominance**): carried weight = d^(h−1) ×
+   the intermediary's **cumulative capacity** (total mass carried ≤ its own delivered
+   volume — the trust-λ shape again). It closes binary-earned's disguise (one tiny
+   delivery) and the splitting bypass (split-invariant, exact), and **restores the
+   cost of disguised carriage to κ/d**. ★The provenance-λ dial =
+   `scan --prov-lambda {earned|w085|v2}` (discounts the trust-λ denominator by the
+   chosen share — **v2 recommended**, off by default, values await real data
+   [[M-173] principle]; instrument failure falls back to undiscounted v0).
 3. ★**Second-order history (the taste residual)**: verification (conformance) and
    acceptance are different axes — the **conformant-but-reworked** residual is a
    measurable second-order track record, and acceptance insurance without it dies of
@@ -261,7 +268,14 @@ same status as §6.
    β=0 lever quantified at e·N·g, honest-buyer cost linear within ±10% (LSTASTE2
    E1–3). Tool: `acceptance --beta` reports a recommended per-buyer multiplier
    1+β·reject_rate — an **advisory pricing layer**: no kernel or settlement contact;
-   applying it is the seller's choice.
+   applying it is the seller's choice. ⚠️Refined ([M-182] LSTASTE4): the **exact
+   boundary β = g/P leaks** (EW-lag residual gain of +17 to +181 measured) — in
+   practice use a **margin, β > g/P**. The alternative, permanent exclusion above a
+   rejection threshold, is absorbing-state dynamics: it eventually catches even
+   below-threshold strategies, but **burns ~70% of honest surplus** indiscriminately
+   (~1,100 vs ~2,400 under surcharge vs 4,000 with no policy) — **price is more
+   precise than exclusion** (exclusion as last resort; tempered exclusion is a
+   registered follow-up).
 4. ★**Judgment-settlement discipline** (for any evaluation without an agreed checker):
    settlement must be **anchored to realized outcomes** (acceptance / rework) —
    self-referential settlement (peer-prediction or panel-median alone) decouples from

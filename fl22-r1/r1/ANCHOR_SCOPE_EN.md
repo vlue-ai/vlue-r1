@@ -51,7 +51,8 @@ announced as segments via `declare_version`.
   history is public (head-bound), so judge me by my judging record.
 - ★**Acceptance history and pricing** ([M-181]): the acceptance channel (`/accept`)
   is public on both sides — against false-rework extortion I may apply a **buyer
-  surcharge principle** (β ≥ g/P; an advisory multiplier from rejection history,
+  surcharge principle** (β > g/P with margin — the exact boundary leaks, [M-182];
+  an advisory multiplier from rejection history,
   `acceptance --beta`). The cost to honest rework demand is linearly bounded (β·r·P).
 - ★**Judgment-settlement discipline** ([M-178], registered measurement): settlement or
   reward for judgment (evaluation without an agreed checker) must be **anchored to

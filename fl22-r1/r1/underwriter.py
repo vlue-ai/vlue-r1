@@ -63,7 +63,11 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   # ★[M-165] C-2 기간-비례 자본-비용(bp/에포크 · 0 = 끔): 담보 β·E가
                   # T 동안 잠긴다 — 기계-경제의 이자율 = 담보 회전율. 장기-T 커버가
                   # 공짜가 아니게 하는 항(인간-보험의 기간-보험료의 기계판).
-                  "carry_bp_per_epoch": 0}
+                  "carry_bp_per_epoch": 0,
+                  # ★[M-182] 출처-λ: trust_lambda 분모를 출처-몫으로 할인
+                  # (earned | w085 | ★v2 = 용량-결박 earned×hop — LSPROV4 지배 ·
+                  # 위장-운반 원가 κ/d 복원). 기본 끔 · 값은 실데이터 후.
+                  "prov_lambda": None}
 
 
 def _premium(c, ref, exposure, policy, ctx=None):
@@ -157,6 +161,25 @@ def scan(c, policy=None):
     fam_open = {}
     per_open = {}                  # 앵커별 열린 부보-노출(δ의 r 분모 — R4-2)
     mine_exp = {}                  # 앵커별 내 열린-노출(신뢰-람다 분자)
+    # ★[M-182] 출처-λ 다이얼: trust_lambda 분모(delivered_volume)를 출처-몫으로
+    # 할인(earned | w085 | ★v2 권장 — LSPROV4 지배). 기본 끔 · 값은 실데이터 후
+    # ([M-173] 원칙) · 계기-실패 폴백 = v0 trust-λ(할인 없음 — 조용한 개방 아님).
+    prov_share = None
+    pl = policy.get("prov_lambda")
+    if pl and policy.get("trust_lambda") is not None:
+        try:
+            key = {"earned": None, "w085": "w085_share",
+                   "v2": "w_eh_share"}[pl]
+            pv = provenance(c)
+            prov_share = {}
+            for a3, row in (pv.get("anchors") or {}).items():
+                if pl == "earned":
+                    prov_share[a3] = min(1.0, row.get("earned_routed_share", 0)
+                                         + row.get("earned_demand_share", 0))
+                else:
+                    prov_share[a3] = row.get(key, 0.0)
+        except Exception:
+            prov_share = None                    # 폴백 = 무-할인(v0 trust-λ)
     epoch = st["epoch"]
     mine = 0                       # 내 미결 커버(앵커당 계수용 — job 조회로 파악)
     per_anchor = {}
@@ -193,6 +216,8 @@ def scan(c, policy=None):
             lam = policy.get("trust_lambda")
             if lam is not None:
                 dv = (st["anchors"].get(a) or {}).get("delivered_volume", 0)
+                if prov_share is not None:       # ★출처-λ(분모 할인)
+                    dv = dv * prov_share.get(a, 0.0)
                 if mine_exp.get(a, 0) + j["exposure"] > lam * dv:
                     continue            # ★C-1 — 이행-부피가 신뢰의 상한
             fam = fam_of.get(a)
@@ -526,6 +551,11 @@ def provenance(c):
     import importlib
     sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
     kernel22 = importlib.import_module("kernel22")
+    st = c.stats()                               # ★선-인출(v2 가계-지도 — 최종 상태)
+    fam = {}
+    for a2, an in (st.get("anchors") or {}).items():
+        v = an.get("version") or ""
+        fam[a2] = v.split("/", 1)[0] if "/" in v else None
     meta = c._get("/meta")
     pks = {"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})}
     w = kernel22.World.from_public(pks, meta["label"], tuple(meta["genesis"]),
@@ -538,10 +568,12 @@ def provenance(c):
             break
         entries += page
         s = page[-1]["seq"] + 1
-    prov = {}                     # nid → {"vis": set, "mix": bool}
+    prov = {}                     # nid → {"vis": set, "mix": bool, "hops": n}
     own = {}                      # nid → 마지막 관측 소유자
     pend = {}                     # ref → 상환-대기 혈통 스냅숏
     earned = {}                   # principal → 선행 실-이행(DELIVER·CLOSE 수행) 횟수
+    earned_vol = {}               # ★v2 — principal → 실-이행 부피(운반-용량의 원천)
+    carried = {}                  # ★v2 — principal → 누적 운반-질량(용량-결박 소진)
     deliv = []
     for e in entries:
         env = e["env"]
@@ -602,18 +634,34 @@ def provenance(c):
                     continue
                 if ref in dref:                    # 이행만 부피 계상(정산·반환 제외)
                     pd["e_snap"] = {q: earned.get(q, 0) for q in pd["vis"]}
+                    # ★v2 — 용량-결박 earned×hop([M-182] LSPROV4): 독립 경유-주체의
+                    # 운반-총량 ≤ 자기-이행-부피(병목-통과·누적-소진 — 신뢰-λ 동형)
+                    A2, H2 = pd["anchor"], pd["holder"]
+                    ins = {A2, H2, "operator"} | {a3 for a3, f3 in fam.items()
+                                                  if f3 and f3 == fam.get(A2)}
+                    indep = {q for q in pd["vis"] if q not in ins}
+                    if indep:
+                        passed = min([pd["face"]]
+                                     + [max(0.0, earned_vol.get(m, 0.0)
+                                            - carried.get(m, 0.0))
+                                        for m in indep])
+                        for m in indep:
+                            carried[m] = carried.get(m, 0.0) + passed
+                        pd["w_eh"] = (0.85 ** max(pd.get("hops", 0) - 1, 0)
+                                      * passed / pd["face"])
+                    else:
+                        pd["w_eh"] = 0.0
                     deliv.append(pd)
                     earned[pd["anchor"]] = earned.get(pd["anchor"], 0) + 1
+                    earned_vol[pd["anchor"]] = \
+                        earned_vol.get(pd["anchor"], 0.0) + pd["face"]
         for lg in inner:
             if lg.get("typ") == "CLOSE":
                 pf = (lg.get("args") or {}).get("performer")
                 if pf:
                     earned[pf] = earned.get(pf, 0) + 1
-    st = c.stats()
-    fam = {}
-    for a2, an in (st.get("anchors") or {}).items():
-        v = an.get("version") or ""
-        fam[a2] = v.split("/", 1)[0] if "/" in v else None
+                    # v2 용량은 DELIVER 부피만 계상(수임-지급은 이진-earned만 —
+                    # 보수: CLOSE 지급액을 용량으로 안 세면 위장-여지가 줄 뿐이다)
     per = {}
     for d in deliv:
         A, H = d["anchor"], d["holder"]
@@ -625,7 +673,8 @@ def provenance(c):
                else "routed") if indep else "direct_cycle"
         row = per.setdefault(A, {"V": 0, "direct_cycle": 0, "routed": 0,
                                  "earned_routed": 0, "earned_demand": 0,
-                                 "rooted_ext": 0, "_w085": 0.0, "_hops": []})
+                                 "rooted_ext": 0, "_w085": 0.0, "_hops": [],
+                                 "_weh": 0.0})
         row["V"] += d["face"]
         row[cls] += d["face"]
         if d["h_earned"]:
@@ -633,6 +682,7 @@ def provenance(c):
         h = d.get("hops", 0)
         row["_hops"].append(h)
         row["_w085"] += d["face"] * (0.85 ** max(h - 1, 0))
+        row["_weh"] += d["face"] * d.get("w_eh", 0.0)
     for A, row in per.items():
         v = row["V"] or 1
         row["indep_share"] = round((row["routed"] + row["earned_routed"]) / v, 4)
@@ -641,6 +691,7 @@ def provenance(c):
         hs = sorted(row.pop("_hops"))
         row["hops_med"] = hs[len(hs) // 2] if hs else 0
         row["w085_share"] = round(row.pop("_w085") / v, 4)   # ★v1 hop-감쇠
+        row["w_eh_share"] = round(row.pop("_weh") / v, 4)    # ★v2 용량-결박
     return {"as_of": {"epoch": st["epoch"], "entries": len(entries)},
             "anchors": dict(sorted(per.items())),
             "note": ("출처-계기 v1(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
@@ -754,6 +805,10 @@ def main():
     ap.add_argument("--sets", default="family",
                     choices=["family", "single", "worst2", "all"],
                     help="cascade: 시나리오 집합(E-1)")
+    ap.add_argument("--prov-lambda", default=None,
+                    choices=["earned", "w085", "v2"],
+                    help="trust-λ 분모의 출처-할인(★v2 권장 — 용량-결박 earned×hop"
+                         " · 기본 끔 · trust-lambda와 함께만 유효)")
     ap.add_argument("--beta", type=float, default=None,
                     help="acceptance: 매수자-할증 계수(권고 승수 병기 — 억지 조건"
                          " β ≥ g/P · [M-181] 결합 재가·자문-가격층)")
@@ -763,6 +818,7 @@ def main():
            "max_concurrent": a.max_concurrent,
            "loading_pct": a.loading_pct, "family_cap": a.family_cap,
            "trust_lambda": a.trust_lambda,
+           "prov_lambda": a.prov_lambda,
            "carry_bp_per_epoch": a.carry_bp,
            "family_prior": a.family_prior}
     c = _mk_client(a.url, a.key, a.name)
