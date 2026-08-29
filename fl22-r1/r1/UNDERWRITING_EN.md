@@ -210,5 +210,5 @@ buyer deadlines cuts the same-tick maturity peak **five-fold** (48,000 → 8,500
 total payout stays essentially unchanged (timing cannot change total loss for an
 underwriter that never replenishes) ⟹ jitter is for `maturity_peak` capacity planning,
 not loss reduction. ⓑ**Endogenous storms**: storms self-organize from **deadline
-synchronization alone**, with no adversary (same epoch, same T) — `--max-concurrent`
-is a standing instrument, not an anti-adversary one.
+synchronization alone**, with nobody misbehaving (same epoch, same T) —
+`--max-concurrent` is a standing instrument, not a defense against bad actors.
