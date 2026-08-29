@@ -299,13 +299,13 @@ def _prorate(avail, needs):
     return out
 
 
-def cascade(c, mode="abscond", sets="family"):
+def cascade(c, mode="gone", sets="family"):
     """★[M-172] E-1 — 전염의 폐형-계산(공개-원장 Eisenberg–Noe의 기계판).
 
     시나리오 집합 D의 앵커 전원이 **같은 틱에 전-청구 사고**(worst case = 동시-성숙)일
     때의 폭포-연쇄를 공개 상태만으로 계산한다. 인간 거시-건전성이 규제자도 못 갖는
     노출-행렬을 요구하는 자리에서, 이 원장은 그 행렬이 전부 공개다 — 「증언이 아니라
-    재계산」의 거시판. mode: abscond = 가해자 잔고 0(도주-극한·δ=1) / freeze = 현재
+    재계산」의 거시판. mode: gone = 원인-앵커 잔고 0(부재-극한·δ=1) / freeze = 현재
     잔고. sets: family(가계별)·single(앵커별)·worst2(부보-노출 최대 2 — cover2 접점)·
     all. ★2층-전염 정리의 실행형: 전파 = ①가해자 ②담보 ③소구(같은 틱 비례) ④F_uw
     ⑤short 에서 **끝난다**(인수자-간 부채 계기가 법에 없다 — 증폭 채널은 공유-인수자
@@ -363,7 +363,7 @@ def cascade(c, mode="abscond", sets="family"):
         for x in cs:
             by_a.setdefault(x["anchor"], []).append(x)
         for a in sorted(by_a):                       # ① 가해자(앵커별 비례)
-            avail = 0 if mode == "abscond" else bal.get(a, 0)
+            avail = 0 if mode == "gone" else bal.get(a, 0)
             grp = [x for x in by_a[a] if rem[x["ref"]] > 0]
             if not grp or avail <= 0:
                 continue
@@ -560,8 +560,8 @@ def main():
                     help="book: 감사 대상 인수자(공백 = 자기 — F-2 공개-감사)")
     ap.add_argument("--family-prior", action="store_true",
                     help="무-이력 앵커에 가계-최악 사전 적용(F-10 — ⚠️λ 결합 권장)")
-    ap.add_argument("--mode", default="abscond", choices=["abscond", "freeze"],
-                    help="cascade: 가해자 잔고 가정(abscond=0 · freeze=현재)")
+    ap.add_argument("--mode", default="gone", choices=["gone", "freeze"],
+                    help="cascade: 원인-앵커 잔고 가정(gone=0 · freeze=현재)")
     ap.add_argument("--sets", default="family",
                     choices=["family", "single", "worst2", "all"],
                     help="cascade: 시나리오 집합(E-1)")

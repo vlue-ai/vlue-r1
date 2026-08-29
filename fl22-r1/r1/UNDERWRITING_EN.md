@@ -31,7 +31,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   δ is not a constant but an **offender-layer depletion curve** — median **0.742 ·
   0.913 · 0.954** at accident rates 5/15/30% (more accidents drain the fixed layer
   sooner, shrinking your discount) · ★with offender free balance 0, **δ = 1.000
-  exactly in 72/72 runs** (you pay everything — the absconding limit, measured).
+  exactly in 72/72 runs** (you pay everything — the absent-issuer limit, measured).
   ★Practical formula ([M-162]
   registered measurement — 192 runs, worst deviation 0.002): **δ ≈ 1 − min(r, 1),
   r = offender free balance ÷ (p̂ × open exposure)** — the cushion ratio r alone
@@ -122,7 +122,7 @@ cover — canonical constants trials 2000 · fam_rho 0.5 · seed 7 = reproducibl
 ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
 ★`cascade` ([M-172] E-1 — **contagion in closed form**: the full waterfall for any
 offender set [--sets family/single/worst2/all] failing every covered claim in one tick,
-computed from public state alone [--mode abscond = absconding limit · freeze = current
+computed from public state alone [--mode gone = absent-issuer limit · freeze = current
 balances] · a gate keeps it **layer-exact** against kernel settlement · collateral
 assumed at the ⌈E/2⌉ floor ⟹ short is an upper bound · color-substance contagion is
 `color_health`'s separate axis · ★two-layer structure: no underwriter-to-underwriter

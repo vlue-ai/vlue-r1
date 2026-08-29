@@ -45,7 +45,7 @@ works because of this: a premium of 1 unit = **0.1%** on a 1-AU exposure.
   got paid when they acquired my note), ③**exchange** (XFER · atomic /block).
 - Merging notes (MERGE) works **only within one color** (SPLIT inherits color).
 - ★**EXIT rule**: an issuer **cannot exit while notes of its color are still circulating**
-  (this blocks "absconding issuers" who would abandon circulating notes as permanently
+  (this blocks "absent issuers" who would abandon circulating notes as permanently
   unredeemable — you must first get them redeemed, or buy them back and burn them). Your
   credit-risk hygiene as a holder of someone else's color: check the note's `color`, then
   that issuer's record (p̂) and outstanding supply (`density.colors` in `/stats`) before
@@ -267,7 +267,7 @@ accepting is your choice).
   (`test.py` imports `solution`, verifies, then `print("OK")`); output = `solution.py`.
   Order = `{"kind": "pycheck", "test_b64": base64(test.py)}` · deliver =
   `deliver_job(ref, base64(solution.py))`. ★The test runs the output **in the same
-  process**, so an adversarial output can forge the verdict — use it only with parties
+  process**, so an untrusted output can forge the verdict — use it only with parties
   you trust; for unknown fulfillers use `pyjudge`.
 
 ⚠️**Checker design guidance (holders)**: a constant-answer checker (e.g.

@@ -529,16 +529,16 @@ def gate_TCOLOR(port=8803):
     out["색-공급 관측"] = "colors" in st["density"] and \
         st["density"]["colors"].get("nc", 0) > 0
     out["audit(색 전체성)"] = nc._get("/audit")["ok"]
-    # ★발행자-도주 방어([M-113] 더블체크 FB-1/MS-1): 자기-색 유통부채가 남은 채
+    # ★발행자-부재 방어([M-113] 더블체크 FB-1/MS-1): 자기-색 유통부채가 남은 채
     # EXIT 금지(유통 노트의 상환-불능 방기 방지) ∧ 유통 0이면 정상 EXIT(가둠 아님).
     ab = _client(port, "absc", data)
     ab.join()
     ab.xfer("nc", ab.notes_of("absc")[0]["nid"])   # 자기-IOU 전량 유통
     try:
         ab._post("/submit", {"env": ab.sign_env("EXIT", {"a": "absc"})})
-        out["★도주 EXIT 차단"] = False
+        out["★부재 EXIT 차단"] = False
     except RuntimeError as e:
-        out["★도주 EXIT 차단"] = "유통" in str(e)
+        out["★부재 EXIT 차단"] = "유통" in str(e)
     hon = _client(port, "honx", data)
     hon.join()
     for n in hon.notes_of("honx"):                  # 유통 0으로 정리(BURN)
@@ -1234,7 +1234,7 @@ def gate_TCOVER(port=8799):
     p_fp = next(cd["prem"] for cd in sc_fp["candidates"] if cd["ref"] == j8["ref"])
     out["★가계-사전 완화"] = p_fp < p_np
     # ── ★E-1([M-172]) cascade — 폐형-사영 = 커널 정산 실측(층별 정확 일치) ──
-    #    격리: 앞선 열린 청구 전량 flush → cvna(잔고 0 = 도주-동형) 단독 부보-청구 →
+    #    격리: 앞선 열린 청구 전량 flush → cvna(잔고 0 = 부재-동형) 단독 부보-청구 →
     #    성숙 전 cascade(freeze) 사영 = 정산 후 /stats.loss 층별 증분(정확 일치).
     for _ in range(nd.w.GEN["redeem_T"] + 1):
         nd.tick()
