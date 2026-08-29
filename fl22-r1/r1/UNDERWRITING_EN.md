@@ -238,9 +238,14 @@ same status as §6.
    in the chain — a purchasable signal) / ★`earned_routed` / `earned_demand`
    (**principals with prior real deliveries** in the chain, or as the buyer — the
    κ-expensive, substantive signal) / `rooted_ext` (membrane inflow — no such channel
-   in r1, so currently a **zero baseline**). ⚠️Coupling it into the λ denominator
-   (narrowing `trust_lambda`'s V to the earned classes) is off by default and needs
-   separate authorization — v1 = hop-decay, registered.
+   in r1, so currently a **zero baseline**). ★**v1 = hop-decay, live** ([M-181] —
+   `hops_med` and `w085_share` reported, d=0.85 recommended): the honest-chain penalty
+   is **exactly d^(k−1)** (fully predictable; v0 pro-rata propagation is depth-neutral
+   — no fairness hole, PD1), the multi-hop laundering penalty is **≥ d^ℓ** (measured
+   heavier than the bound — the return leg decays acquired weight again, LSPROV3), and
+   ⚠️**one-hop laundering meets only one hop of decay** — swap friction (f\*) remains
+   the first defense on the shortest path. Coupling into the λ denominator stays off
+   by default, separate authorization.
 3. ★**Second-order history (the taste residual)**: verification (conformance) and
    acceptance are different axes — the **conformant-but-reworked** residual is a
    measurable second-order track record, and acceptance insurance without it dies of
@@ -248,12 +253,23 @@ same status as §6.
    history-rated +45.6; premium↔σ Spearman 0.986). ★Acceptance channel v0 = `/accept`
    (buyer-signed, post-delivery, one record per (ref, buyer), repost = replace) +
    `underwriter.py acceptance` — **both sides in one record** (seller `taste_residual`
-   ↔ buyer `reject_rate`; one-sided records are an extortion lever) and
-   ★**record-only** (no settlement or rate contact — rate coupling waits for the
-   T-EXTORT deviation arm).
+   ↔ buyer `reject_rate`; one-sided records are an extortion lever).
+   ★**Price-coupling condition, settled** ([M-181] — T-EXTORT passed 3/3): coupling
+   acceptance history into prices is extortion-resistant when ⓐ both-sides records
+   (live) and ⓑ a **buyer surcharge β ≥ g/P** (the extortion-gain rate: value of a
+   false rework ÷ job price) are in place — deterrence sign sign(g−βP) measured, the
+   β=0 lever quantified at e·N·g, honest-buyer cost linear within ±10% (LSTASTE2
+   E1–3). Tool: `acceptance --beta` reports a recommended per-buyer multiplier
+   1+β·reject_rate — an **advisory pricing layer**: no kernel or settlement contact;
+   applying it is the seller's choice.
 4. ★**Judgment-settlement discipline** (for any evaluation without an agreed checker):
    settlement must be **anchored to realized outcomes** (acceptance / rework) —
    self-referential settlement (peer-prediction or panel-median alone) decouples from
    truth depending on implementation detail (Keynesian beauty contest, measured: peer
    herding m→1.00, Brier 0.248 vs calibration-linked 0.097 — LSTASTE T4 plus the
-   [M-178] implementation-variant probe).
+   [M-178] implementation-variant probe). ★Refined ([M-180/181]): the danger is not
+   the **presence** of a self-referential component but its **dominance** — accuracy
+   held as long as the calibration component was nonzero (flat through w ≤ 0.8,
+   breaking only at w = 1.0 — LSTASTE3 W-SWEEP), and the working recommendation is a
+   **fixed-prepay hybrid** (3.3× throughput, no distortion; the prepay's reference
+   must never be self-referential, calibration stays dominant).

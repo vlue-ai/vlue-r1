@@ -559,16 +559,20 @@ def provenance(c):
             if len(consumed) == 1:
                 b = prov.get(next(iter(consumed)))
                 vis0, mix0 = (set(b["vis"]), b["mix"]) if b else (set(), True)
+                h0 = b["hops"] if b else 0
             elif consumed:
                 vis0 = set().union(*[prov[x]["vis"] for x in consumed
                                      if x in prov]) or set()
                 mix0 = True
+                h0 = max((prov[x]["hops"] for x in consumed if x in prov),
+                         default=0)
             else:
-                vis0, mix0 = set(), False
+                vis0, mix0, h0 = set(), False, 0
         for nid in minted:
             o = w.notes[nid]["owner"]
             prov[nid] = {"vis": set(vis0) | ({o} if not o.startswith("@")
-                                             else set()), "mix": mix0}
+                                             else set()),
+                         "mix": mix0, "hops": h0}
             own[nid] = o
         for nid in consumed:
             prov.pop(nid, None)
@@ -579,10 +583,12 @@ def provenance(c):
                 own[nid] = o
                 if nid in prov and not o.startswith("@"):
                     prov[nid]["vis"].add(o)
+                    prov[nid]["hops"] += 1       # ★v1 — 보관-홉 계수
         for ref in set(w.redeem_pending) - pre_p:
             rp = w.redeem_pending[ref]
             nid = rp["nid"]
-            pend[ref] = {"vis": set(prov.get(nid, {"vis": set()})["vis"]),
+            pv = prov.get(nid, {"vis": set(), "hops": 0})
+            pend[ref] = {"vis": set(pv["vis"]), "hops": pv.get("hops", 0),
                          "holder": rp["holder"], "anchor": rp["anchor"],
                          "face": w.notes[nid]["face"],
                          "h_earned": earned.get(rp["holder"], 0) > 0}
@@ -619,31 +625,42 @@ def provenance(c):
                else "routed") if indep else "direct_cycle"
         row = per.setdefault(A, {"V": 0, "direct_cycle": 0, "routed": 0,
                                  "earned_routed": 0, "earned_demand": 0,
-                                 "rooted_ext": 0})
+                                 "rooted_ext": 0, "_w085": 0.0, "_hops": []})
         row["V"] += d["face"]
         row[cls] += d["face"]
         if d["h_earned"]:
             row["earned_demand"] += d["face"]
+        h = d.get("hops", 0)
+        row["_hops"].append(h)
+        row["_w085"] += d["face"] * (0.85 ** max(h - 1, 0))
     for A, row in per.items():
         v = row["V"] or 1
         row["indep_share"] = round((row["routed"] + row["earned_routed"]) / v, 4)
         row["earned_routed_share"] = round(row["earned_routed"] / v, 4)
         row["earned_demand_share"] = round(row["earned_demand"] / v, 4)
+        hs = sorted(row.pop("_hops"))
+        row["hops_med"] = hs[len(hs) // 2] if hs else 0
+        row["w085_share"] = round(row.pop("_w085") / v, 4)   # ★v1 hop-감쇠
     return {"as_of": {"epoch": st["epoch"], "entries": len(entries)},
             "anchors": dict(sorted(per.items())),
-            "note": ("출처-계기 v0(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
+            "note": ("출처-계기 v1(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
                      "(막-채널 부재라 rooted_ext = 0 기준선) · ⚠️의사-신원 홉은 구매"
-                     " 가능(방어 = 스왑-마찰) — earned-계열이 실질 · v1 = hop-감쇠"
-                     " 등재([M-178] §2 D-4)")}
+                     " 가능 — earned-계열이 실질 · ★v1 hop-감쇠(w085_share · d=0.85"
+                     " 권고 — [M-180/181]): 정직-벌점 = d^(k−1) 정확 · 다단-세탁 벌점"
+                     " ≥ d^ℓ(복귀-다리 추가-감쇠 실측) · ⚠️1-홉 세탁엔 1-홉 감쇠뿐 —"
+                     " 최단-경로의 1차 방어 = 스왑-마찰")}
 
 
-def acceptance(c):
-    """★[M-177/178] 수락-집계 v0 — 일치-후-수락의 **양측** 2차-이력(record-only).
+def acceptance(c, beta=None):
+    """★[M-177/178/181] 수락-집계 — 일치-후-수락의 **양측** 2차-이력.
 
     /accept 레코드(매수자-서명·이행-후·(ref,p)당 1건-교체)를 읽어 ⓐ판매자(앵커)별
     taste_residual = 평가-표본 내 재작업-비율 ⓑ매수자별 거절-비율을 같이 낸다 —
-    일방 기록은 갈취-레버라 **양측이 한 몸**([M-178] §2 D-5). ⚠️record-only:
-    요율-결합은 T-EXTORT(수락-보고 왜곡 이탈-팔) 실측 후 별도 재가."""
+    일방 기록은 갈취-레버라 **양측이 한 몸**([M-178] §2 D-5).
+    ★결합([M-181] 재가 — T-EXTORT 3/3 통과 후): `beta`를 주면 매수자별 **권고
+    가격-승수** 1 + β·거절률을 병기한다(자문-가격층 — 커널·정산 무접촉). 억지 조건
+    = **β ≥ g/P**(갈취-이득율: 허위-재작업의 이득 ÷ 잡 가격 — LSTASTE2 E2 부호-법
+    sign(g−βP) 실측). β 미지정 = 집계만(record-only 그대로)."""
     rs = c._get("/accept")["records"]
     per_a, per_b = {}, {}
     for r in rs:
@@ -668,11 +685,15 @@ def acceptance(c):
     for d in per_b.values():
         d["reject_rate"] = round(d["rework"] / d["rated"], 4) \
             if d["rated"] else None
+        if beta is not None and d["reject_rate"] is not None:
+            d["surcharge_mult"] = round(1 + beta * d["reject_rate"], 4)
     return {"anchors": dict(sorted(per_a.items())),
             "buyers": dict(sorted(per_b.items())),
-            "note": ("수락-집계 v0(record-only — 요율-비연동·T-EXTORT 후 결합 재가)"
-                     " · taste_residual = 일치-후-재작업(평가-표본 내 · 검증과 별개"
-                     " 2차-이력) · 양측 대칭 기록 = 갈취-레버 차단([M-178] §2 D-5)")}
+            "beta": beta,
+            "note": ("수락-집계 — 양측 대칭 기록 = 갈취-레버 차단([M-178] D-5) · "
+                     "taste_residual = 일치-후-재작업(검증과 별개 2차-이력) · "
+                     "★가격-결합([M-181]): 조건 = 양측-기록 ∧ 매수자-할증 β ≥ g/P"
+                     "(LSTASTE2 E1~3) — surcharge_mult는 권고(자문-가격층·정산 무접촉)")}
 
 
 def make_cover_leg(c, ref, prem):
@@ -733,6 +754,9 @@ def main():
     ap.add_argument("--sets", default="family",
                     choices=["family", "single", "worst2", "all"],
                     help="cascade: 시나리오 집합(E-1)")
+    ap.add_argument("--beta", type=float, default=None,
+                    help="acceptance: 매수자-할증 계수(권고 승수 병기 — 억지 조건"
+                         " β ≥ g/P · [M-181] 결합 재가·자문-가격층)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
@@ -749,8 +773,9 @@ def main():
     if a.cmd == "provenance":                     # ★[M-178] 출처-계기(읽기-전용)
         print(json.dumps(provenance(c), ensure_ascii=False, indent=1))
         return
-    if a.cmd == "acceptance":                     # ★[M-178] 수락-집계(record-only)
-        print(json.dumps(acceptance(c), ensure_ascii=False, indent=1))
+    if a.cmd == "acceptance":                     # ★[M-178/181] 수락-집계(+β 결합)
+        print(json.dumps(acceptance(c, beta=a.beta), ensure_ascii=False,
+                         indent=1))
         return
     if a.cmd == "book":
         print(json.dumps(book(c, pol, principal=(a.principal or None)),

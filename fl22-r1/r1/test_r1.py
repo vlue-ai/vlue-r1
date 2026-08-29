@@ -2248,6 +2248,9 @@ def gate_TACCEPT(port=8857):
         and agg["buyers"]["acby"]["reject_rate"] == 0.5
         and agg["anchors"]["acan"]["rated"] == 2)
     out["★record-only(요율 불변)"] = by.suggest_prem(j3["ref"]) == p0
+    agg2 = UWT.acceptance(by, beta=0.4)          # ★[M-181] β-결합(자문-가격층)
+    out["★β-할증 산술"] = agg2["buyers"]["acby"]["surcharge_mult"] == 1.2 \
+        and "surcharge_mult" not in UWT.acceptance(by)["buyers"]["acby"]
     from sdk import ACCEPT_DOMAIN, canon as _cn
     bad = {"ref": j1["ref"], "p": "acby", "verdict": "accept", "note": "",
            "expires": 0}                      # ⓓ 비-미래 만료 = 거부(epoch ≥ 0)
@@ -2305,6 +2308,9 @@ def gate_TPROV(port=8858):
     out["보존"] = (ra.get("direct_cycle", 0) + ra.get("routed", 0)
                   + ra.get("earned_routed", 0)
                   + ra.get("rooted_ext", 0)) == ra.get("V")
+    # ★[M-181] v1 hop-감쇠: ⓑh=1(w 1.0)·ⓒh=2(0.85)·ⓓh=1(1.0) → 0.95 · 중앙값 1
+    out["★hop-가중 v1"] = (ra.get("hops_med") == 1
+                          and abs(ra.get("w085_share", 0) - 0.95) < 1e-9)
     rc = pr["anchors"].get("pvc", {})
     out["이력자-앵커 행"] = rc.get("V") == 1 and rc.get("direct_cycle") == 1
     srv.shutdown()
