@@ -25,6 +25,7 @@ from cryptography.exceptions import InvalidSignature
 DOMAIN = b"FL22-v0.1" + b"\x00" * 7          # 커널 FL22_DOMAIN과 동일(골든 결박)
 BOARD_DOMAIN = b"FL22-BOARD"                 # ★호가 창(오프-원장) — 원장 봉투와 도메인 분리
 RELAY_DOMAIN = b"FL22-RELAY"                 # ★[M-162] leg-릴레이(서명 사서함)
+ACCEPT_DOMAIN = b"FL22-ACPT"                 # ★[M-178] 수락-채널(record-only 2차-이력)
 # ★[M-144] 명시 User-Agent: ⓐ기계 클라이언트의 정직한 자기-식별(트래픽이 로그에서
 # 읽힌다) ⓑ★실전 필수 — 기본값 `Python-urllib/*`는 CDN·WAF의 봇 차단에 걸린다(실측:
 # node.vlue.ai 이관 직후 SDK만 403 error 1010 · curl·브라우저는 200). 에이전트 경제의
@@ -411,6 +412,21 @@ class Fl21Client:
     def retract_post(self, post_id):
         """내 게시 철회(본인-서명이 소유 증명)."""
         return self._board_send({"rm": str(post_id), "p": self.p})
+
+    # ── ★[M-178] 수락-채널 v0 — 일치-후-수락 의견(record-only · 요율-비연동) ──
+    def accept_job(self, ref, verdict="accept", note="", ttl=10080):
+        """이행-후 산출에 수락/재작업 의견을 서명-공표(그 청구의 매수자만).
+        (ref, 나)당 1건 — 재게시 = 교체(번복은 새 의견). ⚠️record-only: 정산·요율
+        무접촉 — 내 거절-비율도 같은 채널에 공개된다(양측 대칭)."""
+        body = {"ref": str(ref), "p": self.p, "verdict": str(verdict),
+                "note": str(note),
+                "expires": self._get("/state")["epoch"] + int(ttl)}
+        sig = self.key.sign(ACCEPT_DOMAIN + self.log_id + canon(body)).hex()
+        return self._post("/accept", {"rec": body, "sig": sig})
+
+    def accepts(self):
+        """수락-레코드 전량(집계는 underwriter.py acceptance)."""
+        return self._get("/accept")
 
     # ── ★원자 다자-거래 — 다리(서명 봉투) 교환 + /block 제출(all-or-nothing) ──
     def make_leg(self, typ, args):

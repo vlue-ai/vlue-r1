@@ -212,3 +212,48 @@ underwriter that never replenishes) ⟹ jitter is for `maturity_peak` capacity p
 not loss reduction. ⓑ**Endogenous storms**: storms self-organize from **deadline
 synchronization alone**, with nobody misbehaving (same epoch, same T) —
 `--max-concurrent` is a standing instrument, not a defense against bad actors.
+
+## §7 Provenance & taste — the lineage of the trust denominator, and second-order history (★[M-177/178] registered measurements · v0 instruments)
+
+Registered at `lab/prereg/LSPROV_*` / `LSTASTE_*` (G5 — committed before execution);
+disposition in `core/M177_DOUBLECHECK`. ⚠️All of it is lab-constants, bot-behavior
+territory — once real participation arrives these become **falsifiable predictions**,
+same status as §6.
+
+1. ★**Deterrence, provenance edition**: decompose the trust cap by provenance
+   (exposure ≤ λ_hi·V_rooted + λ_lo·V_unrooted) and **farmed volume is structurally
+   unprofitable under just λ_lo ≤ κ/(1−ρ)** (net-extraction sign = sign(λ_lo(1−ρ)−κ),
+   deterministically exact — LSPROV P1), while rooted volume accumulates trust with no
+   penalty (prov/flat-high volume ratio 1.000). ★The single-λ dilemma is real: raise it
+   and farming breaks through (P1-2, positive extraction in every cell); lower it and
+   honest growth is throttled **compoundingly** — trust accumulation is an exponential
+   ramp, so the cost of a low λ is orders of magnitude, not "a bit slower" (P2). But
+   ⚠️**provenance is not unforgeable — it is purchasable**: pseudonymous hops can be
+   bought; the defense is not a wall but **swap friction** (laundering break-even f*
+   measured — P3).
+2. ★**The `provenance` instrument** (read-only, rate-decoupled):
+   `underwriter.py provenance` replays the full log H7-style and decomposes each
+   anchor's delivered volume V by **demand lineage**: `direct_cycle` (custody chain ⊆
+   anchor family ∪ holder — the farming signature) / `routed` (independent principals
+   in the chain — a purchasable signal) / ★`earned_routed` / `earned_demand`
+   (**principals with prior real deliveries** in the chain, or as the buyer — the
+   κ-expensive, substantive signal) / `rooted_ext` (membrane inflow — no such channel
+   in r1, so currently a **zero baseline**). ⚠️Coupling it into the λ denominator
+   (narrowing `trust_lambda`'s V to the earned classes) is off by default and needs
+   separate authorization — v1 = hop-decay, registered.
+3. ★**Second-order history (the taste residual)**: verification (conformance) and
+   acceptance are different axes — the **conformant-but-reworked** residual is a
+   measurable second-order track record, and acceptance insurance without it dies of
+   adverse selection (LSTASTE T6: flat-rated pool σ-median 0.225→0.352, P&L −9,323 vs
+   history-rated +45.6; premium↔σ Spearman 0.986). ★Acceptance channel v0 = `/accept`
+   (buyer-signed, post-delivery, one record per (ref, buyer), repost = replace) +
+   `underwriter.py acceptance` — **both sides in one record** (seller `taste_residual`
+   ↔ buyer `reject_rate`; one-sided records are an extortion lever) and
+   ★**record-only** (no settlement or rate contact — rate coupling waits for the
+   T-EXTORT deviation arm).
+4. ★**Judgment-settlement discipline** (for any evaluation without an agreed checker):
+   settlement must be **anchored to realized outcomes** (acceptance / rework) —
+   self-referential settlement (peer-prediction or panel-median alone) decouples from
+   truth depending on implementation detail (Keynesian beauty contest, measured: peer
+   herding m→1.00, Brier 0.248 vs calibration-linked 0.097 — LSTASTE T4 plus the
+   [M-178] implementation-variant probe).

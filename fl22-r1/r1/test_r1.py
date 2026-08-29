@@ -2203,6 +2203,115 @@ def gate_TSIGV(port=8851):
     return out
 
 
+def gate_TACCEPT(port=8857):
+    """★[M-178] 수락-채널 v0 — 이행-후·매수자만·(ref,p) 교체·양측 집계·record-only."""
+    out = {}
+    nd, srv, data = _serve(port)
+    an = _client(port, "acan", data)
+    an.join()
+    by = _client(port, "acby", data)
+    by.join()
+    ot = _client(port, "acot", data)
+    ot.join()
+    nb = [n for n in an.notes() if n["face"] >= 3][0]
+    an.split(nb["nid"], [1, 1, 1, nb["face"] - 3])
+    n1, n2, n3 = [n["nid"] for n in an.notes() if n["face"] == 1][:3]
+    for nid in (n1, n2, n3):
+        an.xfer("acby", nid)
+    j1 = by.redeem_job("acan", n1, seed="aa" * 4, n=500)
+    try:                                      # ⓐ 미이행 잡 수락 = 거부
+        by.accept_job(j1["ref"], "accept")
+        out["미이행 거부"] = False
+    except Exception:
+        out["미이행 거부"] = True
+    an.deliver_job(j1["ref"], JOBS.compute("sha256_chain", "aa" * 4, 500))
+    j2 = by.redeem_job("acan", n2, seed="bb" * 4, n=500)
+    an.deliver_job(j2["ref"], JOBS.compute("sha256_chain", "bb" * 4, 500))
+    j3 = by.redeem_job("acan", n3, seed="cc" * 4, n=500)   # 열린 잡(요율 대조용)
+    p0 = by.suggest_prem(j3["ref"])
+    out["수락 게시"] = bool(by.accept_job(j1["ref"], "accept")["id"])
+    by.accept_job(j2["ref"], "rework", note="형식은 맞고 결이 다름")
+    try:                                      # ⓑ 비-매수자 = 거부
+        ot.accept_job(j1["ref"], "accept")
+        out["비-매수자 거부"] = False
+    except Exception:
+        out["비-매수자 거부"] = True
+    by.accept_job(j1["ref"], "rework")        # ⓒ (ref,p) 교체-주소
+    recs = by.accepts()["records"]
+    mine1 = [r for r in recs if r["rec"]["ref"] == j1["ref"]]
+    out["교체-주소 1건"] = len(mine1) == 1 and \
+        mine1[0]["rec"]["verdict"] == "rework"
+    by.accept_job(j1["ref"], "accept")        # 최종 상태: j1 수락 · j2 재작업
+    agg = UWT.acceptance(by)
+    out["★양측 집계"] = (
+        agg["anchors"]["acan"]["taste_residual"] == 0.5
+        and agg["buyers"]["acby"]["reject_rate"] == 0.5
+        and agg["anchors"]["acan"]["rated"] == 2)
+    out["★record-only(요율 불변)"] = by.suggest_prem(j3["ref"]) == p0
+    from sdk import ACCEPT_DOMAIN, canon as _cn
+    bad = {"ref": j1["ref"], "p": "acby", "verdict": "accept", "note": "",
+           "expires": 0}                      # ⓓ 비-미래 만료 = 거부(epoch ≥ 0)
+    sg = by.key.sign(ACCEPT_DOMAIN + by.log_id + _cn(bad)).hex()
+    try:
+        by._post("/accept", {"rec": bad, "sig": sg})
+        out["만료 검증"] = False
+    except Exception:
+        out["만료 검증"] = True
+    out["audit"] = by._get("/audit")["ok"]
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TPROV(port=8858):
+    """★[M-178] 출처-계기 v0 — 보관-사슬 혈통 분해가 구성 시나리오와 정확 일치.
+    ⓐ직접-순환(발행자→매수자→상환) ⓑearned-경유(독립·실-이행 이력자 경유)
+    ⓒearned-수요(홀더 자신이 이력자) · rooted_ext = 0 기준선 · 보존식."""
+    out = {}
+    nd, srv, data = _serve(port)
+    A = _client(port, "pva", data)
+    A.join()
+    B = _client(port, "pvb", data)
+    B.join()
+    C = _client(port, "pvc", data)
+    C.join()
+    cn = [n for n in C.notes() if n["face"] >= 2][0]     # ⓐ선행: C가 이력자가 된다
+    C.split(cn["nid"], [1, cn["face"] - 1])
+    nc = [n["nid"] for n in C.notes() if n["face"] == 1][0]
+    C.xfer("pvb", nc)
+    jc = B.redeem_job("pvc", nc, seed="dd" * 4, n=500)
+    C.deliver_job(jc["ref"], JOBS.compute("sha256_chain", "dd" * 4, 500))
+    na = [n for n in A.notes() if n["face"] >= 4][0]
+    A.split(na["nid"], [1, 1, 1, na["face"] - 3])
+    a1, a2, a3 = [n["nid"] for n in A.notes() if n["face"] == 1][:3]
+    A.xfer("pvb", a1)                                     # ⓑ 직접-순환
+    j1 = B.redeem_job("pva", a1, seed="ee" * 4, n=500)
+    A.deliver_job(j1["ref"], JOBS.compute("sha256_chain", "ee" * 4, 500))
+    A.xfer("pvc", a2)                                     # ⓒ earned-경유(C 경유)
+    C.xfer("pvb", a2)
+    j2 = B.redeem_job("pva", a2, seed="ff" * 4, n=500)
+    A.deliver_job(j2["ref"], JOBS.compute("sha256_chain", "ff" * 4, 500))
+    A.xfer("pvc", a3)                                     # ⓓ earned-수요(홀더 = C)
+    j3 = C.redeem_job("pva", a3, seed="ab" * 4, n=500)
+    A.deliver_job(j3["ref"], JOBS.compute("sha256_chain", "ab" * 4, 500))
+    pr = UWT.provenance(A)
+    out["리플레이-결박"] = "error" not in pr
+    ra = pr["anchors"].get("pva", {})
+    out["★혈통 분해"] = (ra.get("V") == 3 and ra.get("direct_cycle") == 2
+                        and ra.get("earned_routed") == 1
+                        and ra.get("routed") == 0)
+    out["★earned-수요"] = ra.get("earned_demand") == 1
+    out["★막-기준선 0"] = ra.get("rooted_ext") == 0
+    out["보존"] = (ra.get("direct_cycle", 0) + ra.get("routed", 0)
+                  + ra.get("earned_routed", 0)
+                  + ra.get("rooted_ext", 0)) == ra.get("V")
+    rc = pr["anchors"].get("pvc", {})
+    out["이력자-앵커 행"] = rc.get("V") == 1 and rc.get("direct_cycle") == 1
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -2225,7 +2334,9 @@ def main():
              "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22(),
              "T-ERC8004 어댑터": gate_TERC8004(),
              "T-VALVE 단방향밸브": gate_TVALVE(),
-             "T-SIGV 암호-확실 kind": gate_TSIGV()}
+             "T-SIGV 암호-확실 kind": gate_TSIGV(),
+             "T-ACCEPT 수락채널": gate_TACCEPT(),
+             "T-PROV 출처계기": gate_TPROV()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

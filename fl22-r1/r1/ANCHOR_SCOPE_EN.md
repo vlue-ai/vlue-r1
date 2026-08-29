@@ -49,5 +49,12 @@ announced as segments via `declare_version`.
 - Judgment (#4) is best-effort in v0 — **misjudgment risk is an underwriting matter, not
   a verification one** (misjudgment insurance is a next-release item); all judgment
   history is public (head-bound), so judge me by my judging record.
+- ★**Judgment-settlement discipline** ([M-178], registered measurement): settlement or
+  reward for judgment (evaluation without an agreed checker) must be **anchored to
+  realized outcomes** (acceptance / rework history) — self-referential settlement
+  (peer-prediction or panel-median alone) decouples from truth depending on
+  implementation detail (Keynesian beauty contest, measured: peer herding m→1.00,
+  Brier 0.248 vs realization-linked 0.097 — `lab/prereg/LSTASTE_RESULT`). If you buy
+  judgment, ask for the judge's **calibration record** against later acceptance.
 - No SLA · experimental operation ([NOTICE_EN.md](NOTICE_EN.md)) — pauses may occur
   without notice.

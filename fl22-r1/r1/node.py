@@ -52,6 +52,10 @@ BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다
 # 도메인 분리: 게시 서명은 원장 봉투로 재생 불가(역방향도) — 별도 도메인 + log_id 결박.
 BOARD_DOMAIN = b"FL22-BOARD"
 RELAY_DOMAIN = b"FL22-RELAY"         # ★[M-162] leg-릴레이(오프-원장 서명 사서함)
+ACCEPT_DOMAIN = b"FL22-ACPT"         # ★[M-178] 수락-채널(record-only 2차-이력)
+ACCEPT_TTL_MAX = 10080               # 레코드 수명 상한(에포크 — 60s 틱 기준 1주)
+ACCEPT_PER_P = 256                   # 주체당 활성 레코드 상한(거래-당 1건이라 board보다 큼)
+ACCEPT_MAX = 8192                    # 전역 상한(자원 가드)
 BOARD_TTL_MAX = 10080                # 게시 수명 상한(에포크 — 60s 틱 기준 1주)
 BOARD_PER_P = 8                      # 주체당 활성 게시 상한(스팸 — 예치금은 R2 등재)
 BOARD_MAX = 4096                     # 전역 게시 상한(자원 가드)
@@ -90,6 +94,14 @@ class Node:
                 self.board = json.load(open(self.board_p, encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 self.board = {}
+        # ★[M-178] 수락-채널 v0 — 자문층(record-only · 요율-비연동 · 손상 = 빈 판)
+        self.accept_p = os.path.join(data_dir, "accept.json")
+        self.accepts = {}            # id → {rec, sig, id} · id = H(ref|p) = 교체-주소
+        if os.path.exists(self.accept_p):
+            try:
+                self.accepts = json.load(open(self.accept_p, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.accepts = {}
         # ── ★D-1 키 실물화: 비밀은 소스가 아니라 data_dir(0600 · 첫 기동 시 생성) ──
         seed = self._load_secret_int(os.path.join(data_dir, "node_secret"))
         # ── ★D-2 공동-서명 분리([M-105]): 노드는 --cosign-local 부분집합의 개인키만 보유 ·
@@ -1253,6 +1265,72 @@ class Node:
         self._board_save()
         return {"id": pid, "expires": ex}
 
+    # ── ★[M-178] 수락-채널 v0(D-5) — 일치-후-수락의 양측 2차-이력(자문층) ──
+    # 검증(일치)과 별개로 매수자가 이행-후 산출에 「수락/재작업」 의견을 서명-공표한다.
+    # ⓐ양측이 한 몸: 판매자 taste_residual 과 매수자 거절-비율이 같은 레코드에서
+    #   파생된다(일방 기록 = 허위-거절 갈취-레버 — [M-178] §2 D-5) ⓑrecord-only:
+    #   정산·요율 무접촉(요율-결합은 T-EXTORT 실측 후 별도 재가) ⓒ(ref, p)당 1건 —
+    #   재게시 = 교체(번복은 새 의견이지 삭제가 아니다) ⓓ이행-후에만·매수자(holder)만.
+    def _accept_gc(self):
+        now = self.w.epoch
+        dead = [i for i, r in self.accepts.items()
+                if r["rec"]["expires"] <= now]
+        for i in dead:
+            del self.accepts[i]
+        return bool(dead)
+
+    def _accept_save(self):
+        tmp = self.accept_p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(self.accepts, fh, ensure_ascii=False)
+        os.replace(tmp, self.accept_p)   # 자문층 — 원자 교체면 충분
+
+    def accept_list(self):
+        if self._accept_gc():
+            self._accept_save()
+        return {"epoch": self.w.epoch,
+                "records": sorted(self.accepts.values(), key=lambda r: r["id"]),
+                "note": ("수락-채널 v0 = record-only(요율-비연동 · 정산 무접촉) · "
+                         "양측 파생 집계 = underwriter.py acceptance · "
+                         "(ref,p)당 1건-교체")}
+
+    def accept_post(self, body, sig):
+        if not isinstance(body, dict) or not isinstance(sig, str):
+            raise Fl21Error("accept: {rec: 서명-본문, sig: hex}")
+        self._offledger_verify(ACCEPT_DOMAIN, body, sig, "accept")
+        keys = {"ref", "p", "verdict", "note", "expires"}
+        if set(body) != keys:
+            raise Fl21Error(f"accept: 키는 정확히 {sorted(keys)}")
+        if body["verdict"] not in ("accept", "rework"):
+            raise Fl21Error("accept: verdict ∈ {accept, rework}")
+        if not (isinstance(body["note"], str) and len(body["note"]) <= 200):
+            raise Fl21Error("accept: note ≤ 200자")
+        ref = str(body["ref"])
+        j = self.jobs.get(ref)
+        if j is None:
+            raise Fl21Error("accept: 미지 ref")
+        if not j.get("delivered"):
+            raise Fl21Error("accept: 이행-후에만(일치 없는 수락-의견은 무의미)")
+        if body["p"] != j.get("holder"):
+            raise Fl21Error("accept: 그 청구의 매수자(holder)만")
+        ex, now = body["expires"], self.w.epoch
+        if not isinstance(ex, int) or isinstance(ex, bool) or \
+                not (now < ex <= now + ACCEPT_TTL_MAX):
+            raise Fl21Error(f"accept: expires ∈ (지금, 지금+{ACCEPT_TTL_MAX}]")
+        self._accept_gc()
+        rid = hashlib.sha256(f"acpt|{ref}|{body['p']}".encode()
+                             ).hexdigest()[:16]    # (ref, p) 교체-주소
+        if rid not in self.accepts:
+            if len(self.accepts) >= ACCEPT_MAX:
+                raise Fl21Error(f"accept: 전역 상한({ACCEPT_MAX})")
+            mine = sum(1 for r in self.accepts.values()
+                       if r["rec"]["p"] == body["p"])
+            if mine >= ACCEPT_PER_P:
+                raise Fl21Error(f"accept: 주체당 활성 {ACCEPT_PER_P}건")
+        self.accepts[rid] = {"id": rid, "rec": body, "sig": sig}
+        self._accept_save()
+        return {"id": rid, "expires": ex}
+
     # ── ★P-11 /challenge([M-126] R2-A) — 낙관적-검증의 재검증 창 ──
     # 누구나(등록 주체) 이행-완료 잡의 재검증을 요청한다. 노드는 의무-재검증하고,
     # 불일치가 확인되면 온-원장 기록(운영자 TICKMARK fl21.challenge — head-결박)을
@@ -1395,6 +1473,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, nd.stats())
                 if p == "/board":                     # ★R2-a 호가 창(발견층)
                     return self._send(200, nd.board_list())
+                if p == "/accept":                    # ★[M-178] 수락-채널(record-only)
+                    return self._send(200, nd.accept_list())
                 m = re.match(r"^/attest/([a-z0-9_-]+)$", p)
                 if m:                                 # ★P-9
                     return self._send(200, nd.attest(m.group(1)))
@@ -1521,6 +1601,9 @@ class Handler(BaseHTTPRequestHandler):
                 if p == "/board":                     # ★R2-a — 오프-원장 서명 게시
                     return self._send(200, nd.board_post(body.get("post"),
                                                          body.get("sig")))
+                if p == "/accept":                    # ★[M-178] 수락-의견 게시
+                    return self._send(200, nd.accept_post(body.get("rec"),
+                                                          body.get("sig")))
                 if p == "/submit":
                     return self._send(200, nd.submit(body.get("env")))
                 if p == "/job":

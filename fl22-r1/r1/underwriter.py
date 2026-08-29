@@ -508,6 +508,173 @@ def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7, principal=None):
                      "(계기 — 등록-측정 아님·δ(r) 폐형·기금-층 0 근사)"}
 
 
+def provenance(c):
+    """★[M-177/178] 출처-계기 v0 — 이행-부피의 수요-혈통 공개-재계산(읽기-전용).
+
+    H7-동형: /meta 공개 재료로 검증-세계를 만들고 /log 전량을 리플레이하며 노트별
+    보관-사슬(visited 주체)을 그림자-추적, 앵커별 **이행-부피 V의 혈통 분해**를 낸다.
+    r1 에는 막(膜)-유입 채널이 없다(EXT_IN = 자기-IOU 발행 — join·회전-발행) ⟹
+    v0 의 뿌리-신호는 「주입-라벨」이 아니라 **보관-사슬의 독립성**이다:
+      direct_cycle  = 사슬 ⊆ {앵커·가계·홀더} — 발행자 종이가 곧장 되돌아옴(경작-형)
+      routed        = 독립 주체 ≥ 1 경유(의사-신원 홉 — 구매 가능한 신호)
+      earned_routed = 경유 독립 주체 중 **선행 실-이행 이력자** 존재(κ-비싼 신호)
+      earned_demand = 홀더 자신이 선행 실-이행 이력자(수요가 벌이-있는 주체)
+      rooted_ext    = 0 기준선(막-주입 채널 부재 — 유입 생기면 이 칸이 산다)
+    ⚠️정직([M-178] R-6): 출처는 위조-불가가 아니라 **유상-이전-가능**하다 — 의사-신원
+    홉은 구매 가능하고(비용 = 스왑-마찰 f*), earned-계열이 실질이다. 계기는 요율-비연동
+    (기본 끔 동형 — trust_lambda 분모 결합은 별도 재가·v1 = hop-감쇠 등재)."""
+    import importlib
+    sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", "lang22"))
+    kernel22 = importlib.import_module("kernel22")
+    meta = c._get("/meta")
+    pks = {"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})}
+    w = kernel22.World.from_public(pks, meta["label"], tuple(meta["genesis"]),
+                                   gen=dict(meta["gen"]),
+                                   bridge_ref=meta.get("bridge_ref"))
+    entries, s = [], 0
+    while True:
+        page = c._get(f"/log?since={s}")["entries"]
+        if not page:
+            break
+        entries += page
+        s = page[-1]["seq"] + 1
+    prov = {}                     # nid → {"vis": set, "mix": bool}
+    own = {}                      # nid → 마지막 관측 소유자
+    pend = {}                     # ref → 상환-대기 혈통 스냅숏
+    earned = {}                   # principal → 선행 실-이행(DELIVER·CLOSE 수행) 횟수
+    deliv = []
+    for e in entries:
+        env = e["env"]
+        pre_n = set(w.notes)
+        pre_p = set(w.redeem_pending)
+        r = w._commit(env, replay=True)
+        if r["state_root"] != e["state_root"] or r["head"] != e["head"]:
+            return {"error": f"결박 불일치 seq {e.get('seq')} — 리플레이 중단"}
+        typ = env.get("typ")
+        inner = ([lg for lg in (env.get("args") or {}).get("legs", [])]
+                 if typ == "BLOCK" else [env])
+        consumed = pre_n - set(w.notes)
+        minted = set(w.notes) - pre_n
+        if minted:
+            if len(consumed) == 1:
+                b = prov.get(next(iter(consumed)))
+                vis0, mix0 = (set(b["vis"]), b["mix"]) if b else (set(), True)
+            elif consumed:
+                vis0 = set().union(*[prov[x]["vis"] for x in consumed
+                                     if x in prov]) or set()
+                mix0 = True
+            else:
+                vis0, mix0 = set(), False
+        for nid in minted:
+            o = w.notes[nid]["owner"]
+            prov[nid] = {"vis": set(vis0) | ({o} if not o.startswith("@")
+                                             else set()), "mix": mix0}
+            own[nid] = o
+        for nid in consumed:
+            prov.pop(nid, None)
+            own.pop(nid, None)
+        for nid, n in w.notes.items():             # 소유-이동 스캔(BLOCK 내부 포함)
+            o = n["owner"]
+            if own.get(nid) != o:
+                own[nid] = o
+                if nid in prov and not o.startswith("@"):
+                    prov[nid]["vis"].add(o)
+        for ref in set(w.redeem_pending) - pre_p:
+            rp = w.redeem_pending[ref]
+            nid = rp["nid"]
+            pend[ref] = {"vis": set(prov.get(nid, {"vis": set()})["vis"]),
+                         "holder": rp["holder"], "anchor": rp["anchor"],
+                         "face": w.notes[nid]["face"],
+                         "h_earned": earned.get(rp["holder"], 0) > 0}
+        gone = pre_p - set(w.redeem_pending)
+        if gone:
+            dref = {(lg.get("args") or {}).get("ref") for lg in inner
+                    if lg.get("typ") == "DELIVER"}
+            for ref in gone:
+                pd = pend.pop(ref, None)
+                if pd is None:
+                    continue
+                if ref in dref:                    # 이행만 부피 계상(정산·반환 제외)
+                    pd["e_snap"] = {q: earned.get(q, 0) for q in pd["vis"]}
+                    deliv.append(pd)
+                    earned[pd["anchor"]] = earned.get(pd["anchor"], 0) + 1
+        for lg in inner:
+            if lg.get("typ") == "CLOSE":
+                pf = (lg.get("args") or {}).get("performer")
+                if pf:
+                    earned[pf] = earned.get(pf, 0) + 1
+    st = c.stats()
+    fam = {}
+    for a2, an in (st.get("anchors") or {}).items():
+        v = an.get("version") or ""
+        fam[a2] = v.split("/", 1)[0] if "/" in v else None
+    per = {}
+    for d in deliv:
+        A, H = d["anchor"], d["holder"]
+        insiders = {A, H} | {a2 for a2, f2 in fam.items()
+                             if f2 and f2 == fam.get(A)}
+        indep = {q for q in d["vis"]
+                 if q not in insiders and q != "operator"}
+        cls = ("earned_routed" if any(d["e_snap"].get(q, 0) > 0 for q in indep)
+               else "routed") if indep else "direct_cycle"
+        row = per.setdefault(A, {"V": 0, "direct_cycle": 0, "routed": 0,
+                                 "earned_routed": 0, "earned_demand": 0,
+                                 "rooted_ext": 0})
+        row["V"] += d["face"]
+        row[cls] += d["face"]
+        if d["h_earned"]:
+            row["earned_demand"] += d["face"]
+    for A, row in per.items():
+        v = row["V"] or 1
+        row["indep_share"] = round((row["routed"] + row["earned_routed"]) / v, 4)
+        row["earned_routed_share"] = round(row["earned_routed"] / v, 4)
+        row["earned_demand_share"] = round(row["earned_demand"] / v, 4)
+    return {"as_of": {"epoch": st["epoch"], "entries": len(entries)},
+            "anchors": dict(sorted(per.items())),
+            "note": ("출처-계기 v0(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
+                     "(막-채널 부재라 rooted_ext = 0 기준선) · ⚠️의사-신원 홉은 구매"
+                     " 가능(방어 = 스왑-마찰) — earned-계열이 실질 · v1 = hop-감쇠"
+                     " 등재([M-178] §2 D-4)")}
+
+
+def acceptance(c):
+    """★[M-177/178] 수락-집계 v0 — 일치-후-수락의 **양측** 2차-이력(record-only).
+
+    /accept 레코드(매수자-서명·이행-후·(ref,p)당 1건-교체)를 읽어 ⓐ판매자(앵커)별
+    taste_residual = 평가-표본 내 재작업-비율 ⓑ매수자별 거절-비율을 같이 낸다 —
+    일방 기록은 갈취-레버라 **양측이 한 몸**([M-178] §2 D-5). ⚠️record-only:
+    요율-결합은 T-EXTORT(수락-보고 왜곡 이탈-팔) 실측 후 별도 재가."""
+    rs = c._get("/accept")["records"]
+    per_a, per_b = {}, {}
+    for r in rs:
+        rec = r["rec"]
+        try:
+            j = c.job(rec["ref"])
+        except Exception:
+            continue
+        if not j.get("delivered"):
+            continue
+        A, B, v = j.get("anchor"), rec["p"], rec["verdict"]
+        ra = per_a.setdefault(A, {"rated": 0, "rework": 0})
+        rb = per_b.setdefault(B, {"rated": 0, "rework": 0})
+        ra["rated"] += 1
+        rb["rated"] += 1
+        if v == "rework":
+            ra["rework"] += 1
+            rb["rework"] += 1
+    for d in per_a.values():
+        d["taste_residual"] = round(d["rework"] / d["rated"], 4) \
+            if d["rated"] else None
+    for d in per_b.values():
+        d["reject_rate"] = round(d["rework"] / d["rated"], 4) \
+            if d["rated"] else None
+    return {"anchors": dict(sorted(per_a.items())),
+            "buyers": dict(sorted(per_b.items())),
+            "note": ("수락-집계 v0(record-only — 요율-비연동·T-EXTORT 후 결합 재가)"
+                     " · taste_residual = 일치-후-재작업(평가-표본 내 · 검증과 별개"
+                     " 2차-이력) · 양측 대칭 기록 = 갈취-레버 차단([M-178] §2 D-5)")}
+
+
 def make_cover_leg(c, ref, prem):
     """서명된 UW 다리 — 매수자가 보험료 XFER 다리와 함께 /block 원자 제출.
     ⚠️nonce 단조·담보 노트-결박 ⟹ 미결 leg 는 동시 1건·짧게 유지(만료 = 무해 실패)."""
@@ -528,7 +695,8 @@ def _mk_client(url, key_path, name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["scan", "quote", "leg", "watch", "cover",
-                                    "book", "cascade"])
+                                    "book", "cascade", "provenance",
+                                    "acceptance"])
     ap.add_argument("--url", required=True)
     ap.add_argument("--key", required=True)
     ap.add_argument("--name", required=True, help="내 principal 이름(JOIN 완료 전제)")
@@ -577,6 +745,12 @@ def main():
     if a.cmd == "cascade":
         print(json.dumps(cascade(c, mode=a.mode, sets=a.sets),
                          ensure_ascii=False, indent=1))
+        return
+    if a.cmd == "provenance":                     # ★[M-178] 출처-계기(읽기-전용)
+        print(json.dumps(provenance(c), ensure_ascii=False, indent=1))
+        return
+    if a.cmd == "acceptance":                     # ★[M-178] 수락-집계(record-only)
+        print(json.dumps(acceptance(c), ensure_ascii=False, indent=1))
         return
     if a.cmd == "book":
         print(json.dumps(book(c, pol, principal=(a.principal or None)),
