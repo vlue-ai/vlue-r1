@@ -1233,6 +1233,36 @@ def gate_TCOVER(port=8799):
     p_np = next(cd["prem"] for cd in sc_np["candidates"] if cd["ref"] == j8["ref"])
     p_fp = next(cd["prem"] for cd in sc_fp["candidates"] if cd["ref"] == j8["ref"])
     out["★가계-사전 완화"] = p_fp < p_np
+    # ── ★E-1([M-172]) cascade — 폐형-사영 = 커널 정산 실측(층별 정확 일치) ──
+    #    격리: 앞선 열린 청구 전량 flush → cvna(잔고 0 = 도주-동형) 단독 부보-청구 →
+    #    성숙 전 cascade(freeze) 사영 = 정산 후 /stats.loss 층별 증분(정확 일치).
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        nd.tick()
+    nn9 = [n for n in h3.notes_of("cvna") if n["face"] == 4][0]
+    j9 = h3.redeem_job("cvna", nn9["nid"], seed="ab" * 4, n=500)
+    u3.cover(j9["ref"], prem=2)
+    st_pre = h._get("/stats")
+    casc = UWT.cascade(h3, mode="freeze", sets="single")
+    pred = next(s2 for s2 in casc["scenarios"] if s2["anchors"] == ["cvna"])
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        nd.tick()
+    st_post = h._get("/stats")
+    dl = {kk: st_post["loss_layers"][kk] - st_pre["loss_layers"][kk]
+          for kk in ("anchor", "cov", "uw", "fund", "short")}
+    pl = pred["layers"]
+    out["★cascade 층-일치"] = all(
+        dl[kk] == pl[kk] for kk in ("anchor", "cov", "uw", "fund", "short"))
+    out["★cascade 보존"] = (sum(pl.values()) == pred["need"] and pl["cov"] >= 1)
+    # ── ★E-4([M-172]) 매수자 폐형 — 초기하 탈출률·k* 경계 ──
+    import sdk as _sdk
+    out["★탈출률 폐형=실측표"] = (
+        abs(_sdk.escape_rate(250_000, 2) - 0.6) < 1e-9 and
+        abs(_sdk.escape_rate(500_000, 2) - 0.8) < 1e-9 and
+        abs(_sdk.escape_rate(1_000_000, 2) - 0.9) < 1e-9)
+    _sk = _sdk.suggest_k(1_000_000, damage=4)
+    out["★k* 경계"] = (_sk["k"] == 15 and
+                      _sk["residual_expected_damage"] <= 1.0 + 1e-9 and
+                      _sdk.suggest_k(1_000_000, damage=10_000)["full_check"])
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

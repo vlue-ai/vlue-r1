@@ -81,6 +81,35 @@ def _co_ok(co_pks, name, sig_hex, head_hex):
         return False
 
 
+def escape_rate(n, k, m=1, ckpt=50_000):
+    """★[M-172] E-4 — 표본-검증 탈출률의 폐형(초기하): m개 구간 위조가 k-표본을
+    전부 피할 확률 = C(S−m, k) / C(S, k) · S = ⌈n/CKPT⌉. m=1이 위조자-최적(R-SAMPLE
+    실측: S=5,k=2 → 0.595 측정 vs 0.600 이론 — 18셀 3σ-일치)."""
+    import math
+    S = -(-int(n) // ckpt)
+    k = min(int(k), S)
+    if m > S - k:
+        return 0.0
+    return math.comb(S - m, k) / math.comb(S, k)
+
+
+def suggest_k(n, damage, tol=1, ckpt=50_000):
+    """★[M-172] E-4 — 매수자의 검증-깊이 폐형: 잔여 기대-피해 q₁(k)·D ≤ tol 이
+    되는 최소 k. m=1에서 q₁ = 1 − k/S 이므로 **k* = ⌈S·(1 − tol/D)⌉**(D ≤ tol 이면
+    k=기본 2 · D ≥ S·tol 이면 k=S = 전-구간 = 탈출 0). ⚠️정직(v0): 깊이의 화폐-가격은
+    현재 0이다(검증 비용은 노드-예산이 흡수 · 자연-상한 k ≤ S · 레이트리밋이 남용
+    상한) — 큰 피해액이면 k를 아끼지 말라. 커버는 별개 축이다(탈출-잔여는 시한-사고
+    페릴 밖 — 커버가 못 덮는다)."""
+    S = -(-int(n) // ckpt)
+    if damage <= tol:
+        k = min(2, S)
+    else:
+        k = min(S, max(2, -(-S * (damage - tol) // damage)))
+    return {"k": k, "S": S, "escape": escape_rate(n, k, 1, ckpt),
+            "residual_expected_damage": escape_rate(n, k, 1, ckpt) * damage,
+            "full_check": k >= S}
+
+
 class Fl21Client:
     """외부 참여자 클라이언트 — 키 자율 보관·서명·제출·라이트 검증."""
 

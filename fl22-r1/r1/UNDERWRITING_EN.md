@@ -120,6 +120,13 @@ F-2 — **open audit**: any underwriter's open covers and balance are public, so
 can recompute their ruin probability. Buyers: audit your underwriter before accepting
 cover — canonical constants trials 2000 · fam_rho 0.5 · seed 7 = reproducible) ·
 ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
+★`cascade` ([M-172] E-1 — **contagion in closed form**: the full waterfall for any
+offender set [--sets family/single/worst2/all] failing every covered claim in one tick,
+computed from public state alone [--mode abscond = absconding limit · freeze = current
+balances] · a gate keeps it **layer-exact** against kernel settlement · collateral
+assumed at the ⌈E/2⌉ floor ⟹ short is an upper bound · color-substance contagion is
+`color_health`'s separate axis · ★two-layer structure: no underwriter-to-underwriter
+debt instrument exists in law, so propagation ends at layers ①–⑤) ·
 ★`--trust-lambda` ([M-165] — a **machine-economy trust cap**: my exposure per anchor
 ≤ λ × that anchor's cumulative delivered volume [`/stats.anchors[a].delivered_volume`].
 Human insurance lets time build trust; machines build reputation in minutes and can
@@ -166,3 +173,38 @@ being free · default 0).
   than long cover (and consistent with version_period).
 - Misjudgment cover (insurance on judge jobs) is the next installment
   (`ANCHOR_SCOPE_EN` notice — arrives with the deviation metric).
+
+## §6 Market laws — four, fixed by registered measurement ([M-172] LSECON · 392 runs, 6.24M claims)
+
+Prereg `lab/prereg/LSECON_PREREG_2026-08-29.md` (committed before execution); judgment
+in the matching `_RESULT`. ⚠️All of it holds for **this constant system and these bot
+behaviors** — and the moment real participants arrive, these four become **falsifiable
+predictions**. That is precisely why they are written down in advance.
+
+1. ★**Competitive floor = the lowest-loading underwriter's fair price** (error **0**,
+   every cell). The market selects the **minimum**, not the average ⟹ the practical
+   rate band is [**fair price**, `suggest_prem`], and in excess supply the clearing
+   price sits on the floor. **Your edge is capacity, not loading.**
+2. ★**Capacity rent of 10–20%**: once the concurrent-cover cap binds, rent survives
+   even Bertrand competition (clearing +10 to +30 against a 50–300 floor). The seat's
+   profit comes from **capacity scarcity**, not capital.
+3. ★**Verification's spread compression = 0.5 ÷ p̂** (exact across three cells: 10.00,
+   3.33, 1.67). Without a public record an underwriter must price off the Laplace 0.5
+   prior, so the factor by which verification cuts the rate is exactly inverse to the
+   anchor's record — **the better the anchor, the more verification is worth**.
+4. ★**Extraction bound ≤ λ·V_delivered** (violations **0/72**, tight to equality): the
+   most a colluding pair can take from an underwriter is λ times the volume they
+   actually delivered first (`--trust-lambda`). ⚠️**How to choose λ (measured
+   correction)**: λ sets the bound, but *profitability* is set by the real cost κ of
+   honest delivery (as a fraction of face) and the rate ρ — net extraction ≤
+   V·(λ(1−ρ) − κ) ⟹ **deterrence iff λ ≤ κ/(1−ρ)** (delivery costing 50% of face at a
+   10% rate ⟹ λ ≲ 0.55). λ is not a trust multiplier; it is a **policy constant tuned
+   to the cost ratio of honest delivery**.
+
+**Two corollaries you can act on**: ⓐ**T-jitter is a liquidity tool** — spreading
+buyer deadlines cuts the same-tick maturity peak **five-fold** (48,000 → 8,500) while
+total payout stays essentially unchanged (timing cannot change total loss for an
+underwriter that never replenishes) ⟹ jitter is for `maturity_peak` capacity planning,
+not loss reduction. ⓑ**Endogenous storms**: storms self-organize from **deadline
+synchronization alone**, with no adversary (same epoch, same T) — `--max-concurrent`
+is a standing instrument, not an anti-adversary one.

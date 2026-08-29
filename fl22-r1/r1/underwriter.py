@@ -283,6 +283,130 @@ def auto_fill(c, policy=None):
     return {"filled": filled, "skipped": skipped}
 
 
+def _prorate(avail, needs):
+    """정산-법 비례-배분의 재현(kernel22 §5 · fastlaw22 동형 — 정수-정확·ref-정렬 잔여)."""
+    tot = sum(needs.values())
+    if tot <= avail:
+        return dict(needs)
+    out = {r: avail * n // tot for r, n in needs.items()}
+    left = avail - sum(out.values())
+    for r in sorted(needs):
+        if left <= 0:
+            break
+        if out[r] < needs[r]:
+            out[r] += 1
+            left -= 1
+    return out
+
+
+def cascade(c, mode="abscond", sets="family"):
+    """★[M-172] E-1 — 전염의 폐형-계산(공개-원장 Eisenberg–Noe의 기계판).
+
+    시나리오 집합 D의 앵커 전원이 **같은 틱에 전-청구 사고**(worst case = 동시-성숙)일
+    때의 폭포-연쇄를 공개 상태만으로 계산한다. 인간 거시-건전성이 규제자도 못 갖는
+    노출-행렬을 요구하는 자리에서, 이 원장은 그 행렬이 전부 공개다 — 「증언이 아니라
+    재계산」의 거시판. mode: abscond = 가해자 잔고 0(도주-극한·δ=1) / freeze = 현재
+    잔고. sets: family(가계별)·single(앵커별)·worst2(부보-노출 최대 2 — cover2 접점)·
+    all. ★2층-전염 정리의 실행형: 전파 = ①가해자 ②담보 ③소구(같은 틱 비례) ④F_uw
+    ⑤short 에서 **끝난다**(인수자-간 부채 계기가 법에 없다 — 증폭 채널은 공유-인수자
+    용량뿐). ⚠️정직: 담보 = 법정-최소 ⌈E/2⌉ 가정(실담보 β>½ 이면 short 는 이보다
+    작다 = 상한 보고) · 색-실질 전염(배상-노트의 상환-실질)은 이 계산 밖 —
+    color_health 가 그 축이다. 계기이지 등록-측정이 아니다."""
+    st = c.stats()
+    fam_of = {}
+    for a2, an in (st.get("anchors") or {}).items():
+        v = an.get("version") or ""
+        fam_of[a2] = v.split("/", 1)[0] if "/" in v else f"~{a2}"
+    claims = []
+    for a in sorted(set(st.get("anchors", {})) | set(st.get("scopes", {}))):
+        try:
+            js = c._get(f"/jobs?anchor={a}")["jobs"]
+        except Exception:
+            continue
+        for ref in sorted(js):
+            j = c.job(ref)
+            if not j.get("covered") or j.get("delivered")                     or j.get("state") != "open":
+                continue
+            claims.append({"ref": ref, "anchor": a, "uw": j["uw"],
+                           "E": j["exposure"], "coll": -(-j["exposure"] // 2)})
+    f_uw0 = st.get("coverage", {}).get("F_uw", 0)
+    bal = {}
+    for p in sorted({x["anchor"] for x in claims} | {x["uw"] for x in claims}):
+        try:
+            bal[p] = c._get(f"/balance/{p}")["balance"]
+        except Exception:
+            bal[p] = 0
+    exp_by_a = {}
+    for x in claims:
+        exp_by_a[x["anchor"]] = exp_by_a.get(x["anchor"], 0) + x["E"]
+    if sets == "family":
+        groups = {}
+        for a in exp_by_a:
+            groups.setdefault(fam_of.get(a, f"~{a}"), []).append(a)
+    elif sets == "single":
+        groups = {a: [a] for a in exp_by_a}
+    elif sets == "worst2":
+        top = sorted(exp_by_a, key=lambda a: -exp_by_a[a])[:2]
+        groups = {"worst2": top} if top else {}
+    else:
+        groups = {"all": sorted(exp_by_a)} if exp_by_a else {}
+    out = []
+    for gname in sorted(groups):
+        D = set(groups[gname])
+        cs = [x for x in claims if x["anchor"] in D]
+        if not cs:
+            continue
+        rem = {x["ref"]: x["E"] for x in cs}
+        lay = {"anchor": 0, "cov": 0, "uw": 0, "fund": 0, "short": 0}
+        uw_dd = {}
+        by_a = {}
+        for x in cs:
+            by_a.setdefault(x["anchor"], []).append(x)
+        for a in sorted(by_a):                       # ① 가해자(앵커별 비례)
+            avail = 0 if mode == "abscond" else bal.get(a, 0)
+            grp = [x for x in by_a[a] if rem[x["ref"]] > 0]
+            if not grp or avail <= 0:
+                continue
+            alloc = _prorate(avail, {x["ref"]: rem[x["ref"]] for x in grp})
+            for x in grp:
+                lay["anchor"] += alloc[x["ref"]]
+                rem[x["ref"]] -= alloc[x["ref"]]
+        for x in cs:                                 # ② 담보(청구 전용 · ⌈E/2⌉ 하한)
+            take = min(x["coll"], rem[x["ref"]])
+            lay["cov"] += take
+            rem[x["ref"]] -= take
+            uw_dd[x["uw"]] = uw_dd.get(x["uw"], 0) + take
+        by_u = {}
+        for x in cs:
+            by_u.setdefault(x["uw"], []).append(x)
+        for u in sorted(by_u):                       # ③ 소구(같은 틱 비례 — worst)
+            grp = [x for x in by_u[u] if rem[x["ref"]] > 0]
+            if not grp:
+                continue
+            alloc = _prorate(bal.get(u, 0), {x["ref"]: rem[x["ref"]] for x in grp})
+            for x in grp:
+                lay["uw"] += alloc[x["ref"]]
+                rem[x["ref"]] -= alloc[x["ref"]]
+                uw_dd[u] = uw_dd.get(u, 0) + alloc[x["ref"]]
+        grp = [x for x in cs if rem[x["ref"]] > 0]
+        if grp:                                      # ④ F_uw(전역 비례)
+            alloc = _prorate(f_uw0, {x["ref"]: rem[x["ref"]] for x in grp})
+            for x in grp:
+                lay["fund"] += alloc[x["ref"]]
+                rem[x["ref"]] -= alloc[x["ref"]]
+        lay["short"] = sum(rem.values())             # ⑤ 잔여(피해자 부담)
+        out.append({"set": gname, "anchors": sorted(D), "claims": len(cs),
+                    "need": sum(x["E"] for x in cs), "layers": lay,
+                    "uw_drawdown": dict(sorted(uw_dd.items())),
+                    "fund_used": lay["fund"], "short": lay["short"]})
+    out.sort(key=lambda s2: -s2["short"])
+    return {"as_of": {"epoch": st["epoch"]}, "mode": mode, "sets": sets,
+            "scenarios": out,
+            "note": ("worst-case = 집합 전-청구 같은-틱 사고 · 담보 ⌈E/2⌉ 하한 "
+                     "⟹ short 는 상한 · 색-실질 전염은 color_health 별도 축 · "
+                     "부보-청구 0이면 빈 표(기준선)")}
+
+
 def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7, principal=None):
     """★[M-164] U-D 북 위험 엔진 — 내 열린 커버 포트폴리오의 파멸-확률·드로다운 분위.
 
@@ -404,7 +528,7 @@ def _mk_client(url, key_path, name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["scan", "quote", "leg", "watch", "cover",
-                                    "book"])
+                                    "book", "cascade"])
     ap.add_argument("--url", required=True)
     ap.add_argument("--key", required=True)
     ap.add_argument("--name", required=True, help="내 principal 이름(JOIN 완료 전제)")
@@ -436,6 +560,11 @@ def main():
                     help="book: 감사 대상 인수자(공백 = 자기 — F-2 공개-감사)")
     ap.add_argument("--family-prior", action="store_true",
                     help="무-이력 앵커에 가계-최악 사전 적용(F-10 — ⚠️λ 결합 권장)")
+    ap.add_argument("--mode", default="abscond", choices=["abscond", "freeze"],
+                    help="cascade: 가해자 잔고 가정(abscond=0 · freeze=현재)")
+    ap.add_argument("--sets", default="family",
+                    choices=["family", "single", "worst2", "all"],
+                    help="cascade: 시나리오 집합(E-1)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
@@ -445,6 +574,10 @@ def main():
            "carry_bp_per_epoch": a.carry_bp,
            "family_prior": a.family_prior}
     c = _mk_client(a.url, a.key, a.name)
+    if a.cmd == "cascade":
+        print(json.dumps(cascade(c, mode=a.mode, sets=a.sets),
+                         ensure_ascii=False, indent=1))
+        return
     if a.cmd == "book":
         print(json.dumps(book(c, pol, principal=(a.principal or None)),
                          ensure_ascii=False, indent=1))
