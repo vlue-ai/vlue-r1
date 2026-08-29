@@ -270,7 +270,7 @@ def fetch_legs():
 def cover(ref: str, prem: int):
     """Underwrite someone ELSE's open redemption (third parties only — never the
     holder or the anchor). Stages collateral (β ≥ 1/2). Second-loss position:
-    offender assets pay first, then collateral/recourse. Compensation notes carry
+    defaulting anchor assets pay first, then collateral/recourse. Compensation notes carry
     the OFFENDING anchor's color."""
     return _cl().cover(ref, prem=int(prem))
 

@@ -406,7 +406,7 @@ def gate_TDURABLE(port=8801, port2=8802):
 def gate_TCOLOR(port=8803):
     """★[M-103] 화폐 모델 게이트 — 자유은행 (i): 자기-IOU 발행·색-일치 상환 라우팅·
     상호-신용 부트스트랩(한도)·혼색 MERGE 거부·★RD-7(원시 DELIVER 우회 차단)·
-    배상 노트 = 가해-앵커 색."""
+    배상 노트 = 불이행-앵커 색."""
     out = {}
     nd, srv, data = _serve(port)
     nc = _client(port, "nc", data)
@@ -477,7 +477,7 @@ def gate_TCOLOR(port=8803):
     r_iss = nc.issue(8)                           # 부채 20−8=12 ⟹ +8 재발행 가능
     out["★회전-재발행"] = r_iss["issued"] == 8 and r_iss["outstanding"] == 20 and \
         len(nc.notes_of("nc")) >= 2
-    # ★배상 노트 = 가해-앵커 색: 부보된 시한-사고 → comp 노트의 색 = anchor0
+    # ★배상 노트 = 불이행-앵커 색: 부보된 시한-사고 → comp 노트의 색 = anchor0
     cv = _client(port, "cv", data)
     uw_ = _client(port, "uwc", data)
     cv.join()
@@ -493,11 +493,11 @@ def gate_TCOLOR(port=8803):
         for rec in (settle or {}).get("settled", []):
             if rec["ref"] == j2["ref"]:
                 comp_face = rec["comp"]
-    out["★배상 = 가해-앵커 색"] = comp_face > 0 and any(
+    out["★배상 = 불이행-앵커 색"] = comp_face > 0 and any(
         n["face"] == comp_face and n["color"] == "anchor0"
         for n in cv.notes())
     # ★F-E([M-143]) — 동액-배상 쌍의 색 분리: 같은 holder의 같은 액면 청구 둘이 서로
-    # 다른 앵커에 걸려 **같은 틱**에 정산되면, 배상 노트 둘의 색이 각자의 가해-앵커여야
+    # 다른 앵커에 걸려 **같은 틱**에 정산되면, 배상 노트 둘의 색이 각자의 불이행-앵커여야
     # 한다(구 휴리스틱[holder·액면 첫-일치 스캔]의 잠재 오귀속 자리 — 위치+검증 귀속의
     # 회귀 잠금 · 민트-순서 가정이 깨지면 노드가 크게 실패한다).
     h2 = _client(port, "htwo", data)
@@ -936,7 +936,7 @@ def gate_TCOVER(port=8799):
     u.join()
     wk = AnchorWorker(f"http://127.0.0.1:{port}",
                       os.path.join(data, "anchor0.key"))
-    # ★[M-103] anchor0가 자기-IOU 전량 지출(가해자-층 소진) — 폭포가 담보·소구 층을 지나게
+    # ★[M-103] anchor0가 자기-IOU 전량 지출(불이행-층 소진) — 폭포가 담보·소구 층을 지나게
     wk.split(wk.notes()[0]["nid"], [12, 4, 24])
     for n in list(wk.notes()):
         wk.xfer("cvh", n["nid"])
@@ -984,7 +984,7 @@ def gate_TCOVER(port=8799):
     u2 = _client(port, "cvu2", data)
     h2.join()
     u2.join()
-    # ★배상 노트(12 · 가해-앵커 색)를 2차 유통 — 색 상속으로 그대로 상환-가능
+    # ★배상 노트(12 · 불이행-앵커 색)를 2차 유통 — 색 상속으로 그대로 상환-가능
     h.xfer("cvh2", [n["nid"] for n in h.notes_of("anchor0")
                     if n["face"] == 12][0])
     h2.split(h2.notes_of("cvh2")[0]["nid"], [12, 4, 1, 1, 1, 1])  # 자기-IOU(보험료용)
@@ -1905,7 +1905,7 @@ def _root_engine(port, seed, n_ops, data=None):
         "UW", {"uw": "r2", "ref": ref_u,
                "cov_notes": [u2.notes()[0]["nid"]], "prem": 0,
                "prem_fund_notes": []})}))
-    must_fail("가해-앵커 자기-부보", lambda: wk._post("/submit", {
+    must_fail("불이행-앵커 자기-부보", lambda: wk._post("/submit", {
         "env": wk.sign_env("UW", {"uw": "anchor0", "ref": ref_u,
                                   "cov_notes": [wk.notes()[0]["nid"]],
                                   "prem": 0, "prem_fund_notes": []})}))

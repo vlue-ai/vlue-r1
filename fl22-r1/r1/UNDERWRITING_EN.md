@@ -22,29 +22,29 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   fund share is ~zero** (156 units across 144 runs) — nearly the whole premium is
   yours (accrual resumes once the fund layer actually starts paying).
 - **What you bear**: opening cover escrows **collateral β ≥ 1/2 × exposure** (@uw).
-  Waterfall order: ①offender's free balance → ②**your collateral** → ③**recourse
+  Waterfall order: ①defaulting anchor's free balance → ②**your collateral** → ③**recourse
   against your free balance** → ④F_uw → ⑤honest `short` entry. You are a
-  **second-loss position** — the offender's assets go first (no accident = full
+  **second-loss position** — the defaulting anchor's assets go first (no accident = full
   collateral return).
   ★**Second-loss discount δ, now measured as a distribution** ([M-155] single-seed
   797 claims → [M-156] 24-seed × 6-cell, 144-run sweep — local production-identical):
-  δ is not a constant but an **offender-layer depletion curve** — median **0.742 ·
+  δ is not a constant but a **defaulting-anchor layer depletion curve** — median **0.742 ·
   0.913 · 0.954** at accident rates 5/15/30% (more accidents drain the fixed layer
-  sooner, shrinking your discount) · ★with offender free balance 0, **δ = 1.000
+  sooner, shrinking your discount) · ★with defaulting anchor free balance 0, **δ = 1.000
   exactly in 72/72 runs** (you pay everything — the absent-issuer limit, measured).
   ★Practical formula ([M-162]
   registered measurement — 192 runs, worst deviation 0.002): **δ ≈ 1 − min(r, 1),
-  r = offender free balance ÷ (p̂ × open exposure)** — the cushion ratio r alone
+  r = defaulting anchor free balance ÷ (p̂ × open exposure)** — the cushion ratio r alone
   determines δ regardless of accident rate (ratio-sufficiency measured: at equal r,
   δ across 5–30% rates differs ≤ 0.003) ⟹ any anchor is priceable from `/state`
   balance and `/stats` p̂ alone. A suggest_prem book is **median-profitable in every cell** (+4.1 to
   +14.3 AU per 300 claims) but ⚠️not seed-guaranteed — 6/144 runs lost money (worst
-  −11.6 AU, mostly δ=1 cells: with no offender layer the upper-bound margin shrinks
+  −11.6 AU, mostly δ=1 cells: with no defaulting-anchor layer the upper-bound margin shrinks
   to rounding crumbs). ⚠️All figures this constant system (1 AU exposure, 4 AU layer).
 - **What the law enforces** (kernel, not tooling): no self-party cover (law ⑤ —
   why judgment warranties are structurally third-party) · the SDK guards against
   covering expired claims (instant loss) · compensation notes are issued in the
-  offender's color (the risk tag stays in circulation).
+  defaulting anchor's color (the risk tag stays in circulation).
 - ★**Track record = asset**: your history is ledger-derived at
   `/stats.underwriters` and portable via `/attest` · ★since [M-164] a **bound
   premium** rides along: premiums settled atomically (/block) are captured from the
@@ -57,7 +57,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 
 | Input | Where | How |
 |---|---|---|
-| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the offender layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
+| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the defaulting-anchor layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
 | Integer granularity | face 1 = smallest unit | meaningful minimum face = ⌈1/target-rate⌉ — at 1,000-unit exposure, 0.1% is expressible |
 | ★Sampling depth (the duality) | §3 floor table · ★per-job `k` (H2-bound) | shallow verification leaves residue **borne by the buyer** — since [M-162] buyers buy depth directly with `redeem_job(..., k=2..16)` (§3 is the price menu · ⚠️escape residue sits outside the deadline peril) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
@@ -121,7 +121,7 @@ can recompute their ruin probability. Buyers: audit your underwriter before acce
 cover — canonical constants trials 2000 · fam_rho 0.5 · seed 7 = reproducible) ·
 ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
 ★`cascade` ([M-172] E-1 — **contagion in closed form**: the full waterfall for any
-offender set [--sets family/single/worst2/all] failing every covered claim in one tick,
+defaulting anchor set [--sets family/single/worst2/all] failing every covered claim in one tick,
 computed from public state alone [--mode gone = absent-issuer limit · freeze = current
 balances] · a gate keeps it **layer-exact** against kernel settlement · collateral
 assumed at the ⌈E/2⌉ floor ⟹ short is an upper bound · color-substance contagion is
@@ -154,11 +154,11 @@ being free · default 0).
   The fund layer is empty until premiums fill it — thin-at-micro-scale is the design,
   not an accident. Cap your own storm exposure via `--per-anchor` and `--max-exposure`.
 - ★**What compensation is really worth** (native to work-money — honesty
-  strengthened): compensation notes are minted in the **offender's color** (the risk
+  strengthened): compensation notes are minted in the **defaulting anchor's color** (the risk
   tag). In an absconding scenario cover pays **face, but that face's redemption value
   can be zero** (redeemable only against the absconded issuer) — victims and buyers
   should price notes with `/stats.color_health` (per-color supply, issuer EXIT flag,
-  balance, last delivery). Redesigning compensation color (offender vs underwriter —
+  balance, last delivery). Redesigning compensation color (defaulting anchor vs underwriter —
   color-preserving compensation — FL23_DESIGN §2) is **referred to FL2.3**. ★The
   bridge before then = **circulation** ([M-170] F-1): compensation notes can be sold
   at a discount via board kind="swap" + atomic BLOCK swaps (`color_health` prices the

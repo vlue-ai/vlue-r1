@@ -324,9 +324,9 @@ c.cover(ref, prem=2)                 # auto-stages collateral + self-accrues the
 # The SDK blocks covering claims already past deadline (instant-loss protection — force=True overrides)
 # If the anchor misses the deadline the kernel runs the compensation waterfall
 #   automatically — ★the ORDER is the underwriter's risk profile:
-#   ①the offender's (anchor's) own assets first → ②collateral → ③underwriter recourse → ④fund.
+#   ①the defaulting anchor's own assets first → ②collateral → ③underwriter recourse → ④fund.
 #   The underwriter is a **second-loss position**: you lose collateral/recourse only to the
-#   extent the offender's assets fall short (if the offender covers it, your collateral
+#   extent the defaulting anchor's assets fall short (if the defaulting anchor covers it, your collateral
 #   returns and you keep the premium — P&L shows up in stats loss ratios).
 # ★Compensation notes carry the OFFENDING ANCHOR's color (= claims on that same anchor) —
 #   if the anchor stays distressed, the compensation notes carry that risk too

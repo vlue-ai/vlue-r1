@@ -69,8 +69,8 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
 def _premium(c, ref, exposure, policy, ctx=None):
     """권고 보험료 v2([M-164]) = max(★δ-반영 공정가 × 로딩, 정책 최저요율).
 
-    v1은 suggest = p̂·E(가해자-층 무시 = 총-기대손실 상한)였다. v2는 측정된 2차-손실
-    구조를 쓴다: 공정가 = p̂·E·δ(r) · δ = 1 − min(r,1) · r = 가해자 자유잔고 ÷
+    v1은 suggest = p̂·E(불이행-층 무시 = 총-기대손실 상한)였다. v2는 측정된 2차-손실
+    구조를 쓴다: 공정가 = p̂·E·δ(r) · δ = 1 − min(r,1) · r = 불이행 앵커 자유잔고 ÷
     (p̂ × 열린-노출 + E)(내 커버 선-계상 — LSDELTA2 폐형·이탈 0.0019) · 계기 실패 =
     δ=1 보수 폴백.
     ★로딩([M-162] · LSFULL F2 실측): δ→1 세계에서 p̂-정합 요율은 무-마진이라 경험-요율
@@ -307,7 +307,7 @@ def cascade(c, mode="gone", sets="family"):
     노출-행렬을 요구하는 자리에서, 이 원장은 그 행렬이 전부 공개다 — 「증언이 아니라
     재계산」의 거시판. mode: gone = 원인-앵커 잔고 0(부재-극한·δ=1) / freeze = 현재
     잔고. sets: family(가계별)·single(앵커별)·worst2(부보-노출 최대 2 — cover2 접점)·
-    all. ★2층-전염 정리의 실행형: 전파 = ①가해자 ②담보 ③소구(같은 틱 비례) ④F_uw
+    all. ★2층-전염 정리의 실행형: 전파 = ①불이행 앵커 ②담보 ③소구(같은 틱 비례) ④F_uw
     ⑤short 에서 **끝난다**(인수자-간 부채 계기가 법에 없다 — 증폭 채널은 공유-인수자
     용량뿐). ⚠️정직: 담보 = 법정-최소 ⌈E/2⌉ 가정(실담보 β>½ 이면 short 는 이보다
     작다 = 상한 보고) · 색-실질 전염(배상-노트의 상환-실질)은 이 계산 밖 —
@@ -362,7 +362,7 @@ def cascade(c, mode="gone", sets="family"):
         by_a = {}
         for x in cs:
             by_a.setdefault(x["anchor"], []).append(x)
-        for a in sorted(by_a):                       # ① 가해자(앵커별 비례)
+        for a in sorted(by_a):                       # ① 불이행 앵커(앵커별 비례)
             avail = 0 if mode == "gone" else bal.get(a, 0)
             grp = [x for x in by_a[a] if rem[x["ref"]] > 0]
             if not grp or avail <= 0:

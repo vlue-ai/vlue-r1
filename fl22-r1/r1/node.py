@@ -10,7 +10,7 @@
 ★화폐 모델 v0([M-103] — D-4 확정 · 자유은행 (i)): 모든 노트에 **색(발행자)**이 있다 —
 JOIN 시 자기-IOU 발행(구매력 지급이 아니라 자기-약속 자본) · 상환은 **발행자에게만**
 (색-일치 라우팅) · 유입 유동성 = ★상호 신용 교환(/bootstrap — 신규자 자기-IOU ↔
-anchor0-IOU 원자 스왑 · 한도 결박 · WIR형) · 배상 노트 = 가해-앵커 색. 색은 로그-파생
+anchor0-IOU 원자 스왑 · 한도 결박 · WIR형) · 배상 노트 = 불이행-앵커 색. 색은 로그-파생
 (리플레이 시 재구성 — 사이드카 없음). 데모-유입(무색 보조금)은 폐지.
 
 실행: python3 node.py --data DIR [--port 8788] [--auto-tick SEC] [--join-issue 20]
@@ -307,7 +307,7 @@ class Node:
     def _color_step(self, entry, before_ids, rp_before=None):
         """엔트리 하나의 색 전이([M-103] 규칙): EXT_IN = 수취인 자기-IOU · SPLIT/MERGE =
         상속 · 이동(XFER/REDEEM/UW 담보)은 색 불변 · 소멸(DELIVER/BURN 등)은 제거 ·
-        정산(TICK) 배상 = ★가해-앵커 색 · 그 밖의 정산 재발행(압류 잔돈·담보 잔여) =
+        정산(TICK) 배상 = ★불이행-앵커 색 · 그 밖의 정산 재발행(압류 잔돈·담보 잔여) =
         소유자 자기 색(자기 재-약속 독해 — [FREEBANK_ANALOGY §4]·폭포 한계의 정직 규칙)."""
         env = entry["env"]
         self._scope_step(env)                          # ★H5 — 범위 선언 파생
@@ -364,7 +364,7 @@ class Node:
                         n["face"] != rec["comp"]:
                     raise Fl21Error(f"색 귀속 검증 실패 seq {entry['seq']}: "
                                     f"배상 민트-순서 가정 파손(ref {rec['ref']})")
-                self.colors[nid] = rp["anchor"]            # ★배상 = 가해-앵커 색
+                self.colors[nid] = rp["anchor"]            # ★배상 = 불이행-앵커 색
                 claimed.add(nid)
             for nid in added:                              # 압류 잔돈·담보 잔여
                 if nid not in claimed:
@@ -731,7 +731,7 @@ class Node:
             c = self.colors.get(nid, "?")
             colors_supply[c] = colors_supply.get(c, 0) + n["face"]
         # ★[M-165] C-3 — 색-실질 계기(기계-화폐 고유): 노트의 실질 = 발행자의
-        # 상환-가능성이다. 배상 노트가 가해-앵커 색으로 발행되는 설계(위험 꼬리표)에서
+        # 상환-가능성이다. 배상 노트가 불이행-앵커 색으로 발행되는 설계(위험 꼬리표)에서
         # 「부재한 색」을 들고 있는 피해자·매수자가 즉시 볼 수 있어야 정직하다.
         color_health = {}
         STALE_N = 10_080                             # ★F-9a — 1주(60s 틱) 무-접촉
