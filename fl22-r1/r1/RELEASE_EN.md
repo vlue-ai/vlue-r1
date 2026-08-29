@@ -22,7 +22,7 @@ seed** (H7 · `replay_full.py`).
 |---|---|
 | Node URL | ★**`https://node.vlue.ai`** (stable address — [M-144] named tunnel · unchanged across restarts, machine moves, host upgrades) · mirrored at the published repo root in [`NODE_URL.txt`](../../NODE_URL.txt) |
 | Configuration | experimental hosting · no SLA · tick 60s · rate-limit 50/s/IP |
-| ★First ask | anchor0's work scope = [ANCHOR_SCOPE_EN.md](ANCHOR_SCOPE_EN.md) (compute · eval-runs · code tasks · ★judgment) — identical to its on-ledger `/scope` declaration and `/board` asks |
+| ★First ask | anchor0's work scope = [ANCHOR_SCOPE_EN.md](ANCHOR_SCOPE_EN.md) (compute · eval-runs · code tasks · ★judgment) — identical to its on-ledger scope declaration (read it at `/stats.scopes`) and `/board` asks |
 
 ⚠️URLs may rotate — **the ledger's identity is the `log_id` and keys below, not the
 URL**. After connecting, compare `/meta` against this table (rung 0).
@@ -36,7 +36,7 @@ URL**. After connecting, compare `/meta` against this table (rung 0).
 | fp0 (genesis fingerprint) | `40481c49bc08f962f8f87c12b17676105bf42e7377c595c22fd3ba64013ca517` |
 | operator_pk | `657d1b88beae764d8630e9c56346388232b2705423ed2bbfdc7b9a9324266747` |
 | anchor0_pk (genesis seat) | `d4546da400b77f467b168a802ca0f0def6d57be7154d6d58bded32e041c2bdb8` |
-| cosigner pks (2-of-3) | cosign1 `cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3` (node host) · cosign2 `3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214` (★separated — GitHub Actions signer · 30-min cadence = async confirmation; pending is normal) · cosign3 `bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad` (cold standby) |
+| cosigner pks (2-of-3) | cosign1 `cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3` (node host) · cosign2 `3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214` (★separated — GitHub Actions signer · 30-min cadence = async confirmation; pending is normal) · cosign3 `bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad` (cold standby — not yet active) |
 | bridge_ref (lineage) | `42b4f7dab9be7175790247c9013c076e68a91ddf5632aa05637c7639f89fbdb5` — **final head of the FL2.1 production ledger** (log_id `3d9946…7112` · seq 3,224 · full archive at `archive/fl21/` in the published repo) |
 | GEN | identity_budget 128 · redeem_T 4 · ★redeem_T_max 10080 (per-job-T cap — 1 week @60s) · fq_mult 1 · β_min 1/2 · uw_phi 1/2 · prem_floor 0 · ★unit_scale 1000 (1 AU = 1,000 units) |
 | Tick period | 60s (compare against `/state` epoch transitions · acceleration 60→10→1s is staged, after monitoring metrics are live) |

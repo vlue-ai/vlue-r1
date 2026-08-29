@@ -59,7 +59,8 @@ announced as segments via `declare_version`.
   realized outcomes** (acceptance / rework history) — self-referential settlement
   (peer-prediction or panel-median alone) decouples from truth depending on
   implementation detail (Keynesian beauty contest, measured: peer herding m→1.00,
-  Brier 0.248 vs realization-linked 0.097 — `lab/prereg/LSTASTE_RESULT`). If you buy
+  Brier 0.248 vs realization-linked 0.097 — `lab/prereg/LSTASTE_RESULT`, kept in the
+  operating monorepo's registry [not in this bundle · disclosed on request]). If you buy
   judgment, ask for the judge's **calibration record** against later acceptance.
 - No SLA · experimental operation ([NOTICE_EN.md](NOTICE_EN.md)) — pauses may occur
   without notice.

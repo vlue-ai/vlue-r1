@@ -534,7 +534,9 @@ def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7, principal=None):
 
 
 def provenance(c):
-    """★[M-177/178] 출처-계기 v0 — 이행-부피의 수요-혈통 공개-재계산(읽기-전용).
+    """★[M-177~182] 출처-계기 v2 — 이행-부피의 수요-혈통 공개-재계산(읽기-전용).
+
+    계보: v0 혈통-분해([M-179]) → v1 hop-감쇠([M-181]) → ★v2 용량-결박([M-182]).
 
     H7-동형: /meta 공개 재료로 검증-세계를 만들고 /log 전량을 리플레이하며 노트별
     보관-사슬(visited 주체)을 그림자-추적, 앵커별 **이행-부피 V의 혈통 분해**를 낸다.
@@ -694,7 +696,7 @@ def provenance(c):
         row["w_eh_share"] = round(row.pop("_weh") / v, 4)    # ★v2 용량-결박
     return {"as_of": {"epoch": st["epoch"], "entries": len(entries)},
             "anchors": dict(sorted(per.items())),
-            "note": ("출처-계기 v1(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
+            "note": ("출처-계기 v2(읽기-전용·요율-비연동) — 뿌리 = 보관-사슬 독립성"
                      "(막-채널 부재라 rooted_ext = 0 기준선) · ⚠️의사-신원 홉은 구매"
                      " 가능 — earned-계열이 실질 · ★v1 hop-감쇠(w085_share · d=0.85"
                      " 권고 — [M-180/181]): 정직-벌점 = d^(k−1) 정확 · 다단-세탁 벌점"
@@ -753,6 +755,29 @@ def make_cover_leg(c, ref, prem):
     return c.cover(ref, prem=prem, submit=False)
 
 
+class _RoClient:
+    """읽기-전용 명령(provenance·acceptance·cascade)용 무-키 클라이언트 —
+    비참여 검증자는 키 없이 공개-재계산만 한다([M-183] 냉독-수리)."""
+
+    def __init__(self, url, name="observer"):
+        self.url = url.rstrip("/")
+        self.p = name
+
+    def _get(self, path):
+        import urllib.request
+        req = urllib.request.Request(
+            self.url + path,
+            headers={"User-Agent": "vlue-underwriter-ro/0.1"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())
+
+    def stats(self):
+        return self._get("/stats")
+
+    def job(self, ref):
+        return self._get(f"/job/{ref}")
+
+
 def _mk_client(url, key_path, name):
     cl = Fl21Client.__new__(Fl21Client)
     cl.url = url.rstrip("/")
@@ -770,8 +795,9 @@ def main():
                                     "book", "cascade", "provenance",
                                     "acceptance"])
     ap.add_argument("--url", required=True)
-    ap.add_argument("--key", required=True)
-    ap.add_argument("--name", required=True, help="내 principal 이름(JOIN 완료 전제)")
+    ap.add_argument("--key", help="서명-키 파일(읽기-전용 명령[provenance·acceptance·"
+                                  "cascade]은 생략 가능 — 무-키 공개-재계산)")
+    ap.add_argument("--name", help="내 principal 이름(JOIN 완료 전제 · 읽기-전용은 생략 가능)")
     ap.add_argument("--ref")
     ap.add_argument("--prem", type=int)
     ap.add_argument("--direct", action="store_true")
@@ -821,7 +847,14 @@ def main():
            "prov_lambda": a.prov_lambda,
            "carry_bp_per_epoch": a.carry_bp,
            "family_prior": a.family_prior}
-    c = _mk_client(a.url, a.key, a.name)
+    ro_cmds = ("provenance", "acceptance", "cascade")
+    if a.key is None or a.name is None:
+        if a.cmd not in ro_cmds:
+            sys.exit(f"{a.cmd} 는 --key·--name 필요(서명-명령) — "
+                     f"무-키 허용 = {'/'.join(ro_cmds)}")
+        c = _RoClient(a.url, a.name or "observer")
+    else:
+        c = _mk_client(a.url, a.key, a.name)
     if a.cmd == "cascade":
         print(json.dumps(cascade(c, mode=a.mode, sets=a.sets),
                          ensure_ascii=False, indent=1))

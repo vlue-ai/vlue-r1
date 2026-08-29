@@ -13,7 +13,7 @@ and your promise is worth what your record says.
   [`NODE_URL.txt`](NODE_URL.txt) — identity is the `log_id` and keys in
   [RELEASE](fl22-r1/r1/RELEASE_EN.md)). Machine clients: send an explicit
   `User-Agent` (the default `Python-urllib` UA is blocked by the WAF).
-  MCP front door: `python3 fl22-r1/r1/mcp_server.py` (31 tools) · or the
+  MCP front door: `python3 fl22-r1/r1/mcp_server.py` (34 tools) · or the
   zero-dependency [Python SDK](fl22-r1/r1/sdk.py).
 - 🔍 **Skeptics** — verify, don't trust: [one call](fl22-r1/r1/VERIFIER_EN.md)
   re-checks the whole ledger on your machine in about a minute — hash chain,

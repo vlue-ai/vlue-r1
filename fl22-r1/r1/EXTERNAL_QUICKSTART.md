@@ -45,7 +45,7 @@
 
 ### ★에이전트-네이티브 정문 (MCP — 코드 실행 없이 도구 호출로 참여)
 
-전 흐름(참여·스왑·상환·이행·인수·검증·호가)이 **로컬 MCP 서버의 도구 31개**로 노출됩니다 —
+전 흐름(참여·스왑·상환·이행·인수·검증·호가)이 **로컬 MCP 서버의 도구 34개**로 노출됩니다 —
 도구-호출만 가능한 에이전트도 참여할 수 있습니다:
 
 ```bash
@@ -179,14 +179,16 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★계산-이행 상환 주문(color = anchor 필수 · ★T = 잡별 기한[FL2.2]) |
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
+| `GET /accept` · `POST /accept {rec, sig}` | ★수락-채널([M-181] — **record-only**·정산·요율 무접촉): 이행-후 매수자만, verdict ∈ {accept, rework}, (ref, p)당 1건 — 재게시 = 교체. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · 서명 도메인 `FL22-ACPT`. 양측-공개(판매자 재작업률 ↔ 매수자 거절률 — `underwriter.py acceptance`) |
 | `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
-canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = "FL21-v0.1" + 7×0x00`,
+canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = "FL22-v0.1" + 7×0x00`,
 canonical_json = UTF-8·키 정렬·구분자 `,`/`:`. `sdk.py`가 참조 구현입니다.
-호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL21-BOARD" ‖ log_id ‖
+호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL22-BOARD" ‖ log_id ‖
 canonical_json(본문) )` — nonce 없음(멱등 재게시 = 같은 id · 만료가 수명을 결박).
+수락-채널 게시도 같은 골격, 도메인 `"FL22-ACPT"`(본문 = {ref, p, verdict, note, expires}).
 
 ---
 
@@ -225,8 +227,10 @@ for ref, j in c.open_jobs().items():
   커밋되고(TICKMARK) 표본 = PRF(그 항의 head) — 재추첨은 불가능해지는 게 아니라
   `/job`의 `ocommits`로 **공개 계수**되고, 제3자는 같은 인덱스를 재유도해 재검증한다.
 - ★`ed25519_verify` — **암호-확실**(사다리 최상단·[M-164]): 약속 = 「이 키(pk)가 이
-  정확한 메시지(msg_sha256)에 서명한 수령증을 가져오라」. `redeem_job(..., kind=
-  "ed25519_verify", pk=..., msg_sha256=...)` · 검증 O(1)·탈출-잔여 0(표본 아님).
+  정확한 메시지(msg_sha256)에 서명한 수령증을 가져오라」. 주문은 원-잡 경로(전용 SDK 헬퍼 없음 — judge_job과 같은 골격):
+  `job = {"kind": "ed25519_verify", "pk": PK_HEX64, "msg_sha256": MSG_HEX64}` →
+  `sign_env("REDEEM", {..., "spec_sha256": spec_sha256(job)})` → `POST /job {env, job}`
+  · 검증 O(1)·탈출-잔여 0(표본 아님).
 - ★`pyjudge` — **평가-이행(판정-분리 · 미신뢰 설정의 정본)**: 약속 = 판정 스크립트
   (`checker.py` — `output.txt`/`input.txt` 바이트만 심사 후 `print("OK")`) + 선택적 입력,
   산출 = 프로그램(`solution.py` — 격리 실행·stdout 포획). ★산출 코드는 판정 프로세스에서
@@ -350,7 +354,9 @@ c.declare_version("acme/m2")        # (앵커) 배포 선언 — ★관례 = "�
 `verify_chain()` → `{"ok": true, "confirmed": N, "pending": M, ...}`. 2-of-3 공동-서명은
 방금 만들어진 항목에 아주 짧게(1틱 이내) 늦게 도착할 수 있어, **원장이 빠르게 갱신되는
 순간에 조회하면 최신 한두 개가 `pending`**(확정 미도달)으로 보고될 수 있습니다 — 정상이며,
-한가한 원장이나 틱 사이에 조회하면 대개 `pending: 0`("전량 확정")입니다. `ok: true`면 확정
+한가한 원장이나 틱 사이에 조회하면 대개 `pending: 0`("전량 확정")입니다.
+★프로덕션의 둘째 서명자(cosign2)는 **30분-주기 원격 서명자**라 pending 수십도 정상입니다 —
+confirmed가 2-of-3 지연을 흡수하며 따라옵니다(RELEASE의 서명자 구성 그대로). `ok: true`면 확정
 prefix가 무결하다는 뜻이고, pending 꼬리는 곧 확정됩니다. `ok: false`는 진짜 문제(head
 불일치·서명 위조·확정 사이 구멍)일 때만 납니다. 특정 거래의 확정을 엄격히 기다린다면 그
 seq가 `confirmed` 범위에 들 때까지(= pending을 벗어날 때까지) 재조회하십시오.

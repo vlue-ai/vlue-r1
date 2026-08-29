@@ -19,7 +19,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   self-accrues to F_uw; the rest is yours.
   ★In practice ([M-156] measured): the adequacy binding (fq_mult=1) halts accrual
   while F_peak (the observed peak fund-layer demand) is low, so **today's effective
-  fund share is ~zero** (156 units across 144 runs) — nearly the whole premium is
+  fund share is ~zero** (156 units across 144 runs · ⚠️micro-world qualifier: on a fresh small book accrual does run up to the fq floor [GEN 12], so small underwriters do pay the φ share) — nearly the whole premium is
   yours (accrual resumes once the fund layer actually starts paying).
 - **What you bear**: opening cover escrows **collateral β ≥ 1/2 × exposure** (@uw).
   Waterfall order: ①defaulting anchor's free balance → ②**your collateral** → ③**recourse
@@ -57,7 +57,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 
 | Input | Where | How |
 |---|---|---|
-| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) — ⚠️an **upper-bound suggestion**: you sit behind the defaulting-anchor layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
+| p̂ (delivery record) | `/stats.anchors[a].segments` — Laplace `(accidents+1)/(mature+2)` | `suggest_prem(ref)` = worst **mature** segment × exposure, rounded up (version-laundering defense) · ★the tool's suggested price is **v2** ([M-164]): fair = p̂·E·**δ(r)** (closed-form exhaustion curve — measured defaulting-anchor layer) × loading — ⚠️an **upper-bound suggestion**: you sit behind the defaulting-anchor layer, so expected cost is lower — but a **median claim** (at δ→1 the margin vanishes: §1 measured, 6/144 losing seeds) · price is the market's |
 | Integer granularity | face 1 = smallest unit | meaningful minimum face = ⌈1/target-rate⌉ — at 1,000-unit exposure, 0.1% is expressible |
 | ★Sampling depth (the duality) | §3 floor table · ★per-job `k` (H2-bound) | shallow verification leaves residue **borne by the buyer** — since [M-162] buyers buy depth directly with `redeem_job(..., k=2..16)` (§3 is the price menu · ⚠️escape residue sits outside the deadline peril) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
@@ -98,6 +98,13 @@ every cell — one corrupted segment is the forger's optimum, so the table is
 conservative. ⚠️Qualifiers: chain-consistent forgery model · this constant system
 (CKPT 50,000, uniform random sampling) only · exact numbers in
 `research/results/rsample_2026-08-28.json`.
+
+★Buyer closed form ([M-172] E-4): the m=1 escape rate closes as q₁ = 1 − k/S, so for
+damage D and tolerance tol the optimal depth is **k\* = ⌈S·(1 − tol/D)⌉**
+(`sdk.suggest_k(n, damage)` — full check when D ≥ S·tol). ⚠️v0 honesty: depth carries no
+money price today (verification cost is absorbed by the node budget · natural cap k ≤ S)
+— for large damages, do not skimp on k. Escape residue stays outside the deadline-accident
+peril (covers cannot absorb it — same ⚠️ as above).
 
 ## §4 Running the seat — underwriter.py
 
@@ -148,7 +155,7 @@ being free · default 0).
   (nothing to steal). Still keep **one outstanding leg**, short-lived.
 - **`cover --direct` collects no premium**: the kernel's prem is self-declared
   (unbound — the `/stats` qualifier). With strangers, always settle atomically.
-- **Collateral is split into 1-unit notes** — prefer many small exposures.
+- ~~Collateral is split into 1-unit notes~~ → **one exact-face collateral note** ([M-155] F-1 repair — stale line corrected to match the Korean original).
 - **Capacity arithmetic today** (as-of 2026-08-28 · epoch 3,511 — live: `/state`,
   `/stats`): F_uw = **0** · one anchor (anchor0, free balance 40,000 units = 40 AU).
   The fund layer is empty until premiums fill it — thin-at-micro-scale is the design,
@@ -177,6 +184,9 @@ being free · default 0).
 ## §6 Market laws — four, fixed by registered measurement ([M-172] LSECON · 392 runs, 6.24M claims)
 
 Prereg `lab/prereg/LSECON_PREREG_2026-08-29.md` (committed before execution); judgment
+⚠️The cited prereg/result files live in the operating monorepo's registry (no-post-edit
+discipline · not shipped in this bundle — disclosure on request / post-announcement);
+§6–§7 here are their summaries.
 in the matching `_RESULT`. ⚠️All of it holds for **this constant system and these bot
 behaviors** — and the moment real participants arrive, these four become **falsifiable
 predictions**. That is precisely why they are written down in advance.

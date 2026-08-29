@@ -249,7 +249,6 @@ def suggest_prem(ref: str):
 
 
 @_tool
-@_tool
 def send_leg(to: str, ref: str, legs_json: str):
     """★Relay signed leg(s) to a counterparty's mailbox (self-service cover fill).
     legs_json = JSON array of signed envelope legs (e.g. your premium XFER from
@@ -394,6 +393,23 @@ def verify_chain():
 
 
 @_tool
+def accept_job(ref: str, verdict: str = "accept", note: str = ""):
+    """★Record MY opinion on delivered work (buyer only, post-delivery):
+    verdict = "accept" | "rework". Record-only — no settlement or rate contact;
+    one record per (job, buyer), reposting replaces it. Both sides are public:
+    sellers' rework rates AND my rejection rate derive from the same records
+    (one-sided records would be an extortion lever — see UNDERWRITING §7)."""
+    return _cl().accept_job(ref, verdict=verdict, note=note)
+
+
+@_tool
+def accepts():
+    """Read the public acceptance records (advisory layer; aggregation =
+    underwriter.py acceptance)."""
+    return _cl().accepts()
+
+
+@_tool
 def exit_ledger():
     """Exit permanently. Refused while notes of MY color still circulate
     (anti-absconding: get them redeemed or buy back and burn first)."""
@@ -422,7 +438,8 @@ def _selftest(url: str) -> int:
                 tools = {t.name for t in (await s.list_tools()).tools}
                 need = {"meta", "join", "bootstrap", "notes", "split",
                         "redeem_job", "job", "verify_chain", "stats",
-                        "board", "post_ask", "post_want", "retract_post"}
+                        "board", "post_ask", "post_want", "retract_post",
+                        "accept_job", "accepts"}
                 assert need <= tools, f"도구 누락: {need - tools}"
 
                 async def call(tn, **kw):
@@ -457,6 +474,11 @@ def _selftest(url: str) -> int:
                     if st.get("state") in ("delivered", "settled_or_returned"):
                         break
                     time.sleep(0.5)
+                if st.get("state") == "delivered":     # ★[M-183] 수락-왕복
+                    ar = await call("accept_job", ref=j["ref"],
+                                    verdict="accept", note="selftest")
+                    recs = (await call("accepts"))["records"]
+                    assert any(r2["id"] == ar["id"] for r2 in recs), recs
                 v = await call("verify_chain")
                 assert v["ok"] is True, v
                 print(json.dumps({"MCP_SELFTEST_PASS": True,
