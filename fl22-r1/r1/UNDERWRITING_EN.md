@@ -62,6 +62,8 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 | ★Sampling depth (the duality) | §3 floor table · ★per-job `k` (H2-bound) | shallow verification leaves residue **borne by the buyer** — since [M-162] buyers buy depth directly with `redeem_job(..., k=2..16)` (§3 is the price menu · ⚠️escape residue sits outside the deadline peril) |
 | ★Family concentration | `/stats.family_concentration` | `herfindahl_lb` = model-family concentration of circulating debt, a **lower bound** (undeclared issuers counted separately — `undeclared_share` sizes the uncertainty). High = accidents arrive **together**: cap total exposure or surcharge (not automated — your judgment) |
 | Challenge record | `/stats.anchors[a].challenged` | public re-verification mismatches — grounds for surcharge |
+| ★Issuer-side maturity | `/stats.anchors[a].issuer_maturity_peak` | ★[M-170] the LLR-review gap, closed — max single-tick maturing exposure of open claims AGAINST that anchor: honest, capable anchors can fail on **maturity concentration alone** (capacity illiquidity). Above the anchor's plausible capacity ⟹ your cover is at risk too |
+| ★Version period | `/stats.anchors[a].version_period` | ★[M-170] the machine cause of term premium — if T_j exceeds the deploy cadence, today's p̂ may not describe the anchor that will serve you (surcharge, or roll short) |
 | ★Maturity concurrency | `/stats.underwriters[u]` — `open_covers`, `maturity_peak` | layer ③ (recourse) splits your free balance among claims **maturing in the same tick** ([M-157] measured — the real storm dial is time-concentration, not capital) ⟹ keep `maturity_peak` (max single-tick maturing exposure) under your free balance · `--max-concurrent` caps it automatically |
 
 **Qualifier**: real-loss data is still zero (the state of the whole field). These are
@@ -110,7 +112,14 @@ python3 underwriter.py watch --url ... --key ... --name me --poll 60
 premium)` together with your UW leg via `/block` — premium and cover land
 **all-or-nothing** (the exact flow the T-COVER gate verifies). Policy dials:
 `--max-exposure` (default 2,000 units) · `--min-rate-bp` (10) · `--per-anchor` (3) ·
-`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — the time-concentration axis) · ★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
+`--family-herf-max` (0.95 — hold new cover above it) · ★`--max-concurrent` (8 — the time-concentration axis) · ★`--family-prior` ([M-170] — prior for no-history anchors = the family's worst
+mature p̂ instead of Laplace 0.5: cold-start friction relief, worst-based so
+impersonation gains ~nothing · ⚠️**λ coupling is a condition**: lower the rate, but
+cap exposure by that anchor's own delivered volume) · `book --principal X` ([M-170]
+F-2 — **open audit**: any underwriter's open covers and balance are public, so anyone
+can recompute their ruin probability. Buyers: audit your underwriter before accepting
+cover — canonical constants trials 2000 · fam_rho 0.5 · seed 7 = reproducible) ·
+★`--family-cap` ([M-164] — **per-family** open-cover cap; the E-FAM result [drawdown 0 vs 2,032] as policy · off by default) · ★`book` (portfolio risk engine — Monte-Carlo **ruin probability, drawdown quantiles, same-tick-demand p95** over your whole open book: the one thing per-claim caps cannot say — an instrument, not a registered measurement) · ★`--loading-pct` (100 — measured recommendation **125**) ·
 ★`--trust-lambda` ([M-165] — a **machine-economy trust cap**: my exposure per anchor
 ≤ λ × that anchor's cumulative delivered volume [`/stats.anchors[a].delivered_volume`].
 Human insurance lets time build trust; machines build reputation in minutes and can
@@ -143,7 +152,17 @@ being free · default 0).
   can be zero** (redeemable only against the absconded issuer) — victims and buyers
   should price notes with `/stats.color_health` (per-color supply, issuer EXIT flag,
   balance, last delivery). Redesigning compensation color (offender vs underwriter —
-  the underwriter is alive, so their color has redemption substance) is **referred to
-  FL2.3**.
+  color-preserving compensation — FL23_DESIGN §2) is **referred to FL2.3**. ★The
+  bridge before then = **circulation** ([M-170] F-1): compensation notes can be sold
+  at a discount via board kind="swap" + atomic BLOCK swaps (`color_health` prices the
+  discount · ★the issuer itself is the natural best buyer — buying back and burning
+  own-color debt reopens the revolving cap ⟹ a living issuer's compensation color
+  has a natural floor price).
+- **Quota-share convention** ([M-170] F-5): split large exposures into SPLIT→REDEEM×n
+  tranches, one underwriter each — already legal (excess-of-loss layering is an
+  FL2.3+ item).
+- **Short-T rolling = automatic covenants** ([M-170] F-6): with no counterparty-state
+  hooks, rolling short deadlines re-audits every instrument at each renewal — safer
+  than long cover (and consistent with version_period).
 - Misjudgment cover (insurance on judge jobs) is the next installment
   (`ANCHOR_SCOPE_EN` notice — arrives with the deviation metric).

@@ -49,6 +49,11 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   "loading_pct": 100,
                   # ★[M-164] 가계별 열린-커버 상한(None = 끔 · E-FAM 실증 — 상관 축)
                   "family_cap": None,
+                  # ★F-10([M-170]) 가계-사전: 무-이력 앵커의 사전을 라플라스 0.5
+                  # 대신 **같은 가계의 성숙-최악** p̂로(콜드-스타트 마찰 완화 — 최악-
+                  # 기반이라 사칭 이득 최소 · ⚠️노출 상한은 자기 이행-부피에만 결박
+                  # 하라[λ 결합] — 요율과 노출의 두 축 분리가 조건). 기본 끔.
+                  "family_prior": False,
                   # ★[M-165] C-1 기계-경제 신뢰-상한: 앵커당 내 열린-노출 ≤ λ ×
                   # 그 앵커의 누적 이행-부피(원장-파생). 인간-보험의 「시간이 신뢰를
                   # 만든다」를 기각 — 기계는 명성을 분 단위로 쌓고 한 번에 태울 수
@@ -73,6 +78,30 @@ def _premium(c, ref, exposure, policy, ctx=None):
     floor = -(-exposure * policy["min_rate_bp"] // 10_000)
     sug = c.suggest_prem(ref)
     load = policy.get("loading_pct", 100)
+    if policy.get("family_prior") and ctx and "stats" in ctx:
+        try:                                     # ★F-10 — 무-이력 앵커의 가계-사전
+            j0 = ctx["job"]
+            a0 = j0.get("anchor")
+            an0 = (ctx["stats"].get("anchors") or {}).get(a0) or {}
+            own_mat = sum(s.get("mature", 0)
+                          for s in (an0.get("segments") or {}).values())
+            v0 = an0.get("version") or ""
+            fam0 = v0.split("/", 1)[0] if "/" in v0 else None
+            if own_mat == 0 and fam0:
+                fps = []
+                for a2, an2 in (ctx["stats"].get("anchors") or {}).items():
+                    if a2 == a0:
+                        continue
+                    v2 = an2.get("version") or ""
+                    if v2.split("/", 1)[0] == fam0:
+                        fps += [s2["p_hat"] for s2
+                                in (an2.get("segments") or {}).values()
+                                if s2.get("mature", 0) > 0]
+                if fps:
+                    sug = min(sug, max(1, -(-int(max(fps) * exposure * 100)
+                                            // 100)))
+        except Exception:
+            pass
     delta_pct = 100
     try:
         j = ctx["job"] if ctx else c.job(ref)
@@ -174,7 +203,8 @@ def scan(c, policy=None):
             per_anchor[a] = per_anchor.get(a, 0) + 1
             if fam is not None:
                 fam_open[fam] = fam_open.get(fam, 0) + 1
-            ctx = {"job": j, "bal": {}, "open_exp": per_open, "epoch": epoch}
+            ctx = {"job": j, "bal": {}, "open_exp": per_open, "epoch": epoch,
+                   "stats": st}
             out.append({"ref": ref, "anchor": a, "exposure": j["exposure"],
                         "deadline": j["deadline"],
                         "prem": _premium(c, ref, j["exposure"], policy, ctx)})
@@ -253,7 +283,7 @@ def auto_fill(c, policy=None):
     return {"filled": filled, "skipped": skipped}
 
 
-def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7):
+def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7, principal=None):
     """★[M-164] U-D 북 위험 엔진 — 내 열린 커버 포트폴리오의 파멸-확률·드로다운 분위.
 
     개별-청구 규칙(노출·per-anchor·가계·동시 상한)은 각 축의 상한일 뿐 「이 북이 폭풍을
@@ -265,8 +295,9 @@ def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7):
     한정·결정론 시드(재현 가능)."""
     import random as _rnd
     policy = {**DEFAULT_POLICY, **(policy or {})}
-    st = c.stats()
-    rng = _rnd.Random(seed)
+    subject = principal or c.p                  # ★F-2([M-170]) — 공개-감사: 임의
+    st = c.stats()                              #   인수자의 북을 원장에서 재계산
+    rng = _rnd.Random(seed)                     #   (바젤의 역전 — 무-감독 감독)
     fam_of = {}
     for a2, an in (st.get("anchors") or {}).items():
         v = an.get("version") or ""
@@ -279,13 +310,16 @@ def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7):
             continue
         for ref in js:
             j = c.job(ref)
-            if j.get("uw") != c.p or j.get("delivered") or                     j.get("state") != "open":
+            if j.get("uw") != subject or j.get("delivered") \
+                    or j.get("state") != "open":
                 continue
             covers.append({"ref": ref, "anchor": a, "E": j["exposure"],
                            "dl": j["deadline"], "fam": fam_of.get(a, f"~{a}")})
-    my_bal = c.balance()
+    my_bal = (c.balance() if subject == c.p
+              else c._get(f"/balance/{subject}")["balance"])
     if not covers:
-        return {"open_covers": 0, "balance": my_bal,
+        return {"subject": subject, "self_audit": subject == c.p,
+                "open_covers": 0, "balance": my_bal,
                 "note": "열린 커버 없음 — 북 위험 0(기준선)"}
     open_exp = {}
     for cv in covers:
@@ -335,7 +369,9 @@ def book(c, policy=None, trials=2000, fam_rho=0.5, seed=7):
             hint.append(f"가계-집중 {top:.0%} — --family-cap 권고")
     if p95_tick > my_bal:
         hint.append("동시-성숙 p95가 자유잔고 초과 — --max-concurrent 권고")
-    return {"open_covers": len(covers), "exposure_total": sum(
+    return {"subject": subject, "self_audit": subject == c.p,
+            "as_of": {"epoch": st["epoch"]},
+            "open_covers": len(covers), "exposure_total": sum(
                 cv["E"] for cv in covers),
             "balance": my_bal, "collateral_escrowed": coll,
             "delta_by_anchor": {a: round(d, 3) for a, d in delta.items()},
@@ -396,16 +432,22 @@ def main():
                     help="앵커당 내 노출 ≤ λ×이행-부피(기계-경제 신뢰-상한·기본 끔)")
     ap.add_argument("--carry-bp", type=int, default=0,
                     help="기간-비례 자본-비용 bp/에포크(담보 회전율의 가격·기본 0)")
+    ap.add_argument("--principal", default="",
+                    help="book: 감사 대상 인수자(공백 = 자기 — F-2 공개-감사)")
+    ap.add_argument("--family-prior", action="store_true",
+                    help="무-이력 앵커에 가계-최악 사전 적용(F-10 — ⚠️λ 결합 권장)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
            "max_concurrent": a.max_concurrent,
            "loading_pct": a.loading_pct, "family_cap": a.family_cap,
            "trust_lambda": a.trust_lambda,
-           "carry_bp_per_epoch": a.carry_bp}
+           "carry_bp_per_epoch": a.carry_bp,
+           "family_prior": a.family_prior}
     c = _mk_client(a.url, a.key, a.name)
     if a.cmd == "book":
-        print(json.dumps(book(c, pol), ensure_ascii=False, indent=1))
+        print(json.dumps(book(c, pol, principal=(a.principal or None)),
+                         ensure_ascii=False, indent=1))
     elif a.cmd == "scan":
         print(json.dumps(scan(c, pol), ensure_ascii=False, indent=1))
     elif a.cmd == "quote":

@@ -1173,6 +1173,66 @@ def gate_TCOVER(port=8799):
     wk.work_pending()                                # 이행 → 이행-부피 생성(맨 뒤)
     stA = h.stats()["anchors"].get("anchor0", {})
     out["★이행-부피 계기"] = stA.get("delivered_volume", 0) >= 4
+    # ★[M-170] F-11 — 발행자-측 동시-만기 계기(열린 청구가 남아있는 동안 관측)
+    big5 = [n for n in h.notes_of("anchor0") if n["face"] >= 2][0]
+    h.split(big5["nid"], [2, big5["face"] - 2])
+    nid7 = [n["nid"] for n in h.notes_of("anchor0") if n["face"] == 2][0]
+    h.xfer("cvh3", nid7)
+    j7 = h3.redeem_job("anchor0", nid7, seed="ff" * 4, n=500)
+    stA2 = h.stats()["anchors"].get("anchor0", {})
+    out["★발행자 만기-계기"] = stA2.get("issuer_maturity_peak", 0) >= 2
+    # ★[M-170] F-4 — 버전-주기(선언 2회 후 중앙값 — 사이에 틱 1 이상)
+    nd.tick()
+    env_v2 = wk.sign_env("TICKMARK", {"kind": "fl21.version", "v": "acme/m2"})
+    wk._post("/submit", {"env": env_v2})
+    stA3 = h.stats()["anchors"].get("anchor0", {})
+    out["★버전-주기 계기"] = isinstance(stA3.get("version_period"), int) and \
+        stA3["version_period"] >= 1
+    # ★[M-170] F-9a — 죽은-노트 계기(현재 = 신선 ⟹ stale 0 기준선)
+    chh = h.stats()["color_health"].get("anchor0", {})
+    out["★stale 기준선 0"] = chh.get("stale_share") == 0.0
+    # ★[M-170] F-1 — swap kind 보드 수리
+    h3.post_ask("swap", "sell comp-note", 3,
+                detail="offer=anchor0:4 want=cvh3 · [M-170] F-1")
+    out["★swap 호가 수리"] = any(r["post"]["kind"] == "swap"
+                                 for r in h3.board()["asks"])
+    # ★[M-170] F-2 — book 공개-감사(제3자가 cvu3의 북을 재계산)
+    bk2 = UWT.book(h3, {"family_herf_max": 1.0}, trials=100, principal="cvu3")
+    out["★book 공개-감사"] = bk2.get("subject") == "cvu3" and \
+        bk2.get("self_audit") is False and bk2.get("open_covers", -1) >= 0
+    # ★[M-170] F-10 — 가계-사전(결정론 구성): 이행-전량 가계 beta를 만들고
+    # (cvgood — 성숙 p̂ ≈ 0.25), 같은 가계의 무-이력 cvna의 권고가가 라플라스-0.5
+    # 기반보다 낮아짐을 확인(E=4: 0.5→2 vs 가계-사전→1)
+    gd = _client(port, "cvgood", data)
+    gd.join()
+    env_g = gd.sign_env("TICKMARK", {"kind": "fl21.version", "v": "beta/m1"})
+    gd._post("/submit", {"env": env_g})
+    gb = [n for n in gd.notes() if n["face"] >= 2][0]
+    gd.split(gb["nid"], [1, 1, gb["face"] - 2])
+    for i, sd in enumerate(("a1" * 4, "a2" * 4)):
+        gn = [n for n in gd.notes() if n["face"] == 1][0]
+        gd.xfer("cvh3", gn["nid"])
+        jg = h3.redeem_job("cvgood", gn["nid"], seed=sd, n=500)
+        gd.deliver_job(jg["ref"], JOBS.compute("sha256_chain", sd, 500))
+    for _ in range(nd.w.GEN["redeem_T"] + 1):
+        nd.tick()                                    # 성숙(대칭-시차 계수)
+    na = _client(port, "cvna", data)
+    na.join()
+    env_v3 = na.sign_env("TICKMARK", {"kind": "fl21.version", "v": "beta/m9"})
+    na._post("/submit", {"env": env_v3})
+    nb = [n for n in na.notes() if n["face"] >= 4][0]
+    na.split(nb["nid"], [4, nb["face"] - 4])
+    nid8 = [n["nid"] for n in na.notes() if n["face"] == 4][0]
+    na.xfer("cvh3", nid8)
+    for n in list(na.notes()):        # 잔고 0 → r=0 → δ=1(가계-사전 효과 비-희석)
+        na.xfer("cvh3", n["nid"])
+    j8 = h3.redeem_job("cvna", nid8, seed="aa" * 4, n=500)
+    sc_np = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0})
+    sc_fp = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                          "family_prior": True})
+    p_np = next(cd["prem"] for cd in sc_np["candidates"] if cd["ref"] == j8["ref"])
+    p_fp = next(cd["prem"] for cd in sc_fp["candidates"] if cd["ref"] == j8["ref"])
+    out["★가계-사전 완화"] = p_fp < p_np
     out["audit"] = h._get("/audit")["ok"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())

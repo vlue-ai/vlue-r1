@@ -82,6 +82,7 @@ class Node:
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
         self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
         self.ocommits = {}              # ★[M-164] ref → 산출-커밋 수(재추첨 흔적)
+        self.note_touch = {}            # ★[M-170] nid → 최근 접촉 에포크(F-9a 원료)
         self.board_p = os.path.join(data_dir, "board.json")
         self.board = {}              # id → {post, sig, id}
         if os.path.exists(self.board_p):
@@ -320,6 +321,19 @@ class Node:
             self.colors.pop(nid, None)
         added = sorted(now_ids - before_ids, key=int)
         typ = env["typ"]
+        # ★F-9a([M-170]) — 노트 접촉-시각(죽은-노트 계기의 원료): 생성·이동이 갱신.
+        # 부팅 색-리플레이가 이 함수를 전 엔트리에 돌리므로 재기동에도 자동 재구성.
+        ep_now = entry.get("w_epoch", 0)
+        for nid in added:
+            self.note_touch[nid] = ep_now
+        for nid in removed:
+            self.note_touch.pop(nid, None)
+        _legs = env["args"]["legs"] if typ == "BLOCK" else [env]
+        for _lg in _legs:
+            if _lg.get("typ") == "XFER":
+                _n = str((_lg.get("args") or {}).get("note"))
+                if _n in self.w.notes:
+                    self.note_touch[_n] = ep_now
         if typ == "EXT_IN":
             for nid in added:
                 self.colors[nid] = env["args"]["to"]      # ★자기-IOU 발행
@@ -571,6 +585,7 @@ class Node:
             k = (a, ver.get(a, "v0"))
             return seg.setdefault(k, {"delivered": 0, "failed": 0, "mature": 0})
 
+        vdecl = {}                    # ★[M-170] F-4 — 앵커별 version 선언 에포크들
         dvol = {}                     # ★[M-165] C-1 — 앵커별 이행-부피(액면 합):
                                       #   기계-경제 신뢰-상한(λ×이행-부피)의 원료
         dlast = {}                    # 앵커별 마지막 이행 에포크(색-실질 신호)
@@ -612,6 +627,7 @@ class Node:
                         isinstance(lg.get("args"), dict) and \
                         lg["args"].get("kind") == "fl21.version":
                     ver[lg["p"]] = str(lg["args"].get("v", "?"))[:32]
+                    vdecl.setdefault(lg["p"], []).append(e["w_epoch"])
                 elif lg["typ"] == "TICKMARK" and \
                         isinstance(lg.get("args"), dict) and \
                         lg["args"].get("kind") == "fl21.challenge":
@@ -649,6 +665,29 @@ class Node:
         for a, v in dvol.items():                   # ★[M-165] C-1 — 신뢰-상한 원료
             anchors.setdefault(a, {"version": ver.get(a, "v0"),
                                    "segments": {}})["delivered_volume"] = v
+        # ★F-4([M-170]) — 버전-주기(기간-프리미엄의 기계-원인 원료): 선언 간격 중앙값
+        import statistics as _st
+        for a, eps in vdecl.items():
+            if len(eps) >= 2:
+                gaps = [b - c for b, c in zip(eps[1:], eps[:-1])]
+                anchors.setdefault(a, {"version": ver.get(a, "v0"),
+                                       "segments": {}})["version_period"] = \
+                    int(_st.median(gaps))
+        # ★F-11([M-170]) — 발행자-측 동시-만기 계기(LLR 재심의 대칭-공백 봉합):
+        # 그 앵커를 향한 열린 청구(부보 여부 무관 — 전부 그의 이행-용량 수요)의
+        # 단일-성숙-틱 노출 합 최대. 인수자 maturity_peak의 발행자판.
+        imat = {}
+        for _r, rp in self.w.redeem_pending.items():
+            if rp.get("T"):
+                dl = rp["t0"] + rp["T"]
+                aa = rp["anchor"]
+                fc = self.w.notes[rp["nid"]]["face"]
+                imat.setdefault(aa, {})
+                imat[aa][dl] = imat[aa].get(dl, 0) + fc
+        for a, mb in imat.items():
+            anchors.setdefault(a, {"version": ver.get(a, "v0"),
+                                   "segments": {}})["issuer_maturity_peak"] = \
+                max(mb.values())
         prem_in = sum(c["prem"] for c in self.w.uw_open.values())
         # ★UW-1([M-113]·[M-126] 집행): prem은 인수자 자기-선언(커널 자기적립 —
         # 홀더→인수자 실지급에 비결박)이라 손해율의 분모로 신뢰 불가 ⟹ 정직 강등:
@@ -695,12 +734,19 @@ class Node:
         # 상환-가능성이다. 배상 노트가 가해-앵커 색으로 발행되는 설계(위험 꼬리표)에서
         # 「도주한 색」을 들고 있는 피해자·매수자가 즉시 볼 수 있어야 정직하다.
         color_health = {}
+        STALE_N = 10_080                             # ★F-9a — 1주(60s 틱) 무-접촉
         for c0, sup in colors_supply.items():
+            stale = sum(n["face"] for nid, n in self.w.notes.items()
+                        if self.colors.get(nid) == c0
+                        and now - self.note_touch.get(nid, now) >= STALE_N)
             color_health[c0] = {
                 "supply": sup,
                 "issuer_exited": c0 in self.w.exited,
                 "issuer_balance": self.w.bal(c0) if isinstance(c0, str) else 0,
-                "last_delivery_epoch": dlast.get(c0)}
+                "last_delivery_epoch": dlast.get(c0),
+                # ★F-9a([M-170]) — 죽은-노트 계기: 장기 무-접촉 유통 비율(에이전트
+                # 소멸성 × 회전-한도 전량-계수 ⟹ 질식 위험의 측정 — FL2.3 §7 원료)
+                "stale_share": round(stale / sup, 4) if sup else 0.0}
         # ★N-17([M-125] 등재 · [M-154] 실장) — 모델-가계 집중(파생-가시 · 상관 요율 원료).
         # 관례: declare_version("가계/버전") — '/' 앞이 가계. ⚠️herfindahl_lb 는 **하한**:
         # 미선언 발행자는 각자 별개 가계로 계수한다(미상끼리 같은 가계면 실제 집중은 더
@@ -1177,8 +1223,8 @@ class Node:
             raise Fl21Error("board: side ∈ {ask, want}")
         # ★[M-154] "cover" — 인수 호가(커버-제안)의 발견층 1급 kind(오프-원장 자문층 ·
         # 테이프는 잡-경로 체결만 파생하므로 무영향 · 체결은 원자 /block 이 유일 경로)
-        if body["kind"] not in JOBS.KINDS + ("other", "cover"):
-            raise Fl21Error(f"board: kind ∈ {JOBS.KINDS + ('other',)}")
+        if body["kind"] not in JOBS.KINDS + ("other", "cover", "swap"):
+            raise Fl21Error(f"board: kind ∈ {JOBS.KINDS + ('other', 'cover', 'swap')}")
         if not (isinstance(body["title"], str)
                 and 1 <= len(body["title"]) <= 80):
             raise Fl21Error("board: title 1~80자")
