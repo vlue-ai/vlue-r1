@@ -397,3 +397,19 @@ intact; a pending tail confirms shortly. `ok: false` occurs only on real problem
 mismatch · forged signature · a gap between confirmed entries). To strictly await a
 specific transaction's confirmation, re-query until its seq enters the `confirmed` range
 (= leaves pending).
+
+## How much balance do you need — the discrete-slot formula ([M-173], 2,676 registered runs)
+
+A REDEEM order **escrows** exposure E for the deadline T, so the number of orders you
+can keep in flight is fixed by **slots s = ⌊balance ÷ E⌋**. To sustain an arrival rate
+λ (order attempts per tick) you need slots for the offered load **a = λT**, and the
+achieved rate is **min(1, s ÷ a)** — exact to **0.0000 deviation** with deterministic
+arrivals, every cell.
+
+★**Working formula**: irregular arrivals need a buffer — **slots ≥ λT + 1.5·√(λT)**
+(measured z = 1.41–1.50). Example: ordering every tick (λ=1) at T=8 means holding
+8 + 4 = **12 orders' worth of balance** to run without stalling.
+
+★Corollary: **long deadlines lock up your own liquidity**. Doubling T at the same
+balance halves your throughput — rolling short T is better (and it re-audits every
+underwriting instrument at each renewal).

@@ -186,8 +186,12 @@ predictions**. That is precisely why they are written down in advance.
    rate band is [**fair price**, `suggest_prem`], and in excess supply the clearing
    price sits on the floor. **Your edge is capacity, not loading.**
 2. ★**Capacity rent of 10–20%**: once the concurrent-cover cap binds, rent survives
-   even Bertrand competition (clearing +10 to +30 against a 50–300 floor). The seat's
-   profit comes from **capacity scarcity**, not capital.
+   even Bertrand competition (clearing +10 to +30 against a 50–300 floor; with **no
+   cap the rent is 0** at every demand level). ★Refinement ([M-173]): what creates the
+   rent is not the cap itself but **available capacity** — with a loose cap and heavy
+   demand, the low-loading underwriters run out of **collateral** first and the
+   high-loading ones win (capital substitutes for the cap). The seat's profit comes
+   from capacity you can deploy *now*, not from total capital.
 3. ★**Verification's spread compression = 0.5 ÷ p̂** (exact across three cells: 10.00,
    3.33, 1.67). Without a public record an underwriter must price off the Laplace 0.5
    prior, so the factor by which verification cuts the rate is exactly inverse to the
