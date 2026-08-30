@@ -195,7 +195,8 @@ canonical_json = UTF-8·키 정렬·구분자 `,`/`:`·★**비-ASCII 이스케�
 - `REDEEM` = `{holder, note, anchor[, T]}`(색-일치: 노트는 발행자에게만) · `REDEEM_CANCEL` = `{holder, ref}`
 - `DELIVER` = `{anchor, ref}` → 산출은 kind별(sha256_chain = hex · sampled = `{final, ckpts:[…]}` ·
   pycheck/pyjudge = solution_b64 · ed25519_verify = `{msg_b64, sig}`) · `EXIT` = `{a}`
-- `ISSUE`(회전-발행) = `{issuer, amount}` · `TICKMARK` = `{kind, …}` · `UW`(커버) = `/block` 원자 다리로만
+  ★**이행 전송** = POST `/deliver` body `{env: <DELIVER 봉투>, output: <위 kind별 산출>}` (산출은 봉투 밖 별도 필드 · DELIVER 봉투는 `/deliver` 전용 — [M-191])
+- **회전-발행** = `TICKMARK{kind:"fl21.issue", k}`(k = 재발행량 · 유통 ≤ 한도 · [M-104]) · `UW`(커버) = `/block` 원자 다리로만
 ⚠️★**BLOCK(원자 다리)은 `/block` 전용**(`/submit` 불가 — [M-190]): 다리별 가드 경유. `submit_block(legs)` 참조.
 호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL22-BOARD" ‖ log_id ‖
 canonical_json(본문) )` — nonce 없음(멱등 재게시 = 같은 id · 만료가 수명을 결박).

@@ -2693,6 +2693,81 @@ def gate_TACCEPTSIG(port=8836):
     return out
 
 
+def gate_TDELIVERTYPE(port=8837):
+    """★[M-191] CRITICAL — /deliver 는 DELIVER 봉투 전용(냉독 라운드2): REDEEM/EXIT/BLOCK
+    를 /deliver 로 밀어 _guard_env 우회 못 함 · 정상 DELIVER 는 유지."""
+    out = {}
+    nd, srv, data = _serve(port)
+    victim = _client(port, "victim", data); victim.join()
+    atk = _client(port, "atk", data); atk.join()
+    atk.split(atk.notes()[0]["nid"], [1, 19])
+    m2 = [n["nid"] for n in atk.notes() if n["face"] == 19][0]
+    ref = atk.redeem_job("atk", [n["nid"] for n in atk.notes() if n["face"] == 1][0],
+                         seed="aa" * 8, n=1)["ref"]
+    smug = atk.sign_env("REDEEM", {"holder": "atk", "note": m2, "anchor": "victim", "ref": ref})
+    sp = atk.job(ref)["job"]
+    try:
+        atk._post("/deliver", {"env": smug, "output": JOBS.compute(sp["kind"], sp["seed"], sp["n"])})
+        out["★REDEEM-via-/deliver 거부"] = False
+    except RuntimeError as e:
+        out["★REDEEM-via-/deliver 거부"] = "DELIVER 봉투 전용" in str(e) or "typ" in str(e)
+    out["우회 미발생(victim 피고 아님)"] = "victim" not in [v.get("anchor") for v in nd.w.redeem_pending.values()]
+    # 정상 DELIVER 유지
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]; wk.split(g["nid"], [10, g["face"] - 10])
+    b = _client(port, "buyer", data); b.join()
+    wk.xfer("buyer", [x for x in wk.notes() if x["face"] == 10][0]["nid"])
+    nid = [x for x in b.notes_of("anchor0") if x["face"] == 10][0]["nid"]
+    r = b.redeem_job("anchor0", nid, seed="bb" * 8, n=100)
+    sp2 = b.job(r["ref"])["job"]
+    out["정상 DELIVER 유지"] = bool(wk.deliver_job(r["ref"], JOBS.compute(sp2["kind"], sp2["seed"], sp2["n"])))
+    out["원장 무오염"] = nd.audit()["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TENTRYFORM(port=8838):
+    """★[M-191] 검증 도구는 비정형 엔트리(null/오타입 필드)에 크래시 아닌 ok:false
+    (냉독 라운드2 — head_sig 외 형제 필드도 크래시했다)."""
+    import copy
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "ef", data); c.join()
+    c.split(c.notes()[0]["nid"], [5, 15])
+    with nd.lock:
+        nd.tick()
+    meta = c._get("/meta")
+    log, s0 = [], 0
+    while True:
+        pg = c._get(f"/log?since={s0}")["entries"]
+        if not pg:
+            break
+        log += pg; s0 = pg[-1]["seq"] + 1
+    ok = True
+    for fld, val in (("prev", None), ("prev", 123), ("state_root", None),
+                     ("env", None), ("head", None), ("head_sig", None)):
+        bad = [{**e, fld: val} for e in copy.deepcopy(log)]
+        w = World.from_public({"operator": meta["operator_pk"],
+                               **(meta.get("genesis_pks") or {})},
+                              meta["label"], tuple(meta["genesis"]),
+                              gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
+        try:
+            r = w.replay_verify(bad)
+            if r["ok"] is not False:
+                ok = False
+        except Exception:
+            ok = False
+    out["★비정형 6종 전부 ok:false(무크래시)"] = ok
+    out["정상 로그는 통과"] = World.from_public(
+        {"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})},
+        meta["label"], tuple(meta["genesis"]), gen=dict(meta["gen"]),
+        bridge_ref=meta.get("bridge_ref")).replay_verify(log)["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -2725,7 +2800,9 @@ def main():
              "T-BLOCKGUARD BLOCK-가드(CRIT)": gate_TBLOCKGUARD(),
              "T-OCOMMITCAP ocommit-상한(C-2v)": gate_TOCOMMITCAP(),
              "T-NULLSIG null-head_sig 견고성": gate_TNULLSIG(),
-             "T-ACCEPTSIG 수락-서명 재검증": gate_TACCEPTSIG()}
+             "T-ACCEPTSIG 수락-서명 재검증": gate_TACCEPTSIG(),
+             "T-DELIVERTYPE /deliver-typ강제(CRIT)": gate_TDELIVERTYPE(),
+             "T-ENTRYFORM 엔트리-형식 견고성": gate_TENTRYFORM()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

@@ -385,7 +385,7 @@ propagate backwards** — translate with this table when reading them.
 | **P Policy** | Set and published by the dial's owner | The loss falls on **whoever set it** (they stake their own capital) | `max_exposure` · `min_rate_bp` · `per_anchor` · `family_herf_max` · `max_concurrent` · `loading_pct` · `family_cap` · `trust_lambda` · `prov_lambda` · `carry_bp` |
 | **E Estimated** | ★**A factual claim about the world** | ★**Someone else gets hurt** — and **nobody can tell** that it is wrong | **λ · κ · d · τ · g/P · ρ_Φ · δ · w\*** |
 
-★★**Tier E is currently entirely unset.** The numbers in this document (κ 0.05 · d 0.85 ·
+★★**Tier E is currently entirely unset.** The numbers in this document (⚙️[M-190] corrected — κ **0.5** (consistent with the §6-4 worked example · the old 0.05 was a typo ⟹ the λ upper bound was off 10×) · d 0.85 ·
 g/P 0.4 · δ 0.825 · w\* 1.0) are values **inside a lab constant system**, not values of
 the world. The production ledger is at S=0 (zero deliveries), so `/accept` returns an
 empty table and `provenance` returns `anchors {}`.

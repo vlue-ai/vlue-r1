@@ -251,6 +251,9 @@ def scan(c, policy=None):
                         "deadline": j["deadline"],
                         "prem": _premium(c, ref, j["exposure"], policy, ctx)})
             per_open[a] = per_open.get(a, 0) + j["exposure"]
+            # ★[M-191] λ 캡 누적(냉독 라운드2 — mine_exp 가 후보마다 안 늘어 캡이
+            # 후보 수만큼 뚫렸다). per_open 과 동형으로 이 스캔의 부여분을 합산한다.
+            mine_exp[a] = mine_exp.get(a, 0) + j["exposure"]
     return {"candidates": out, "open_mine": mine, "herfindahl_lb": herf,
             "family_open": fam_open}
 
@@ -286,7 +289,7 @@ def auto_fill(c, policy=None):
     policy = {**DEFAULT_POLICY, **(policy or {})}
     st = c.stats()
     oc = (st.get("underwriters") or {}).get(c.p, {}).get("open_covers", 0)
-    filled, skipped = [], []
+    filled, skipped, fill_exp = [], [], {}
     for m in c.fetch_legs():
         pl = m.get("payload") or {}
         ref, legs = pl.get("ref"), pl.get("legs")
@@ -305,6 +308,17 @@ def auto_fill(c, policy=None):
             if j["exposure"] > policy["max_exposure"]:
                 skipped.append(f"{ref[:8]} 노출 상한")
                 continue
+            # ★[M-191] trust_lambda 캡 — scan 과 동형(냉독 라운드2: auto_fill 이
+            # λ 를 무시해 --trust-lambda 방어가 이 경로에서 조용히 새었다). 앵커별
+            # 이 폴의 누적 노출 + 이 잡 ≤ λ × delivered_volume. ⚠️크로스-폴 누적은
+            # open_covers 로만 유계(잔여 한계 — 근치는 노출 상태를 원장-파생화).
+            lam = policy.get("trust_lambda")
+            if lam is not None:
+                aj = j.get("anchor")
+                dv = (st.get("anchors", {}).get(aj) or {}).get("delivered_volume", 0)
+                if fill_exp.get(aj, 0) + j["exposure"] > lam * dv:
+                    skipped.append(f"{ref[:8]} λ-상한(이행부피 {dv})")
+                    continue
             xfer = legs[0]
             if not (xfer.get("typ") == "XFER"
                     and (xfer.get("args") or {}).get("to") == c.p):
@@ -320,6 +334,7 @@ def auto_fill(c, policy=None):
             uw_leg = make_cover_leg(c, ref, face)
             r = c.submit_block([xfer, uw_leg])
             filled.append({"ref": ref, "prem": face, "seq": r.get("seq")})
+            fill_exp[j.get("anchor")] = fill_exp.get(j.get("anchor"), 0) + j["exposure"]
         except Exception as e:
             skipped.append(f"{str(ref)[:8]}:{str(e)[:40]}")
     return {"filled": filled, "skipped": skipped}
@@ -765,8 +780,8 @@ def acceptance(c, tau=None):
                     pkmap[a_.get("principal")] = Ed25519PublicKey.from_public_bytes(
                         bytes.fromhex(a_["pk"]))
             seq = page[-1]["seq"] + 1
-    except Exception:
-        pkmap = None                         # 로그 접근 불가 = 검증 생략(폴백 표기)
+    except (OSError, KeyError, ValueError):
+        pkmap = None                         # 로그/메타 접근 불가 = 검증 생략(폴백 표기)
     per_a, per_b = {}, {}
     rejected = 0
     for r in rs:
@@ -833,6 +848,17 @@ class _RoClient:
     def __init__(self, url, name="observer"):
         self.url = url.rstrip("/")
         self.p = name
+        self._meta = None
+
+    @property
+    def meta(self):                    # ★[M-191] 무-키 경로도 서명 재검증 가능하게
+        if self._meta is None:         # (냉독 라운드2 — acceptance 검증이 조용히 스킵됐다)
+            self._meta = self._get("/meta")
+        return self._meta
+
+    @property
+    def log_id(self):
+        return bytes.fromhex(self.meta["log_id"])
 
     def _get(self, path):
         import urllib.request

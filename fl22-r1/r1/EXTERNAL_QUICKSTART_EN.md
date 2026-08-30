@@ -223,7 +223,8 @@ Per-operation `args` (exact keys):
 - `REDEEM` = `{holder, note, anchor[, T]}` (color-routing: a note redeems only to its issuer) · `REDEEM_CANCEL` = `{holder, ref}`
 - `DELIVER` = `{anchor, ref}` → output is kind-specific (sha256_chain = hex · sampled = `{final, ckpts:[…]}` ·
   pycheck/pyjudge = solution_b64 · ed25519_verify = `{msg_b64, sig}`) · `EXIT` = `{a}`
-- `ISSUE` (rotating issuance) = `{issuer, amount}` · `TICKMARK` = `{kind, …}` · `UW` (cover) = atomic leg via `/block` only
+  ★**delivery transport** = POST `/deliver` body `{env: <DELIVER envelope>, output: <kind-specific output above>}` (output is a field OUTSIDE the envelope · a DELIVER envelope is `/deliver`-only — [M-191])
+- **rotating issuance** = `TICKMARK{kind:"fl21.issue", k}` (k = re-issue amount · circulating ≤ limit · [M-104]) · `UW` (cover) = atomic leg via `/block` only
 ⚠️★**BLOCK (atomic legs) is `/block`-only** (not `/submit` — [M-190]): per-leg guarding. See `submit_block(legs)`.
 Board posts sign under a DIFFERENT domain (cross-replay firewall):
 `Ed25519( "FL22-BOARD" ‖ log_id ‖ canonical_json(body) )`

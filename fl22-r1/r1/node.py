@@ -249,7 +249,8 @@ class Node:
             raise Fl21Error("기동 audit 실패")
         self.persisted = n
         for _e in self.w.log:           # ★[M-165] R4-9 — 재기동 시 ocommit 재구성
-            if _e["env"]["typ"] == "TICKMARK" and \
+            if _e["env"].get("p") == "operator" and \
+                    _e["env"]["typ"] == "TICKMARK" and \
                     isinstance(_e["env"].get("args"), dict) and \
                     _e["env"]["args"].get("kind") == "fl21.ocommit":
                 _r = _e["env"]["args"].get("ref")
@@ -475,6 +476,12 @@ class Node:
                     raise Fl21Error("scope: max_T ≥ 0 정수")
         if typ == "DELIVER" and str(args.get("ref")) in self.jobs:
             raise Fl21Error("잡-결박 이행은 /deliver 경유(산출 검증-후 이행 — RD-7)")
+        if typ == "TICKMARK" and isinstance(args, dict) \
+                and args.get("kind") in ("fl21.ocommit", "fl21.challenge"):
+            # ★[M-191] operator 가 **만드는** 예약 kind 만 차단(냉독 라운드2 — 사용자
+            # fl21.ocommit 이 재기동 카운터를 오염 → DoS). 차단목록으로 좁힘: 다른
+            # 사용자 kind(scope·version·issue·note 등)는 각자 경로에서 검증된다.
+            raise Fl21Error(f"TICKMARK kind '{args.get('kind')}'는 예약(operator 전용)")
         if typ == "REDEEM":
             c = self.colors.get(str(args.get("note")))
             if c is None:
@@ -972,6 +979,13 @@ class Node:
             raise Fl21Error("미지 작업 ref")
         if j.get("delivered"):
             raise Fl21Error("이미 이행된 청구")
+        # ★[M-191] CRITICAL — env.typ 강제(냉독 라운드2): /deliver 는 _guard_env 를
+        # 안 타는 유일한 사용자-봉투 → _ksubmit 경로다. typ 을 안 보면 REDEEM/BLOCK/EXIT
+        # 를 밀어 색-라우팅·EXIT-부채 가드를 우회(무고한 앵커를 미이행-피고로). deliver 는
+        # 오직 DELIVER 봉투만 — 다른 typ 은 /submit(가드) 또는 /block(다리별 가드)로.
+        if env.get("typ") != "DELIVER":
+            raise Fl21Error("DELIVER: /deliver 는 DELIVER 봉투 전용"
+                            "(다른 연산은 /submit·/block — 가드 경유)")
         self.w._verify_env(env)       # ⓐ 서명/nonce/창 — 미서명·위조 거부(부작용 없음)
         rp = self.w.redeem_pending.get(ref)   # ⓑ 커널 권위원본으로 이행자 = 앵커 확인
         if rp is None or env.get("p") != rp.get("anchor"):
@@ -1027,6 +1041,8 @@ class Node:
             if want != got:
                 raise Fl21Error("H2: output_sha256 불일치 — 산출 결박 위반"
                                 "(서명한 산출 ≠ 전달 산출)")
+        if env.get("typ") != "DELIVER":       # ★[M-191] 벨트(deliver_lookup 이 이미 막지만)
+            raise Fl21Error("DELIVER: typ 불일치")
         entry = self._ksubmit(env)    # ref/anchor/failed 재검증은 커널이 강제
         j["delivered"] = True
         j["output"] = output

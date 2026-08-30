@@ -596,6 +596,16 @@ class Fl21Client:
         confirmed = 0
         pending = 0
         for e in entries:
+            # ★[M-191] 엔트리 형식 검증(냉독 라운드2 — head_sig 외 형제 필드도 null/
+            # 오타입에 크래시했다: prev.encode()·state_root 등). 악의 노드가 검증-거부
+            # 대신 트레이스백을 유발하지 못하게 진입부에서 형식을 균일 거부한다.
+            if not (isinstance(e, dict) and isinstance(e.get("prev"), str)
+                    and isinstance(e.get("head"), str)
+                    and isinstance(e.get("state_root"), str)
+                    and isinstance(e.get("env"), dict)
+                    and isinstance(e.get("seq"), int)):
+                sq = e.get("seq") if isinstance(e, dict) else "?"
+                return {"ok": False, "why": f"엔트리 형식 비정형 seq {sq}"}
             base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
             if "_force" in e:
                 base = base | {"_force": e["_force"]}

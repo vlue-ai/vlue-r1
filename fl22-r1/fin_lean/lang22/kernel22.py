@@ -906,6 +906,13 @@ class World:
         prev = "genesis"
         op_pk = self.reg.pk("operator")
         for e in entries:
+            # ★[M-191] 엔트리 형식 검증(냉독 라운드2 — 악의 노드의 오타입이 크래시 유발)
+            if not (isinstance(e, dict) and isinstance(e.get("prev"), str)
+                    and isinstance(e.get("head"), str)
+                    and isinstance(e.get("state_root"), str)
+                    and isinstance(e.get("env"), dict)):
+                return {"ok": False,
+                        "why": f"엔트리 형식 비정형 seq {e.get('seq') if isinstance(e, dict) else '?'}"}
             try:
                 r = self._commit(e["env"], replay=True)
             except Fl21Error as ex:
