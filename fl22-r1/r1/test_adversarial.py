@@ -348,11 +348,49 @@ def a10_mixed(port):
     return out
 
 
+# ══════════ A-11 인증 전 원장-기입 — ocommit 증폭 (★C-2 회귀 · 냉독 갭) ══════════
+def a11_ocommit(port):
+    """★[M-189] — A-9가 `args={}`로 취약 분기에 도달조차 못 했다(냉독 2차). 여기서
+    **열린 sampled ref 에 위조·미서명 `/deliver`**를 쏴, 거부되면서도 원장을 쓰는지 본다."""
+    out = {}
+    nd, srv, data = _serve(port)
+    try:
+        c, wk, _ref = _prep(port, data, name="oc")
+        # sampled 청구 하나(공격 표적)
+        g = wk.notes()[0]
+        wk.split(g["nid"], [10, g["face"] - 10])
+        wk.xfer("oc", [x for x in wk.notes() if x["face"] == 10][0]["nid"])
+        nid = [x["nid"] for x in c.notes_of("anchor0") if x["face"] == 10][0]
+        import jobs as JOBS
+        j = c.redeem_job("anchor0", nid, seed="bb" * 8, n=1000,
+                         kind="sha256_chain_sampled")
+        ref = j["ref"]
+        e0 = nd.audit()["entries"]
+        want = -(-1000 // JOBS.CKPT)
+        fake = {"final": "ab" * 32, "ckpts": ["ab" * 32] * want}
+        codes = []
+        for _ in range(12):
+            codes.append(_post(port, "/deliver", {"env": {"typ": "DELIVER",
+                "args": {"ref": ref}, "p": "oc", "epoch": 0, "nonce": 0,
+                "sig": "00" * 64}, "output": fake})[0])
+        with nd.lock:
+            nd.tick()
+        e1 = nd.audit()["entries"]
+        out["★위조 /deliver 전부 거부"] = all(x != 200 for x in codes)
+        out["★원장 증가 = 0(tick 제외)"] = (e1 - e0) <= 1
+        out["ocommit 카운터 불변"] = c.job(ref).get("ocommits", 0) == 0
+        out["원장 무오염"] = nd.audit()["ok"] is True
+    finally:
+        srv.shutdown()
+    return out
+
+
 BATTERY = [("A-1 재생", a1_replay, 8871), ("A-2 교차-세계", a2_crossworld, 8872),
            ("A-3 도메인 혼동", a3_domain, 8873), ("A-4 권한 상승", a4_escalate, 8874),
            ("A-5 오용 입력", a5_malformed, 8875), ("A-6 경계 우회", a6_ratelimit, 8876),
            ("A-7 시빌 속도", a7_sybil, 8878), ("A-8 슬로우로리스", a8_slowloris, 8879),
-           ("A-9 크기 남용", a9_oversize, 8880), ("A-10 혼합-kind 부하", a10_mixed, 8881)]
+           ("A-9 크기 남용", a9_oversize, 8880), ("A-10 혼합-kind 부하", a10_mixed, 8881),
+           ("A-11 ocommit 증폭(C-2)", a11_ocommit, 8882)]
 
 
 def main():

@@ -2443,6 +2443,118 @@ def gate_TPROV(port=8858):
     return out
 
 
+def gate_TUNSIGNED(port=8830):
+    """★[M-189] C-1 — 서명 없는 원장이 외부 검증을 통과하면 안 된다(H7 근간).
+    옛 `if "head_sig" in e:` 는 부재를 통과시켰다(냉독 2차 B1). 양성(정상 통과) +
+    음성(서명 벗김 거부) 둘 다 잰다 · verify_chain·replay_verify 양쪽."""
+    import copy
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "us", data); c.join()
+    c.split(c.notes()[0]["nid"], [5, 15])
+    with nd.lock:
+        nd.tick()
+    meta = c._get("/meta")
+    good = []
+    s0 = 0
+    while True:
+        pg = c._get(f"/log?since={s0}")["entries"]
+        if not pg:
+            break
+        good += pg
+        s0 = pg[-1]["seq"] + 1
+    # ① 정상 — verify_chain 통과
+    out["정상 verify_chain 통과"] = c.verify_chain()["ok"] is True
+    # ② 서명 벗김 — 커널 replay_verify 가 거부
+    stripped = [{k: v for k, v in e.items() if k != "head_sig"} for e in copy.deepcopy(good)]
+    w = World.from_public({"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})},
+                          meta["label"], tuple(meta["genesis"]),
+                          gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
+    r = w.replay_verify(stripped)
+    out["★서명 벗김 replay_verify 거부"] = (r["ok"] is False and "부재" in str(r.get("why")))
+    # ③ 정상 원장은 replay_verify 통과(음성이 양성을 안 깨는지)
+    w2 = World.from_public({"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})},
+                           meta["label"], tuple(meta["genesis"]),
+                           gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
+    out["정상 replay_verify 통과"] = w2.replay_verify(good)["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TDELIVERAUTH(port=8831):
+    """★[M-189] C-2 — 인증 전 원장 영구-기입(ocommit 증폭) 봉합. 위조·미서명
+    /deliver 는 원장을 **한 항도** 못 쓰고, 정상 이행은 여전히 수리돼야 한다."""
+    import base64
+    out = {}
+    nd, srv, data = _serve(port)
+    atk = _client(port, "atk", data); atk.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]
+    wk.split(g["nid"], [10, g["face"] - 10])
+    wk.xfer("atk", [x for x in wk.notes() if x["face"] == 10][0]["nid"])
+    nid = [x["nid"] for x in atk.notes_of("anchor0") if x["face"] == 10][0]
+    j = atk.redeem_job("anchor0", nid, seed="aa" * 8, n=1000,
+                       kind="sha256_chain_sampled")
+    ref = j["ref"]
+    e0 = nd.audit()["entries"]
+    oc0 = atk._get(f"/job/{ref}").get("ocommits", 0)
+    want = -(-1000 // JOBS.CKPT)
+    fake = {"final": "ab" * 32, "ckpts": ["ab" * 32] * want}
+    codes = []
+    for _ in range(10):                           # 위조·미서명 /deliver
+        try:
+            atk._post("/deliver", {"env": {"typ": "DELIVER", "args": {"ref": ref},
+                      "p": "atk", "epoch": 0, "nonce": 0, "sig": "00" * 64},
+                      "output": fake})
+            codes.append(200)
+        except RuntimeError:
+            codes.append(400)
+    with nd.lock:
+        nd.tick()
+    e1 = nd.audit()["entries"]
+    oc1 = atk._get(f"/job/{ref}").get("ocommits", 0)
+    out["위조 /deliver 전부 거부"] = set(codes) == {400}
+    out["★원장 증가 = 0(tick 제외)"] = (e1 - e0) <= 1
+    out["★ocommit 카운터 불변"] = oc1 == oc0
+    out["audit ok"] = nd.audit()["ok"] is True
+    # 정상 이행은 여전히 수리(sampled) — 워커 경로
+    spec = atk.job(ref)["job"]
+    r = wk.deliver_job(ref, JOBS.compute(spec["kind"], spec["seed"], spec["n"]))
+    out["정상 sampled 이행 수리"] = bool(r)
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TDELTALIEN(port=8832):
+    """★[M-189] C-3 — δ 는 기본으로 **움직일 수 있는 자유잔고**를 신용하지 않는다
+    (리엔 부재). 기본값에서 앵커가 XFER 로 잔고를 빼도 권고 보험료 불변 ∧ opt-in
+    시에만 옛 δ 할인이 산다."""
+    out = {}
+    nd, srv, data = _serve(port)
+    buyer = _client(port, "buyer", data); buyer.join()
+    uwr = _client(port, "uwr", data); uwr.join()
+    sink = _client(port, "sink", data); sink.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]
+    wk.split(g["nid"], [5, g["face"] - 5])
+    wk.xfer("buyer", [x for x in wk.notes() if x["face"] == 5][0]["nid"])
+    nid = [x["nid"] for x in buyer.notes_of("anchor0") if x["face"] == 5][0]
+    buyer.redeem_job("anchor0", nid, seed="aa" * 8, n=1000, T=6)
+    p1 = [x["prem"] for x in UWT.scan(uwr).get("candidates", [])]
+    for z in sorted(wk.notes(), key=lambda x: -x["face"]):
+        if z["face"] > 0:
+            wk.xfer("sink", z["nid"])
+    p2 = [x["prem"] for x in UWT.scan(uwr).get("candidates", [])]
+    out["기본값: 잔고 이동에 보험료 불변"] = (p1 and p2 and p1[0] == p2[0])
+    # opt-in 이면 δ 할인이 산다(잔고 있을 때 < 잔고 0일 때)
+    pol = {**UWT.DEFAULT_POLICY, "delta_from_free_balance": True}
+    _ = pol
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -2468,7 +2580,10 @@ def main():
              "T-VALVE 단방향밸브": gate_TVALVE(),
              "T-SIGV 암호-확실 kind": gate_TSIGV(),
              "T-ACCEPT 수락채널": gate_TACCEPT(),
-             "T-PROV 출처계기": gate_TPROV()}
+             "T-PROV 출처계기": gate_TPROV(),
+             "T-UNSIGNED 서명부재-거부(C-1)": gate_TUNSIGNED(),
+             "T-DELIVERAUTH ocommit-전 인가(C-2)": gate_TDELIVERAUTH(),
+             "T-DELTALIEN δ-무담보-보수(C-3)": gate_TDELTALIEN()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

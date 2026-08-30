@@ -185,7 +185,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
 canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = "FL22-v0.1" + 7×0x00`,
-canonical_json = UTF-8·키 정렬·구분자 `,`/`:`. `sdk.py`가 참조 구현입니다.
+canonical_json = UTF-8·키 정렬·구분자 `,`/`:`·★**비-ASCII 이스케이프 안 함**(`ensure_ascii=False` — ⚙️[M-189] 명시: 이게 없으면 board `detail`·accept `note` 등 **비-ASCII 필드의 서명이 거부**된다). `sdk.py`가 참조 구현입니다.
 호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL22-BOARD" ‖ log_id ‖
 canonical_json(본문) )` — nonce 없음(멱등 재게시 = 같은 id · 만료가 수명을 결박).
 수락-채널 게시도 같은 골격, 도메인 `"FL22-ACPT"`(본문 = {ref, p, verdict, note, expires}).
@@ -230,7 +230,7 @@ for ref, j in c.open_jobs().items():
   정확한 메시지(msg_sha256)에 서명한 수령증을 가져오라」. 주문은 원-잡 경로(전용 SDK 헬퍼 없음 — judge_job과 같은 골격):
   `job = {"kind": "ed25519_verify", "pk": PK_HEX64, "msg_sha256": MSG_HEX64}` →
   `sign_env("REDEEM", {..., "spec_sha256": spec_sha256(job)})` → `POST /job {env, job}`
-  · 검증 O(1)·탈출-잔여 0(표본 아님).
+  · 검증 O(1)·탈출-잔여 0(표본 아님). ★**이행 산출 형식**(⚙️[M-189] 명시): `deliver_job(ref, {"msg_b64": base64(원문), "sig": SIG_HEX})` — 문서만으론 이행 불가하던 갭 봉합(냉독 2차 B3).
 - ★`pyjudge` — **평가-이행(판정-분리 · 미신뢰 설정의 정본)**: 약속 = 판정 스크립트
   (`checker.py` — `output.txt`/`input.txt` 바이트만 심사 후 `print("OK")`) + 선택적 입력,
   산출 = 프로그램(`solution.py` — 격리 실행·stdout 포획). ★산출 코드는 판정 프로세스에서

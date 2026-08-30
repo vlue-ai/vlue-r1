@@ -42,6 +42,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
 
 DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   "per_anchor": 3, "family_herf_max": 0.95,
+                  # ★[M-189] C-3 — δ 할인 opt-in(기본 끔 = δ=1 보수적). 켜면 δ 가
+                  # **움직일 수 있는** 자유잔고를 신용한다(리엔 부재 — 냉독 2차 재현).
+                  "delta_from_free_balance": False,
                   # ★U-1([M-157]) — 동시-열린-커버 상한: 층 ③(소구)은 자유 잔고를
                   # 같은 틱 동시-성숙분이 나눠 쓴다([ADR-388] 실측 — 폭풍의 실제 다이얼)
                   "max_concurrent": 8,
@@ -107,7 +110,15 @@ def _premium(c, ref, exposure, policy, ctx=None):
         except Exception:
             pass
     delta_pct = 100
-    try:
+    # ★[M-189] C-3 — δ 는 **움직일 수 있는 자유잔고**를 읽는데(폭포 층①), 커널에
+    # 그 잔고를 커버-결속 시 잠그는 리엔이 없다 ⟹ 앵커가 평범한 XFER 로 잔고를 빼면
+    # 층①이 증발하고, δ 할인을 받아 싸게 결속한 커버가 층③(인수자)로 떨어진다
+    # (냉독 2차 C-3 재현 = 5→500 · loss_ratio 200). ⟹ **기본 = δ 할인 끔**(δ=1 =
+    # 총-기대손실 상한 = 보수적·안전). `delta_from_free_balance=True` 로 **명시적
+    # 옵트인**해야 옛 동작이 살아난다(그때도 이 위험을 아는 인수자 몫). 근치 = 커널
+    # 리엔(⛔FL2.3 회부 — U-LIEN).
+    if policy.get("delta_from_free_balance"):
+      try:
         j = ctx["job"] if ctx else c.job(ref)
         a = j.get("anchor")
         if ctx is not None and a in ctx.setdefault("bal", {}):
@@ -120,7 +131,7 @@ def _premium(c, ref, exposure, policy, ctx=None):
         p_hat = max(sug / exposure, 1e-9)
         r = bal / (p_hat * open_exp) if open_exp else 0.0
         delta_pct = max(1, round((1 - min(r, 1.0)) * 100))
-    except Exception:
+      except Exception:
         pass
     fair = -(-sug * delta_pct // 100)
     carry = 0

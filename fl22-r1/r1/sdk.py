@@ -618,12 +618,16 @@ class Fl21Client:
                 a_ = (env.get("args") or {})
                 env_pks[a_.get("principal")] = \
                     Ed25519PublicKey.from_public_bytes(bytes.fromhex(a_["pk"]))
-            if "head_sig" in e:
-                try:
-                    op_pk.verify(bytes.fromhex(e["head_sig"]),
-                                 DOMAIN + bytes.fromhex(e["head"]))
-                except InvalidSignature:
-                    return {"ok": False, "why": f"운영자 서명 위조 seq {e['seq']}"}
+            # ★[M-189] C-1 — 부재를 **거부**한다(옛 `if in`은 서명 없는 로그를
+            # 통과시켰다 — 냉독 2차 B1). 라이브 전수 head_sig 보유 확인(부재-거부가
+            # pending 정상 동작을 안 깬다: pending 은 head_sig 는 있고 cosig 만 미도달).
+            if "head_sig" not in e:
+                return {"ok": False, "why": f"운영자 서명 부재 seq {e['seq']}"}
+            try:
+                op_pk.verify(bytes.fromhex(e["head_sig"]),
+                             DOMAIN + bytes.fromhex(e["head"]))
+            except (InvalidSignature, ValueError):
+                return {"ok": False, "why": f"운영자 서명 위조 seq {e['seq']}"}
             r = cos.get(e["seq"])
             good = 0
             if r and r["head"] == e["head"]:

@@ -915,14 +915,21 @@ class World:
                or e["prev"] != prev or r["w_epoch"] != e["w_epoch"] \
                or r.get("_force") != e.get("_force"):
                 return {"ok": False, "why": f"결박 불일치 seq {e.get('seq')}"}
-            if "head_sig" in e:
-                try:
-                    Ed25519PublicKey.from_public_bytes(op_pk).verify(
-                        bytes.fromhex(e["head_sig"]),
-                        FL22_DOMAIN + bytes.fromhex(e["head"]))
-                except (InvalidSignature, ValueError):
-                    return {"ok": False,
-                            "why": f"헤드 서명 불일치 seq {e.get('seq')}"}
+            # ★[M-189] C-1 보안-정정 — 부재를 **거부**한다(옛 `if in`은 서명 없는
+            # 로그를 통과 = H7 근간 결함 · 냉독 2차 B1). 이 파일 아래 audit()가 이미
+            # 부재-거부(K-0ⓔ)였고, 그 의도에 replay_verify 를 **일치**시킨다 —
+            # ⚠️검증-전용 정정이라 _commit·정산법·골든벡터·log_id·bridge 는 불변
+            # (변하는 것은 커널 해시뿐 — 동결 예외 등재 [M-189]).
+            if "head_sig" not in e:
+                return {"ok": False,
+                        "why": f"헤드 서명 부재 seq {e.get('seq')}"}
+            try:
+                Ed25519PublicKey.from_public_bytes(op_pk).verify(
+                    bytes.fromhex(e["head_sig"]),
+                    FL22_DOMAIN + bytes.fromhex(e["head"]))
+            except (InvalidSignature, ValueError):
+                return {"ok": False,
+                        "why": f"헤드 서명 불일치 seq {e.get('seq')}"}
             prev = e["head"]
         return {"ok": True, "entries": len(entries),
                 "state_root": self.state_root(), "head": prev,

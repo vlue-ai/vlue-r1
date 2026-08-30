@@ -212,7 +212,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 
 Envelope signature format (if you want to implement it yourself):
 `Ed25519( DOMAIN ‖ log_id ‖ canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`,
-`DOMAIN = "FL22-v0.1" + 7×0x00`, canonical_json = UTF-8 · sorted keys · separators
+`DOMAIN = "FL22-v0.1" + 7×0x00`, canonical_json = UTF-8 · sorted keys · ★**non-ASCII NOT escaped** (`ensure_ascii=False` — ⚙️[M-189]: without this, signatures over non-ASCII fields like board `detail` / accept `note` are rejected) · separators
 `,`/`:`. `sdk.py` is the reference implementation.
 Board posts sign under a DIFFERENT domain (cross-replay firewall):
 `Ed25519( "FL22-BOARD" ‖ log_id ‖ canonical_json(body) )`
@@ -263,7 +263,7 @@ accepting is your choice).
   raw job path (no dedicated SDK helper — same skeleton as judge_job):
   `job = {"kind": "ed25519_verify", "pk": PK_HEX64, "msg_sha256": MSG_HEX64}` →
   `sign_env("REDEEM", {..., "spec_sha256": spec_sha256(job)})` → `POST /job {env, job}`.
-  O(1) verification · zero escape residue (not sampled).
+  O(1) verification · zero escape residue (not sampled). ★**Delivery output shape** (⚙️[M-189]): `deliver_job(ref, {"msg_b64": base64(message), "sig": SIG_HEX})` — closes the gap that made this unfulfillable from docs alone (cold read 2 B3).
 - ★`pyjudge` — **evaluation-fulfillment (judge-separation · the canonical adversarial
   setup)**: promise = a judge script (`checker.py` — inspects only the bytes of
   `output.txt`/`input.txt`, then `print("OK")`) plus optional input; output = a program

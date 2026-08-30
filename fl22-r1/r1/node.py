@@ -948,13 +948,22 @@ class Node:
 
     # ── ★B2 이행 3단(검증은 락 밖 — 서브프로세스가 노드를 얼리지 않게) ──
     def deliver_lookup(self, env):
-        """락 안(짧게): 잡 존재·미이행 확인 후 스펙 복사(락 밖 검증용)."""
+        """락 안(짧게): ★[M-189] C-2 — **ocommit 전에 봉투를 인증**한다. 옛 경로는
+        sampled 커밋-표본이 `ocommit_and_derive`로 원장을 **먼저** 박고 봉투 서명은
+        `deliver_commit`(3단)에서야 봤다 ⟹ 위조·미서명 `/deliver`가 거부(400)되면서도
+        영구 기입을 강제(냉독 2차). 여기서 커널 DELIVER 법과 **동일한 인가**를 미리 문다:
+        ⓐ봉투 서명·nonce·창(`_verify_env`) ⓑ행위자 = 앵커(kernel §DELIVER: `p == anchor`).
+        표본-유도 순서는 그대로 두되(커밋-head 결박 유지) 미인증분이 ocommit 에 못 닿게 한다."""
         ref = (env.get("args") or {}).get("ref")
         j = self.jobs.get(ref)
         if j is None:
             raise Fl21Error("미지 작업 ref")
         if j.get("delivered"):
             raise Fl21Error("이미 이행된 청구")
+        self.w._verify_env(env)       # ⓐ 서명/nonce/창 — 미서명·위조 거부(부작용 없음)
+        rp = self.w.redeem_pending.get(ref)   # ⓑ 커널 권위원본으로 이행자 = 앵커 확인
+        if rp is None or env.get("p") != rp.get("anchor"):
+            raise Fl21Error("DELIVER: 행위자 = 앵커(ocommit 전 인가)")
         return dict(j["job"])         # 스펙 스냅샷(검증 중 공유 상태 무접촉)
 
     # ── ★[M-164] V-B 커밋-표본 — 표본-무작위성을 원장-유도로(천장-깊이) ──

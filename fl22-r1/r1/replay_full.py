@@ -50,6 +50,13 @@ def main():
             break
         entries += page
         s = page[-1]["seq"] + 1
+    # ★[M-189] C-1 — 커널 호출 **전에** head_sig 부재를 선-거부한다(벨트: 커널
+    # replay_verify 도 부재-거부로 고쳤지만, 이 층이 도구의 계약을 명시적으로 문다).
+    miss = next((e.get("seq") for e in entries if "head_sig" not in e), None)
+    if miss is not None:
+        print(json.dumps({"H7_FULL_REPLAY": False,
+                          "why": f"운영자 서명 부재 seq {miss}"}, ensure_ascii=False))
+        return 1
     r = w.replay_verify(entries)
     out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id),
            "identity_rederived": ok_id, **r}
