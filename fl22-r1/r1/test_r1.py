@@ -2248,9 +2248,18 @@ def gate_TACCEPT(port=8857):
         and agg["buyers"]["acby"]["reject_rate"] == 0.5
         and agg["anchors"]["acan"]["rated"] == 2)
     out["★record-only(요율 불변)"] = by.suggest_prem(j3["ref"]) == p0
-    agg2 = UWT.acceptance(by, beta=0.4)          # ★[M-181] β-결합(자문-가격층)
-    out["★β-할증 산술"] = agg2["buyers"]["acby"]["surcharge_mult"] == 1.2 \
+    agg2 = UWT.acceptance(by, tau=0.4)           # ★[M-181] τ-결합(자문-가격층)
+    out["★τ-할증 산술"] = agg2["buyers"]["acby"]["surcharge_mult"] == 1.2 \
+        and agg2["tau"] == 0.4 \
         and "surcharge_mult" not in UWT.acceptance(by)["buyers"]["acby"]
+    # ★[M-186] 개명 회귀 — 기호 충돌(담보비율 β ↔ 매수자-할증)을 가른 뒤,
+    # ⓐ 구명 인자가 되살아나지 않고 ⓑ 출력 키가 τ로 굳었는지 잠근다.
+    try:
+        UWT.acceptance(by, beta=0.4)
+        out["★β 구명 차단"] = False
+    except TypeError:
+        out["★β 구명 차단"] = True
+    out["★출력 키 = tau"] = "tau" in agg2 and "beta" not in agg2
     from sdk import ACCEPT_DOMAIN, canon as _cn
     bad = {"ref": j1["ref"], "p": "acby", "verdict": "accept", "note": "",
            "expires": 0}                      # ⓓ 비-미래 만료 = 거부(epoch ≥ 0)

@@ -704,16 +704,25 @@ def provenance(c):
                      " 최단-경로의 1차 방어 = 스왑-마찰")}
 
 
-def acceptance(c, beta=None):
+def acceptance(c, tau=None):
     """★[M-177/178/181] 수락-집계 — 일치-후-수락의 **양측** 2차-이력.
 
     /accept 레코드(매수자-서명·이행-후·(ref,p)당 1건-교체)를 읽어 ⓐ판매자(앵커)별
     taste_residual = 평가-표본 내 재작업-비율 ⓑ매수자별 거절-비율을 같이 낸다 —
     일방 기록은 갈취-레버라 **양측이 한 몸**([M-178] §2 D-5).
-    ★결합([M-181] 재가 — T-EXTORT 3/3 통과 후): `beta`를 주면 매수자별 **권고
-    가격-승수** 1 + β·거절률을 병기한다(자문-가격층 — 커널·정산 무접촉). 억지 조건
-    = **β ≥ g/P**(갈취-이득율: 허위-재작업의 이득 ÷ 잡 가격 — LSTASTE2 E2 부호-법
-    sign(g−βP) 실측). β 미지정 = 집계만(record-only 그대로)."""
+    ★결합([M-181] 재가 — T-EXTORT 3/3 통과 후): `tau`를 주면 매수자별 **권고
+    가격-승수** 1 + τ·거절률을 병기한다(자문-가격층 — 커널·정산 무접촉). 억지 조건
+    = **τ ≥ g/P**(갈취-이득율: 허위-재작업의 이득 ÷ 잡 가격 — LSTASTE2 E2 부호-법
+    sign(g−τP) 실측). τ 미지정 = 집계만(record-only 그대로).
+
+    ⚠️★[M-186] 개명 — **τ ≠ β**: 이 계수는 커널 U-1의 **담보비율 β**(β ∈ (0,1] ·
+    β_min = 1/2 · 법-강제)와 **전혀 다른 양**이고 1을 넘을 수 있다. 한 글자를 둘이
+    쓰던 것을 갈랐다(UNDERWRITING §8-A 기호 사전). 등록서 LSTASTE2~4의 「β」 =
+    여기의 τ — 등록물은 사후 편집하지 않으므로 사상표로 잇는다.
+    ⚠️★**오조준 과-적재 등재**([M-186] §3-③): 같은 τ가 갈취자와 정직한 고-α 매수자
+    (취향이 까다로워 진짜로 재작업을 요구)를 함께 때리는데 — `reject_rate`만으로는
+    구분 불가 — 갈취자는 **신원 회전으로 빠져나가고**([M-182] R-2 · 정량 미측정)
+    정직 매수자는 못 빠져나간다. 분리 후속 = TE-SPLIT(선행 TE-SYBIL)."""
     rs = c._get("/accept")["records"]
     per_a, per_b = {}, {}
     for r in rs:
@@ -738,15 +747,18 @@ def acceptance(c, beta=None):
     for d in per_b.values():
         d["reject_rate"] = round(d["rework"] / d["rated"], 4) \
             if d["rated"] else None
-        if beta is not None and d["reject_rate"] is not None:
-            d["surcharge_mult"] = round(1 + beta * d["reject_rate"], 4)
+        if tau is not None and d["reject_rate"] is not None:
+            d["surcharge_mult"] = round(1 + tau * d["reject_rate"], 4)
     return {"anchors": dict(sorted(per_a.items())),
             "buyers": dict(sorted(per_b.items())),
-            "beta": beta,
+            "tau": tau,
             "note": ("수락-집계 — 양측 대칭 기록 = 갈취-레버 차단([M-178] D-5) · "
                      "taste_residual = 일치-후-재작업(검증과 별개 2차-이력) · "
-                     "★가격-결합([M-181]): 조건 = 양측-기록 ∧ 매수자-할증 β ≥ g/P"
-                     "(LSTASTE2 E1~3) — surcharge_mult는 권고(자문-가격층·정산 무접촉)")}
+                     "★가격-결합([M-181]): 조건 = 양측-기록 ∧ 매수자-할증 τ ≥ g/P"
+                     "(LSTASTE2 E1~3) — surcharge_mult는 권고(자문-가격층·정산 무접촉)"
+                     " · ⚠️τ는 담보비율 β와 다른 양이다[M-186 개명 · §8-A] · "
+                     "⚠️오조준 과-적재 등재: 갈취자는 신원 회전으로 빠져나간다"
+                     "[M-182 R-2 미측정]")}
 
 
 def make_cover_leg(c, ref, prem):
@@ -835,9 +847,13 @@ def main():
                     choices=["earned", "w085", "v2"],
                     help="trust-λ 분모의 출처-할인(★v2 권장 — 용량-결박 earned×hop"
                          " · 기본 끔 · trust-lambda와 함께만 유효)")
-    ap.add_argument("--beta", type=float, default=None,
+    ap.add_argument("--tau", type=float, default=None,
                     help="acceptance: 매수자-할증 계수(권고 승수 병기 — 억지 조건"
-                         " β ≥ g/P · [M-181] 결합 재가·자문-가격층)")
+                         " τ ≥ g/P · [M-181] 결합 재가·자문-가격층)"
+                         " ⚠️담보비율 β와 다른 양([M-186] 개명)")
+    ap.add_argument("--beta", type=float, default=None,
+                    help="⚠️구명 별칭 — --tau 를 쓸 것([M-186] 개명 · 등록서"
+                         " LSTASTE2~4 호환용으로만 유지)")
     a = ap.parse_args()
     pol = {"max_exposure": a.max_exposure, "min_rate_bp": a.min_rate_bp,
            "per_anchor": a.per_anchor, "family_herf_max": a.family_herf_max,
@@ -863,7 +879,11 @@ def main():
         print(json.dumps(provenance(c), ensure_ascii=False, indent=1))
         return
     if a.cmd == "acceptance":                     # ★[M-178/181] 수락-집계(+β 결합)
-        print(json.dumps(acceptance(c, beta=a.beta), ensure_ascii=False,
+        _tau = a.tau if a.tau is not None else a.beta
+        if a.beta is not None and a.tau is None:
+            print("⚠️--beta 는 구명이다 — --tau 를 쓸 것([M-186] 개명: 담보비율 β와"
+                  " 다른 양). 이번엔 별칭으로 처리한다.", file=sys.stderr)
+        print(json.dumps(acceptance(c, tau=_tau), ensure_ascii=False,
                          indent=1))
         return
     if a.cmd == "book":

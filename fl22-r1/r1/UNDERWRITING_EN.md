@@ -233,8 +233,10 @@ same status as §6.
 1. ★**Deterrence, provenance edition**: decompose the trust cap by provenance
    (exposure ≤ λ_hi·V_rooted + λ_lo·V_unrooted) and **farmed volume is structurally
    unprofitable under just λ_lo ≤ κ/(1−ρ)** (net-extraction sign = sign(λ_lo(1−ρ)−κ),
-   deterministically exact — LSPROV P1), while rooted volume accumulates trust with no
-   penalty (prov/flat-high volume ratio 1.000). ★The single-λ dilemma is real: raise it
+   deterministically exact — LSPROV P1
+   · ⚠️**here ρ is the premium rate**, not a correlation — distinct from the family
+   correlation `fam_rho` and the Φ-share ρ_Φ [§8 symbol table]), while rooted volume
+   accumulates trust with no penalty (prov/flat-high volume ratio 1.000). ★The single-λ dilemma is real: raise it
    and farming breaks through (P1-2, positive extraction in every cell); lower it and
    honest growth is throttled **compoundingly** — trust accumulation is an exponential
    ramp, so the cost of a low λ is orders of magnitude, not "a bit slower" (P2). But
@@ -261,7 +263,10 @@ same status as §6.
    delivery) and the splitting bypass (split-invariant, exact), and **restores the
    cost of disguised carriage to κ/d**. ★The provenance-λ dial =
    `scan --prov-lambda {earned|w085|v2}` (discounts the trust-λ denominator by the
-   chosen share — **v2 recommended**, off by default, values await real data
+   chosen share — **v2 recommended**, off by default, values await real data;
+   ⚠️**d = 0.85 is provisional, not a recommendation** — it is an **over-loaded**
+   constant (§8-D): the same d moves honest-chain penalty, laundering deterrence and
+   disguise cost in *opposite* directions
    [[M-173] principle]; instrument failure falls back to undiscounted v0).
 3. ★**Second-order history (the taste residual)**: verification (conformance) and
    acceptance are different axes — the **conformant-but-reworked** residual is a
@@ -273,14 +278,32 @@ same status as §6.
    ↔ buyer `reject_rate`; one-sided records are an extortion lever).
    ★**Price-coupling condition, settled** ([M-181] — T-EXTORT passed 3/3): coupling
    acceptance history into prices is extortion-resistant when ⓐ both-sides records
-   (live) and ⓑ a **buyer surcharge β ≥ g/P** (the extortion-gain rate: value of a
-   false rework ÷ job price) are in place — deterrence sign sign(g−βP) measured, the
-   β=0 lever quantified at e·N·g, honest-buyer cost linear within ±10% (LSTASTE2
-   E1–3). Tool: `acceptance --beta` reports a recommended per-buyer multiplier
-   1+β·reject_rate — an **advisory pricing layer**: no kernel or settlement contact;
-   applying it is the seller's choice. ⚠️Refined ([M-182] LSTASTE4): the **exact
-   boundary β = g/P leaks** (EW-lag residual gain of +17 to +181 measured) — in
-   practice use a **margin, β > g/P**. The alternative, permanent exclusion above a
+   (live) and ⓑ a **buyer surcharge τ ≥ g/P** (the extortion-gain rate: value of a
+   false rework ÷ job price) are in place — deterrence sign sign(g−τP) measured, the
+   τ=0 lever quantified at e·N·g, honest-buyer cost linear within ±10% (LSTASTE2
+   E1–3). Tool: `acceptance --tau` reports a recommended per-buyer multiplier
+   1+τ·reject_rate — an **advisory pricing layer**: no kernel or settlement contact;
+   applying it is the seller's choice. ⚠️**Symbol warning** ([M-186] rename): this τ
+   is **a different quantity from the collateral ratio β** of §1/§3 — β is the
+   kernel-enforced collateral ratio (β ∈ (0,1], β_min = 1/2); τ is an advisory
+   surcharge coefficient and **may exceed 1**. The "β" in preregistrations
+   LSTASTE2–4 **is this τ** (registered documents are never edited after the fact —
+   see the mapping in §8-A). ⚠️Refined ([M-182] LSTASTE4): the **exact
+   boundary τ = g/P leaks** (EW-lag residual gain of +17 to +181 measured) — in
+   practice use a **margin, τ > g/P**. ★And τ is **mis-aimed over-loading**
+   ([M-186] §3-③): the same τ hits both extortionists and **honest high-α buyers**
+   (buyers whose taste genuinely demands rework), and the extortionist escapes by
+   rotating identity ([M-182] R-2) while the honest buyer cannot.
+   ⚠️★★**Qualification of the condition** ([M-186] §3-⑤, closed form): **τ ≥ g/P is the
+   condition for a world where rotation is expensive.** `reject_rate` only attaches
+   *after* the first rework, so cycle profit = e·k·g − τ·e·P·(k−1) − c_id; when τP > g
+   the extortionist's optimum is **k = 1** (rotate every job), and the surcharge term is
+   then **zero** — ★**τ drops out of the expression entirely** (raising τ to 10× the
+   threshold leaves per-job gain unchanged — arithmetic check). What remains is
+   **e·g > c_id**. ⟹ ★**the binding dial is not τ but the identity cost c_id** (= swap
+   friction f\*). The natural mitigation, a cold-start surcharge on buyers with no
+   history (the mirror of `family_prior` for anchors), **taxes honest new buyers**
+   (§8-D-5). ⚠️**This is a derivation, not a measurement** — registered as TE-SYBIL. The alternative, permanent exclusion above a
    rejection threshold, is absorbing-state dynamics: it eventually catches even
    below-threshold strategies, but **burns ~70% of honest surplus** indiscriminately
    (~1,100 vs ~2,400 under surcharge vs 4,000 with no policy) — **price is more
@@ -297,3 +320,100 @@ same status as §6.
    breaking only at w = 1.0 — LSTASTE3 W-SWEEP), and the working recommendation is a
    **fixed-prepay hybrid** (3.3× throughput, no distortion; the prepay's reference
    must never be self-referential, calibration stays dominant).
+
+## §8 Symbol table · constant ledger (★[M-186], new — pre-launch consistency audit)
+
+This section is **for the reader**. Most values below are **not yet set**, and we do not
+hide that — we publish not the value but **the value's status**.
+
+### §8-A Symbol table (⚠️4 collisions — the same letter naming different quantities)
+
+| Symbol | Meaning here | ⚠️Confusable with | How to tell |
+|---|---|---|---|
+| **β** | **collateral ratio** (kernel U-1, enforced · β ∈ (0,1] · β_min = 1/2) — §1/§3 | ~~buyer surcharge~~ → **renamed τ** ([M-186]) | β is **law**, ≤ 1 |
+| **τ** | **buyer surcharge coefficient** (advisory · condition τ ≥ g/P) — §7-3 | collateral ratio β | τ is **advisory**, **may exceed 1** |
+| **ρ** | **premium rate** — §7-1 formula `κ/(1−ρ)` | family **correlation** `fam_rho` · Φ-share `ρ_Φ` | ⚠️in insurance ρ usually reads as correlation — **here it is the rate** |
+| **d** | hop **decay** coefficient (provisional 0.85) — §7-2 | feature **dimension** d in preregistrations | decay ∈ (0,1); dimension is an integer |
+| **w** | self-reference **share** (w\* — §7-4) | AQS **weights** wᵢ (subscripted) | subscript or not |
+| **λ** | trust-cap multiplier (λ_hi rooted / λ_lo unrooted) | — | — |
+| **κ** | cost rate of honest delivery | — | — |
+| **g/P** | extortion-gain rate = false-rework gain ÷ job price | — | — |
+| **δ** | second-loss discount (defaulting-layer depletion curve — derived) | — | — |
+| **p̂** | delivery record (first-order history · ledger-derived) | `taste_residual` (second-order = rework **after** conformance) | 1st = delivery · 2nd = taste |
+
+★**Preregistration mapping**: the **"β" in `lab/prereg/LSTASTE2–4` is this τ**.
+Registered documents are never edited after the fact (G5), so **the rename does not
+propagate backwards** — translate with this table when reading them.
+
+### §8-B Constant ledger — three tiers (axis = **who gets hurt if it is wrong**)
+
+| Tier | Meaning | If wrong | Members |
+|---|---|---|---|
+| **L Law** | Fixed in the kernel genesis — **everyone sees the same value** | The system is still **honest** (same rules for all); merely inefficient | `beta_min` 1/2 · `redeem_T` 4 · `uw_phi` 1/2 · `identity_budget` 16 · `window_L` 3 · `qual_price` 40 · `unit_scale` 1000 · 60s epoch · per-job T cap 10080 |
+| **P Policy** | Set and published by the dial's owner | The loss falls on **whoever set it** (they stake their own capital) | `max_exposure` · `min_rate_bp` · `per_anchor` · `family_herf_max` · `max_concurrent` · `loading_pct` · `family_cap` · `trust_lambda` · `prov_lambda` · `carry_bp` |
+| **E Estimated** | ★**A factual claim about the world** | ★**Someone else gets hurt** — and **nobody can tell** that it is wrong | **λ · κ · d · τ · g/P · ρ_Φ · δ · w\*** |
+
+★★**Tier E is currently entirely unset.** The numbers in this document (κ 0.05 · d 0.85 ·
+g/P 0.4 · δ 0.825 · w\* 1.0) are values **inside a lab constant system**, not values of
+the world. The production ledger is at S=0 (zero deliveries), so `/accept` returns an
+empty table and `provenance` returns `anchors {}`.
+
+### §8-C Discipline — for Tier E we publish the **estimator**, not the value
+
+This system's principle is **"recompute, don't take our word"**. Constants were the last
+place where our word still stood — if we say "d = 0.85" you have no choice but to trust
+it. So we do for **constants** what H7 does for **state**:
+
+> **The publication unit for a Tier E constant is not a value but seven fields** —
+> `symbol · meaning · domain · estimator · input observables (which ledger values) ·
+> update cadence · current status {unset | provisional | fixed} · safe direction while unset`.
+
+- **If unset, the mechanism is off** (already true for provenance-λ: `--prov-lambda`
+  defaults to off). If it cannot be switched off, use a value **deliberately biased to
+  one side** and **say which side**.
+- ⛔**Forbidden: quietly splitting the difference.** ⚠️**d = 0.85 is currently that**
+  (§8-D).
+- **An update is not a trust event**: if the value changes but the estimator does not,
+  "the operator quietly moved it in their own favour" becomes **structurally impossible**.
+
+### §8-D Known over-loading (one constant driving opposed mechanisms) — declared
+
+**Over-loading**: one constant enters several independent mechanisms whose **optimal
+values point in opposite directions**. The value gets silently split, and the real harm
+is that **no document records which side was sacrificed**.
+
+1. ✅**λ — diagnosed and fixed** (the precedent): raise it and farming breaks through;
+   lower it and honest growth is throttled compoundingly ⟹ **split into λ_hi/λ_lo along
+   an observable axis: provenance** (§7-1). *The answer was decomposition, not a midpoint.*
+2. ⚠️**d (hop decay) — unfixed**: the same d drives ① honest-chain penalty (**higher is
+   better**) ② multi-hop laundering deterrence (**lower is better**) ③ disguised-carriage
+   cost κ/d (**lower is better**). The single value 0.85 is **a compromise** ⟹ registered
+   follow-up (**PD-SPLIT**: distinct d for `earned` hops vs anonymous hops — v2 **already
+   observes** that axis).
+3. ⚠️**τ (buyer surcharge) — mis-aimed**: the same τ hits extortionists and **honest
+   high-α buyers** alike (`reject_rate` cannot separate them), and the extortionist
+   **escapes by rotating identity** ([M-182] R-2 — **unmeasured**) while the honest buyer
+   cannot ⟹ **the dial hits the wrong person harder** ⟹ registered follow-up
+   (**TE-SPLIT**: price on declared-α, bind post-hoc deviation to identity persistence;
+   prerequisite = TE-SYBIL quantification).
+4. ⚠️★**f\* (swap friction) — previously unrecognised**: the same f\* drives
+   ① laundering deterrence (**higher is better**) ② sybil-rotation deterrence, i.e. the
+   identity cost c_id (**higher**) ③ ★**onboarding friction** — what an honest newcomer
+   pays to obtain purchasing power (**lower is better**). ③ is decisive: [M-178] R-2
+   reframed the judgment market's value as concentrated in the **onboarding phase**
+   (23× in the early window), and raising f\* for ①② **taxes exactly that phase**.
+   ★**General structure**: **every sybil defence taxes onboarding** — there is no way to
+   stop sybils except by making new identities expensive, and **honest newcomers are new
+   too**. The axis to split on is **entry order** (first entry cheap, correlated repeat
+   entries expensive), but correlating identities is itself unsolved — a **harder
+   decomposition** than λ or d (declared).
+5. ⚠️★**τ's deterrence condition does not bind under rotation** (§7-3, closed form):
+   at k=1 the surcharge term is zero, **τ drops out**, and the condition becomes
+   **e·g > c_id** ⟹ the real dial is f\* (item 4). The mitigation (a cold-start
+   surcharge) pays item 4's price too. **Derivation, not measurement** — TE-SYBIL.
+6. ✅**κ — not over-loaded** (control case): it enters two mechanisms but in the **same
+   direction**, so no decomposition is needed. *The test is direction disagreement, not
+   how often a symbol appears.*
+
+Canonical source = `core/CONSTANTS_RESEARCH_2026-08-30.md` ([M-186] — full audit;
+this section is its summary).

@@ -53,7 +53,8 @@ announced as segments via `declare_version`.
   is public on both sides — against false-rework extortion I may apply a **buyer
   surcharge principle** (β > g/P with margin — the exact boundary leaks, [M-182];
   an advisory multiplier from rejection history,
-  `acceptance --beta`). The cost to honest rework demand is linearly bounded (β·r·P).
+  `acceptance --tau`). The cost to honest rework demand is linearly bounded (τ·r·P).
+  ⚠️τ is a different quantity from the collateral ratio β ([M-186] rename · UNDERWRITING §8-A).
 - ★**Judgment-settlement discipline** ([M-178], registered measurement): settlement or
   reward for judgment (evaluation without an agreed checker) must be **anchored to
   realized outcomes** (acceptance / rework history) — self-referential settlement
