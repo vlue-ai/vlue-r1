@@ -29,8 +29,8 @@
   "r1/CHECKER_PATTERNS.md": "a827a138530f41c59d9411e2695d48e29ac914155dc55e4e5572dbda1a38c7e3",
   "r1/replay_full.py": "510460c15563ba8e62a7662e2f54bfc62efc2cf6f3b3d62fa3d26cef1d5ab322",
   "r1/underwriter.py": "bee52df21fbf71805401e80933b654c21e66b1f2ec4e638f7b41b331dececeea",
-  "r1/UNDERWRITING.md": "533e2afab5ba49be0dba761d33d09d2e2b05aa806f9e63c21cd5fb182f6ec2f8",
-  "r1/UNDERWRITING_EN.md": "0829fcc39747bc1f28155669f01080d18ac7c18b3c601507affd75d0f870583c",
+  "r1/UNDERWRITING.md": "7192ff8d1f2ca17c6e493db12a60cffc96b2784480d1cdd90d19025dafb5373a",
+  "r1/UNDERWRITING_EN.md": "eeb0e176147cc72dbd52be36f15aa6b8889ebfe5a5a562f5e822305ea2375c55",
   "r1/erc8004_adapter.py": "f4a9e825d0f59390f7ef9b4dc1fc50ae19306a2a4791ce4b6d626864c24ea283"
  },
  "selftest": {

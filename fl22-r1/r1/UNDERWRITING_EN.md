@@ -303,7 +303,39 @@ same status as §6.
    **e·g > c_id**. ⟹ ★**the binding dial is not τ but the identity cost c_id** (= swap
    friction f\*). The natural mitigation, a cold-start surcharge on buyers with no
    history (the mirror of `family_prior` for anchors), **taxes honest new buyers**
-   (§8-D-5). ⚠️**This is a derivation, not a measurement** — registered as TE-SYBIL. The alternative, permanent exclusion above a
+   (§8-D-5).
+   ⚙️★★**[M-188] TE-SYBIL measured — the derivation became a lab measurement, and two
+   items changed** (`lab/prereg/TESYBIL_RESULT_2026-08-30.md` · 8 seeds · **this constant
+   system only**):
+   ⓐ**the condition itself is confirmed** — optimal **k = 1** holds across the whole τ range
+   (g/P, 2g/P, 10g/P), and only the **no-rotation** arm sees τ flip the sign
+   (excess +0.55 → −17.3 → −174.4). So *"τ ≥ g/P is the condition for when rotation is
+   expensive"* is now a **lab measurement**, no longer a derivation.
+   ⓑ⛔**"the remaining condition is e·g > c_id" was wrong** — the measured threshold is
+   **c_id\* = e·g + τ·r_t·P** (crossing error ≤7.4%; **3–7× higher** in this constant
+   system). A rotator escapes not only the extortion surcharge but also **the baseline
+   surcharge (τ·r_t) that honest reworkers pay** — the closed form counted only the
+   extortion-specific part. Deterring rotation through c_id therefore needs a far more
+   expensive identity, and since the extra term scales with τ, ★**the two deterrence dials
+   push against each other**.
+   ⓒ⚠️**τ does not merely fail to deter — it backfires**: measured against an honest,
+   non-rotating buyer, the rotator's excess **grows** with τ (23.8 → 30.1 → 97.7). Raising
+   τ taxes honest reworkers while increasing the rotator's relative advantage.
+   ⓓ**the mitigation's price is now quantified** — a cold-start surcharge τ₀ that cuts
+   extortion by **36%** costs **75 percentage points of honest newcomer participation**
+   (exchange rate: **2.14 pp per unit of deterrence**). "**Every sybil defense taxes
+   onboarding**" is a lab measurement, and read together with [M-178] R-2 (value
+   concentrates in the onboarding phase) it taxes the most valuable place.
+   ⓔ**the over-loading is 2-way, not 3-way** — laundering deterrence and rotation
+   deterrence share the same f\* argmax; only onboarding disagrees. One trade-off, not
+   three, which makes the design easier rather than harder.
+   ⟹ ★**practical guidance**: τ is a deterrent only in a world where rotation is expensive;
+   elsewhere it is **a tax on honest buyers**. Keep the advisory pricing layer
+   (`acceptance --tau`), but **do not raise τ to catch extortion** — it will not catch it,
+   and only the honest side pays more.
+   ⚠️**Status**: all of the above is **lab-measured** (this constant system, these bot
+   behaviors) and **not a real-environment measurement** (real-world c_id, r_t, τ remain
+   Tier E, unset — §8-B). The alternative, permanent exclusion above a
    rejection threshold, is absorbing-state dynamics: it eventually catches even
    below-threshold strategies, but **burns ~70% of honest surplus** indiscriminately
    (~1,100 vs ~2,400 under surcharge vs 4,000 with no policy) — **price is more
@@ -410,7 +442,12 @@ is that **no document records which side was sacrificed**.
 5. ⚠️★**τ's deterrence condition does not bind under rotation** (§7-3, closed form):
    at k=1 the surcharge term is zero, **τ drops out**, and the condition becomes
    **e·g > c_id** ⟹ the real dial is f\* (item 4). The mitigation (a cold-start
-   surcharge) pays item 4's price too. **Derivation, not measurement** — TE-SYBIL.
+   surcharge) pays item 4's price too.
+   ⚙️★**[M-188] TE-SYBIL measured**: the condition is **confirmed** (optimal k=1; sign flips
+   only without rotation), but the threshold is **e·g + τ·r_t·P, not e·g** (3–7×); the
+   over-loading is **2-way** (laundering and rotation agree on f\*; only onboarding
+   disagrees); mitigation exchange rate = **2.14 pp of honest newcomers per unit of
+   deterrence**. ⚠️Lab-measured (this constant system) — not a real-environment measurement.
 6. ✅**κ — not over-loaded** (control case): it enters two mechanisms but in the **same
    direction**, so no decomposition is needed. *The test is direction disagreement, not
    how often a symbol appears.*
