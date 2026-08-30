@@ -927,9 +927,10 @@ class World:
                 Ed25519PublicKey.from_public_bytes(op_pk).verify(
                     bytes.fromhex(e["head_sig"]),
                     FL22_DOMAIN + bytes.fromhex(e["head"]))
-            except (InvalidSignature, ValueError):
+            except (InvalidSignature, ValueError, TypeError):
+                # ★[M-190] null head_sig 등 비정형은 크래시가 아니라 ok:false(냉독 최대판)
                 return {"ok": False,
-                        "why": f"헤드 서명 불일치 seq {e.get('seq')}"}
+                        "why": f"헤드 서명 불일치/비정형 seq {e.get('seq')}"}
             prev = e["head"]
         return {"ok": True, "entries": len(entries),
                 "state_root": self.state_root(), "head": prev,

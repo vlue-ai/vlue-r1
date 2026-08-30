@@ -35,9 +35,10 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from sdk import Fl21Client                                         # noqa: E402
+from sdk import Fl21Client, canon, ACCEPT_DOMAIN               # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
-    Ed25519PrivateKey)
+    Ed25519PrivateKey, Ed25519PublicKey)
+from cryptography.exceptions import InvalidSignature               # noqa: E402
 
 
 DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
@@ -85,7 +86,12 @@ def _premium(c, ref, exposure, policy, ctx=None):
     floor = -(-exposure * policy["min_rate_bp"] // 10_000)
     sug = c.suggest_prem(ref)
     load = policy.get("loading_pct", 100)
-    if policy.get("family_prior") and ctx and "stats" in ctx:
+    # ★[M-190] family_prior 는 λ-결합 필수(냉독 최대판 — fam0 는 공격자 자유-텍스트):
+    # 무-이력 앵커가 좋은 가계와 **충돌 선언**해 싼 요율을 받는 것을, 문서가 약속한
+    # 「노출을 자기 이행-부피에 결박」(λ)으로 막아야 하는데 코드에 없었다. ⟹ trust_lambda
+    # 가 설정돼 노출이 자기-부피에 결박될 때만 가계-사전 할인을 준다(결합 강제).
+    if policy.get("family_prior") and policy.get("trust_lambda") is not None \
+            and ctx and "stats" in ctx:
         try:                                     # ★F-10 — 무-이력 앵커의 가계-사전
             j0 = ctx["job"]
             a0 = j0.get("anchor")
@@ -735,9 +741,47 @@ def acceptance(c, tau=None):
     구분 불가 — 갈취자는 **신원 회전으로 빠져나가고**([M-182] R-2 · 정량 미측정)
     정직 매수자는 못 빠져나간다. 분리 후속 = TE-SPLIT(선행 TE-SYBIL)."""
     rs = c._get("/accept")["records"]
+    # ★[M-190] 레코드 **서명 재검증**(냉독 최대판 — acceptance 가 sig 를 안 봤다):
+    # provenance 는 서명 사슬을 리플레이하는데 acceptance 는 노드가 준 레코드를 그냥
+    # 믿었다 ⟹ 악의 노드의 위조 레코드로 매수자-가격을 오도할 수 있었다. 매수자 pk 는
+    # JOIN 항에서 얻어 ACCEPT_DOMAIN 서명을 클라이언트-측에서 검증한다.
+    # ⚠️드롭된 레코드는 여전히 탐지 불가(오프-원장 TTL 저장소의 본질 — §7 고지).
+    pkmap = {}
+    try:
+        meta = c.meta
+        for k, h in (meta.get("genesis_pks") or {}).items():
+            pkmap[k] = Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
+        pkmap["operator"] = Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(meta["operator_pk"]))
+        seq = 0
+        while True:
+            page = c._get(f"/log?since={seq}")["entries"]
+            if not page:
+                break
+            for e in page:
+                env = e.get("env") or {}
+                if env.get("typ") == "JOIN":
+                    a_ = env.get("args") or {}
+                    pkmap[a_.get("principal")] = Ed25519PublicKey.from_public_bytes(
+                        bytes.fromhex(a_["pk"]))
+            seq = page[-1]["seq"] + 1
+    except Exception:
+        pkmap = None                         # 로그 접근 불가 = 검증 생략(폴백 표기)
     per_a, per_b = {}, {}
+    rejected = 0
     for r in rs:
         rec = r["rec"]
+        if pkmap is not None:                # ★서명 재검증(위조 레코드 거부)
+            pk = pkmap.get(rec.get("p"))
+            sig = r.get("sig")
+            if pk is None or not isinstance(sig, str):
+                rejected += 1
+                continue
+            try:
+                pk.verify(bytes.fromhex(sig), ACCEPT_DOMAIN + c.log_id + canon(rec))
+            except (InvalidSignature, ValueError, TypeError):
+                rejected += 1
+                continue
         try:
             j = c.job(rec["ref"])
         except Exception:
@@ -763,13 +807,17 @@ def acceptance(c, tau=None):
     return {"anchors": dict(sorted(per_a.items())),
             "buyers": dict(sorted(per_b.items())),
             "tau": tau,
+            "sig_verified": pkmap is not None,      # ★[M-190] 서명 재검증 여부
+            "sig_rejected": rejected,               # 위조/미검증 레코드 수(>0 = 노드 의심)
             "note": ("수락-집계 — 양측 대칭 기록 = 갈취-레버 차단([M-178] D-5) · "
                      "taste_residual = 일치-후-재작업(검증과 별개 2차-이력) · "
                      "★가격-결합([M-181]): 조건 = 양측-기록 ∧ 매수자-할증 τ ≥ g/P"
                      "(LSTASTE2 E1~3) — surcharge_mult는 권고(자문-가격층·정산 무접촉)"
                      " · ⚠️τ는 담보비율 β와 다른 양이다[M-186 개명 · §8-A] · "
                      "⚠️오조준 과-적재 등재: 갈취자는 신원 회전으로 빠져나간다"
-                     "[M-182 R-2 미측정]")}
+                     "[M-182 R-2 미측정] · ⚠️★오프-원장 record-only: 레코드 서명은 재검증하나"
+                     "(위조 거부) **드롭된 레코드는 탐지 불가**(TTL 저장소 본질) ⟹ "
+                     "acceptance 수치는 자문이지 온-원장 「위조 불가」 이력이 아니다[M-190]")}
 
 
 def make_cover_leg(c, ref, prem):

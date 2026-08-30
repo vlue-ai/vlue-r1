@@ -626,8 +626,9 @@ class Fl21Client:
             try:
                 op_pk.verify(bytes.fromhex(e["head_sig"]),
                              DOMAIN + bytes.fromhex(e["head"]))
-            except (InvalidSignature, ValueError):
-                return {"ok": False, "why": f"운영자 서명 위조 seq {e['seq']}"}
+            except (InvalidSignature, ValueError, TypeError):
+                # ★[M-190] null head_sig 등 비정형은 크래시가 아니라 ok:false(냉독 최대판)
+                return {"ok": False, "why": f"운영자 서명 위조/비정형 seq {e['seq']}"}
             r = cos.get(e["seq"])
             good = 0
             if r and r["head"] == e["head"]:

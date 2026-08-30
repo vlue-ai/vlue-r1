@@ -186,6 +186,17 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
 canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = "FL22-v0.1" + 7×0x00`,
 canonical_json = UTF-8·키 정렬·구분자 `,`/`:`·★**비-ASCII 이스케이프 안 함**(`ensure_ascii=False` — ⚙️[M-189] 명시: 이게 없으면 board `detail`·accept `note` 등 **비-ASCII 필드의 서명이 거부**된다). `sdk.py`가 참조 구현입니다.
+
+⚙️★**[M-190] 전송 봉투(wire)와 연산별 args**(자체 구현자용 — 문서만으로 이행 가능하게):
+전송 객체 = `{typ, args, p, epoch, nonce, sig}`(서명은 위 preimage) · `epoch` = GET `/state.epoch` ·
+`nonce` = GET `/nonce/{p}`(정수 반환) · pk 는 hex64 · JOIN = `{principal, pk}`.
+연산별 `args`(키 정확):
+- `XFER` = `{frm, to, note}` · `SPLIT` = `{owner, note, parts:[…]}` · `MERGE` = `{owner, notes:[…]}`
+- `REDEEM` = `{holder, note, anchor[, T]}`(색-일치: 노트는 발행자에게만) · `REDEEM_CANCEL` = `{holder, ref}`
+- `DELIVER` = `{anchor, ref}` → 산출은 kind별(sha256_chain = hex · sampled = `{final, ckpts:[…]}` ·
+  pycheck/pyjudge = solution_b64 · ed25519_verify = `{msg_b64, sig}`) · `EXIT` = `{a}`
+- `ISSUE`(회전-발행) = `{issuer, amount}` · `TICKMARK` = `{kind, …}` · `UW`(커버) = `/block` 원자 다리로만
+⚠️★**BLOCK(원자 다리)은 `/block` 전용**(`/submit` 불가 — [M-190]): 다리별 가드 경유. `submit_block(legs)` 참조.
 호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL22-BOARD" ‖ log_id ‖
 canonical_json(본문) )` — nonce 없음(멱등 재게시 = 같은 id · 만료가 수명을 결박).
 수락-채널 게시도 같은 골격, 도메인 `"FL22-ACPT"`(본문 = {ref, p, verdict, note, expires}).

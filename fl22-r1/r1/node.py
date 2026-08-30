@@ -47,6 +47,11 @@ COSIGN_K = 2
 _PNAME = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 BOOT_CAP = 8                         # ★[M-103] 상호-신용 스왑 상한(주체당 · anchor0-IOU)
 BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다리만
+OCOMMIT_CAP = 64                      # ★[M-190] ref당 ocommit(재추첨) 상한 —
+# C-2 변종(냉독 최대판): 유효-서명 앵커가 틀린 산출로 /deliver 를 재생하면 매번
+# ocommit 이 원장에 남는다(nonce 미소비 · deep-verify 실패는 롤백 안 됨). C-2 로
+# 제3자는 차단됐고 이제 「앵커 자기-그리핑」인데, 공유 원장 비대는 유계화해야 한다.
+# M-164 그라인딩-탐지(재추첨 공개-계수)는 보존하되 ref당 상한을 둔다(정상 이행 = 1회).
 # ── ★호가 창(R2-a — [M-116] /scope 성장판 · [시장-미시구조 §6] 최소 발견층) ──
 # 게시판 = **오프-원장** 서명 봉투(비용 ~0 · seq 무접촉 · 매칭·정산은 온-원장 그대로).
 # 도메인 분리: 게시 서명은 원장 봉투로 재생 불가(역방향도) — 별도 도메인 + log_id 결박.
@@ -496,6 +501,13 @@ class Node:
                 raise Fl21Error(
                     f"EXIT: 유통 중인 자기-색 발행부채 {out}(먼저 상환/소각·회수 — "
                     "유통 노트의 상환-불능 방기 방지)")
+        if typ == "BLOCK":
+            # ★[M-190] CRITICAL — BLOCK 은 **/block 전용**이다: `block()`이 다리마다
+            # `_guard_env`+BLOCK_LEG_TYPES+scope 를 강제한다. `/submit`(→submit→여기)로
+            # BLOCK 봉투를 넣으면 이 함수가 최상위 typ 만 봐서 **다리가 무가드**로 커널행
+            # ⟹ 색-라우팅·EXIT-부채·scope 우회(무고한 앵커를 미이행-사건 피고로 만들기 ·
+            # 냉독 최대판 재현). 정상 내부 BLOCK 은 `_ksubmit` 직행이라 여기 안 온다.
+            raise Fl21Error("BLOCK 은 /block 전용(원자 다리별 가드 경유 — /submit 불가)")
         if typ in ("OPEN", "CLOSE", "EXT_IN_POOL"):
             raise Fl21Error(f"{typ}: r1 표면 밖(색-추적 불가 연산)")
 
@@ -980,6 +992,9 @@ class Node:
         ref = (env.get("args") or {}).get("ref")
         j = self.jobs.get(ref)
         spec = j["job"]
+        if self.ocommits.get(ref, 0) >= OCOMMIT_CAP:   # ★[M-190] 재생-증폭 유계화
+            raise Fl21Error(f"ocommit 상한 {OCOMMIT_CAP} 초과 — 재추첨 한도"
+                            "(정상 이행 1회 · 반복 실패는 산출-그라인딩)")
         osha = hashlib.sha256(_canon(output)).hexdigest()
         tm = self.w.sign_env("operator", "TICKMARK",
                              {"kind": "fl21.ocommit", "ref": ref,

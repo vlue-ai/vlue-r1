@@ -1228,11 +1228,19 @@ def gate_TCOVER(port=8799):
         na.xfer("cvh3", n["nid"])
     j8 = h3.redeem_job("cvna", nid8, seed="aa" * 4, n=500)
     sc_np = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0})
-    sc_fp = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
-                          "family_prior": True})
     p_np = next(cd["prem"] for cd in sc_np["candidates"] if cd["ref"] == j8["ref"])
-    p_fp = next(cd["prem"] for cd in sc_fp["candidates"] if cd["ref"] == j8["ref"])
-    out["★가계-사전 완화"] = p_fp < p_np
+    # ★[M-190] family_prior 보안 속성(냉독 최대판 — fam0 는 공격자 자유-텍스트):
+    # ⓐλ 없이는 가계-사전 할인 무효(결합 강제) ⓑλ 결합 시 무-이력 앵커(own-vol 0)의
+    # 대형-노출은 λ×0=0 으로 걸러진다 ⟹ 「가짜 가계 충돌로 대형 싼 커버」 봉쇄.
+    sc_nl = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                          "family_prior": True})
+    p_nl = next(cd["prem"] for cd in sc_nl["candidates"] if cd["ref"] == j8["ref"])
+    out["★λ 없으면 family_prior 무효(결합 강제)"] = p_nl == p_np
+    sc_fp = UWT.scan(u3, {"min_rate_bp": 0, "family_herf_max": 1.0,
+                          "family_prior": True, "trust_lambda": 10.0})
+    fp_cand = [cd for cd in sc_fp["candidates"] if cd["ref"] == j8["ref"]]
+    out["★λ 결합 시 무-이력 대형-노출 차단"] = (
+        not fp_cand or fp_cand[0]["exposure"] <= 1)
     # ── ★E-1([M-172]) cascade — 폐형-사영 = 커널 정산 실측(층별 정확 일치) ──
     #    격리: 앞선 열린 청구 전량 flush → cvna(잔고 0 = 부재-동형) 단독 부보-청구 →
     #    성숙 전 cascade(freeze) 사영 = 정산 후 /stats.loss 층별 증분(정확 일치).
@@ -2555,6 +2563,136 @@ def gate_TDELTALIEN(port=8832):
     return out
 
 
+def gate_TBLOCKGUARD(port=8833):
+    """★[M-190] CRITICAL — BLOCK 봉투는 /submit 로 못 들어간다(다리 무가드 우회 봉합).
+    정상 /block 은 유지 · BLOCK-via-/submit 은 거부 · 색-라우팅 우회 불가."""
+    out = {}
+    nd, srv, data = _serve(port)
+    victim = _client(port, "victim", data); victim.join()
+    bb = _client(port, "bb", data); bb.join()
+    holder = _client(port, "holder", data); holder.join()
+    subm = _client(port, "subm", data); subm.join()
+    bb.split(bb.notes()[0]["nid"], [1, 19])
+    bb.xfer("holder", [n["nid"] for n in bb.notes() if n["face"] == 1][0])
+    nid = holder.notes_of("bb")[0]["nid"]
+    # BLOCK-via-/submit 로 색-라우팅 우회(bb-노트 → victim) 시도
+    leg = holder.sign_env("REDEEM", {"holder": "holder", "note": nid, "anchor": "victim"})
+    blk = subm.sign_env("BLOCK", {"legs": [leg]})
+    try:
+        subm._post("/submit", {"env": blk})
+        out["★BLOCK-via-/submit 거부"] = False
+    except RuntimeError as e:
+        out["★BLOCK-via-/submit 거부"] = "/block 전용" in str(e)
+    out["우회 미발생(redeem_pending victim 없음)"] =         "victim" not in [v.get("anchor") for v in nd.w.redeem_pending.values()]
+    # 정상 /block XFER 은 유지
+    aa = _client(port, "aa", data); aa.join()
+    aa.split(aa.notes()[0]["nid"], [5, 15])
+    xnid = [n["nid"] for n in aa.notes() if n["face"] == 5][0]
+    r = aa.submit_block([aa.make_leg("XFER", {"frm": "aa", "to": "bb", "note": xnid})])
+    out["정상 /block 유지"] = bool(r.get("seq"))
+    out["원장 무오염"] = nd.audit()["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TOCOMMITCAP(port=8834):
+    """★[M-190] C-2 변종 — ref당 ocommit 상한(재생-증폭 유계화)."""
+    import urllib.request, urllib.error
+    out = {}
+    nd, srv, data = _serve(port, unit_scale=1000, genesis_issue=40000, join_issue=20000)
+    buyer = _client(port, "buyer", data); buyer.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]; wk.split(g["nid"], [1000, g["face"] - 1000])
+    wk.xfer("buyer", [x for x in wk.notes() if x["face"] == 1000][0]["nid"])
+    nid = [x for x in buyer.notes_of("anchor0") if x["face"] == 1000][0]["nid"]
+    ref = buyer.redeem_job("anchor0", nid, seed="aa" * 8, n=1000,
+                           kind="sha256_chain_sampled")["ref"]
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    akey = Fl21Client.__new__(Fl21Client); akey.p = "anchor0"
+    akey.base = f"http://127.0.0.1:{port}"
+    akey.key = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(open(os.path.join(data, "anchor0.key")).read().strip()))
+    akey.log_id = buyer.log_id
+    n0 = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/nonce/anchor0").read())["nonce"]
+    body = {"typ": "DELIVER", "args": {"ref": ref}, "p": "anchor0",
+            "epoch": buyer.state()["epoch"]}
+    sig = akey.key.sign(DOMAIN + buyer.log_id + canon(body)
+                        + int(n0).to_bytes(8, "big")).hex()
+    fake = {"final": "ab" * 32, "ckpts": ["ab" * 32] * (-(-1000 // JOBS.CKPT))}
+    CAP = NODE.OCOMMIT_CAP
+    for _ in range(CAP + 10):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/deliver",
+            data=json.dumps({"env": {**body, "nonce": n0, "sig": sig}, "output": fake}).encode(),
+            method="POST", headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+        except urllib.error.HTTPError:
+            pass
+    oc = buyer.job(ref).get("ocommits", 0)
+    out["★ocommit 상한에서 멈춤"] = oc <= CAP
+    out["원장 무오염"] = nd.audit()["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TNULLSIG(port=8835):
+    """★[M-190] null/빈 head_sig 는 크래시가 아니라 ok:false(검증 도구 견고성)."""
+    import copy
+    out = {}
+    nd, srv, data = _serve(port)
+    c = _client(port, "ns", data); c.join()
+    c.split(c.notes()[0]["nid"], [5, 15])
+    with nd.lock:
+        nd.tick()
+    meta = c._get("/meta")
+    log, s0 = [], 0
+    while True:
+        pg = c._get(f"/log?since={s0}")["entries"]
+        if not pg:
+            break
+        log += pg; s0 = pg[-1]["seq"] + 1
+    for label, mut in (("null", None), ("empty", "")):
+        bad = [{**e, "head_sig": mut} for e in copy.deepcopy(log)]
+        w = World.from_public({"operator": meta["operator_pk"],
+                               **(meta.get("genesis_pks") or {})},
+                              meta["label"], tuple(meta["genesis"]),
+                              gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
+        try:
+            r = w.replay_verify(bad)
+            out[f"{label} head_sig → ok:false(무크래시)"] = r["ok"] is False
+        except Exception:
+            out[f"{label} head_sig → ok:false(무크래시)"] = False
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TACCEPTSIG(port=8836):
+    """★[M-190] acceptance 가 위조 수락-레코드를 서명 재검증으로 거부."""
+    out = {}
+    nd, srv, data = _serve(port)
+    buyer = _client(port, "buyer", data); buyer.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]; wk.split(g["nid"], [5, g["face"] - 5])
+    wk.xfer("buyer", [x for x in wk.notes() if x["face"] == 5][0]["nid"])
+    nid = [x for x in buyer.notes_of("anchor0") if x["face"] == 5][0]["nid"]
+    ref = buyer.redeem_job("anchor0", nid, seed="aa" * 8, n=1000)["ref"]
+    sp = buyer.job(ref)["job"]
+    wk.deliver_job(ref, JOBS.compute(sp["kind"], sp["seed"], sp["n"]))
+    uwr = _client(port, "uwr", data); uwr.join()
+    # 위조 레코드 주입(악의 노드 흉내)
+    nd.accepts["FORGED"] = {"id": "FORGED", "rec": {"ref": ref, "p": "buyer",
+        "verdict": "rework", "note": "x", "expires": nd.w.epoch + 10}, "sig": "00" * 64}
+    r = UWT.acceptance(uwr)
+    out["★위조 레코드 거부(sig_rejected>0)"] = r.get("sig_rejected", 0) >= 1
+    out["서명 재검증 켜짐"] = r.get("sig_verified") is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -2583,7 +2721,11 @@ def main():
              "T-PROV 출처계기": gate_TPROV(),
              "T-UNSIGNED 서명부재-거부(C-1)": gate_TUNSIGNED(),
              "T-DELIVERAUTH ocommit-전 인가(C-2)": gate_TDELIVERAUTH(),
-             "T-DELTALIEN δ-무담보-보수(C-3)": gate_TDELTALIEN()}
+             "T-DELTALIEN δ-무담보-보수(C-3)": gate_TDELTALIEN(),
+             "T-BLOCKGUARD BLOCK-가드(CRIT)": gate_TBLOCKGUARD(),
+             "T-OCOMMITCAP ocommit-상한(C-2v)": gate_TOCOMMITCAP(),
+             "T-NULLSIG null-head_sig 견고성": gate_TNULLSIG(),
+             "T-ACCEPTSIG 수락-서명 재검증": gate_TACCEPTSIG()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

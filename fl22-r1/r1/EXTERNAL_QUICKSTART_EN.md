@@ -214,6 +214,17 @@ Envelope signature format (if you want to implement it yourself):
 `Ed25519( DOMAIN ‖ log_id ‖ canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`,
 `DOMAIN = "FL22-v0.1" + 7×0x00`, canonical_json = UTF-8 · sorted keys · ★**non-ASCII NOT escaped** (`ensure_ascii=False` — ⚙️[M-189]: without this, signatures over non-ASCII fields like board `detail` / accept `note` are rejected) · separators
 `,`/`:`. `sdk.py` is the reference implementation.
+
+⚙️★**[M-190] Wire envelope and per-operation args** (so self-implementers can act from docs alone):
+wire object = `{typ, args, p, epoch, nonce, sig}` (sig over the preimage above) · `epoch` = GET `/state.epoch` ·
+`nonce` = GET `/nonce/{p}` (returns an int) · pk is hex64 · JOIN = `{principal, pk}`.
+Per-operation `args` (exact keys):
+- `XFER` = `{frm, to, note}` · `SPLIT` = `{owner, note, parts:[…]}` · `MERGE` = `{owner, notes:[…]}`
+- `REDEEM` = `{holder, note, anchor[, T]}` (color-routing: a note redeems only to its issuer) · `REDEEM_CANCEL` = `{holder, ref}`
+- `DELIVER` = `{anchor, ref}` → output is kind-specific (sha256_chain = hex · sampled = `{final, ckpts:[…]}` ·
+  pycheck/pyjudge = solution_b64 · ed25519_verify = `{msg_b64, sig}`) · `EXIT` = `{a}`
+- `ISSUE` (rotating issuance) = `{issuer, amount}` · `TICKMARK` = `{kind, …}` · `UW` (cover) = atomic leg via `/block` only
+⚠️★**BLOCK (atomic legs) is `/block`-only** (not `/submit` — [M-190]): per-leg guarding. See `submit_block(legs)`.
 Board posts sign under a DIFFERENT domain (cross-replay firewall):
 `Ed25519( "FL22-BOARD" ‖ log_id ‖ canonical_json(body) )`
 Acceptance-channel posts use the same skeleton under domain `"FL22-ACPT"`
