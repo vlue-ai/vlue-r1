@@ -96,6 +96,18 @@ by a single byte** (verified by full-ledger replay).
   (this very ledger was born that way — see the `bridge_ref` row in RELEASE). Whether a
   successor world honors predecessor track records is that world's policy; the `/attest`
   documents above are the verifiable raw material for such recognition.
+- ⚠️★**Key compromise is answered by succession, not rotation** (a known v0 limit,
+  stated rather than hidden): this kernel has **no REKEY operation**, a principal's public
+  key is bound in the registry **exactly once** (re-registration is refused), and a
+  **single public key verifies that principal's entire history**. Therefore, if the
+  operator key or a genesis anchor key leaks, **this ledger cannot be repaired and
+  continued** — the only path is to publish the compromise and create a **new world** via
+  the succession path above (`bridge_ref` binding + a new `log_id`). What this means for
+  participants: ⓐ keep `/attest` copies **in advance** — they are the raw material for
+  track-record recognition in a successor world; ⓑ do not trust signatures dated **after**
+  a published compromise (history before that point remains independently verifiable via
+  the confirmed head and the co-signer cursor). A per-sequence key schedule (`from_seq`)
+  is a **kernel change** and is therefore deferred to the next generation (FL2.3).
 - ⚠️**Honest limits**: ⓐ notes are their issuer's fulfillment-debt — if an issuer
   (including the operator) disappears, notes of that color become irredeemable (they are
   not a successor world's obligation) ⓑ this section publishes a procedure; it does

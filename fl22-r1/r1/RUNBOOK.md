@@ -20,6 +20,16 @@ python3 r1/node.py --data /var/fl21 --port 8788 \
 # 창세 의식 후: cosign2.key·cosign3.key를 별도 호스트로 **이동**(원본 삭제) → 노드 재기동
 python3 r1/node.py --data /var/fl21 --port 8788 --cosign-local cosign1 \
   --auto-tick 60 --rate-limit 50 --trust-forwarded   # ★공개 노드 = rate-limit 필수(D-6)
+  --verify-slots 2 --verify-wait 1 --challenge-budget 20   # ★[M-188] H-1 재검증 유계화
+
+⚠️★**플래그 둘은 「있으면 좋은 것」이 아니라 가드의 전제다**(⚙️[M-188] 적대 배터리 A-4·A-6이 실측으로 노출):
+- **`--auto-tick`이 없으면 외부 `/tick`이 열린다**(SEC-1 가드는 `own_clock = auto_tick > 0`
+  조건부 — 자기 시계가 없는 노드는 누군가 밀어야 하므로 **설계된 동작**이다). 공개 노드는
+  반드시 켠다.
+- **`--trust-forwarded`는 「유일 경로 = 신뢰 프록시」가 전제다** — 그 전제가 깨진 형상
+  (직접 노출)에서 켜면 `X-Forwarded-For` 스푸핑이 유량 버킷을 무한 분할한다.
+  프록시/터널 뒤가 아니면 **끈다**(배터리 대조군: 끄면 스푸핑 무효).
+- ⟹ 단독 `docker run` 대신 **compose 형상**을 쓴다(플래그 누락 부류 예방).
 # 각 서명자 호스트에서(★URL = TLS 프록시의 공개 주소 — 노드 기본 바인드는 127.0.0.1):
 python3 r1/cosigner.py --url https://DOMAIN --name cosign2 --key cosign2.key --poll 5
 python3 r1/cosigner.py --url https://DOMAIN --name cosign3 --key cosign3.key --poll 5

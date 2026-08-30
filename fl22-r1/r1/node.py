@@ -1385,8 +1385,22 @@ class Handler(BaseHTTPRequestHandler):
     rate_limit = 0                    # ★D-6 — 초당 요청 상한/IP(0 = 끔 · 배포 시 켬)
     trust_forwarded = False           # ★D-5 — 프록시 뒤에서만 X-Forwarded-For 신뢰
     join_per_ip = 0                   # ★REACH-3 — join 상한/IP(0 = 끔 · 시빌 속도 제어)
+    # ── ★H-1([M-188] RISK-1 경화) — 락-밖 재실행의 자원 유계화 ──────────────
+    # 무거운 경로 둘(/challenge 재검증 · /deliver 산출 검증)은 **락 밖**에서 요청자
+    # 코드를 서브프로세스로 재실행한다(`jobs.py` PY_TIMEOUT 10 CPU초·RLIMIT_AS 512MB).
+    # ⚠️구멍의 실체: `join_per_ip` 는 **가입**을 제한하지 **챌린지**를 제한하지 않고,
+    # 동시 재실행 수에는 상한이 아예 없었다 — 가입 주체 하나가 rate_limit 까지 난타하면
+    # 서브프로세스가 무계로 쌓인다(단일 시퀀서라 노드 소진 = 시스템 전체 정지).
+    # ⟹ 다이얼 둘: ⓐ주체당 창-예산(신원 하나를 무한 재사용 못 하게)
+    #              ⓑ★전역 동시-재실행 슬롯(락-밖 처리의 대가를 유계화 — 포화 = 503)
+    challenge_budget = 0              # 주체당 창-당 챌린지 상한(0 = 끔 · 배포 시 켬)
+    challenge_window = 60             # 그 예산의 창(초)
+    verify_slots = 0                  # 동시 재실행 상한(0 = 끔 · 배포 시 켬)
+    verify_wait = 5.0                 # 슬롯 대기 상한(초) — 초과 = 503(대기도 자원이다)
     _buckets = {}
     _joins = {}                       # IP → join 수(프로세스 수명 · nd.lock 안에서만 접근)
+    _chal = {}                        # 주체 → (창 시작, 사용량) — ★H-1ⓐ
+    _slots = None                     # BoundedSemaphore | None — ★H-1ⓑ
     _block = threading.Lock()
 
     def _peer(self):
@@ -1419,6 +1433,69 @@ class Handler(BaseHTTPRequestHandler):
                 return False
             self._buckets[ip] = (tok - 1, now)
             return True
+
+    # ── ★H-1ⓐ 주체당 챌린지 예산 ──────────────────────────────────────────
+    def _chal_budget_ok(self, p):
+        """★H-1([M-188]) — 주체당 창-예산. ⚠️**서명 검증 뒤에만** 부른다:
+        검증 전에 깎으면 위조 p 로 **남의 예산을 소진**시킬 수 있다(갈취-레버)."""
+        if self.challenge_budget <= 0 or not isinstance(p, str):
+            return True
+        now, w = time.monotonic(), float(self.challenge_window or 60)
+        with self._block:
+            start, used = Handler._chal.get(p, (now, 0))
+            if now - start >= w:                      # 창 갱신
+                start, used = now, 0
+            if len(Handler._chal) > 4096:             # 유휴 축출(무한 증가 방지)
+                for k in [k for k, (s, _u) in Handler._chal.items()
+                          if now - s > w * 2]:
+                    del Handler._chal[k]
+            if used >= self.challenge_budget:
+                Handler._chal[p] = (start, used)
+                return False
+            Handler._chal[p] = (start, used + 1)
+            return True
+
+    # ── ★H-1ⓑ 전역 동시-재실행 슬롯 ───────────────────────────────────────
+    def _slot_acquire(self):
+        """포화면 False(= 503). 대기 상한을 두는 이유: 무한 대기는 스레드를 쌓아
+        같은 소진을 다른 자원(스레드·소켓)으로 옮길 뿐이다."""
+        sem = Handler._slots
+        return True if sem is None else sem.acquire(timeout=self.verify_wait)
+
+    def _slot_release(self):
+        if Handler._slots is not None:
+            Handler._slots.release()
+
+    _BUSY = {"error": "재검증 용량 포화 — 잠시 후 재시도(H-1 동시-재실행 상한)"}
+
+    def _deliver(self, nd, env, output):
+        """★B2 이행 경로(로직 무변경 — ★H-1 슬롯 안에서 돌도록 분리만 했다).
+        1) 락 안 짧게: 잡 확인·스펙 복사 2) 락 밖: 무거운 검증 3) 락 안: 커널 커밋."""
+        with nd.lock:             # 1) 짧게: 잡 확인·스펙 복사
+            spec = nd.deliver_lookup(env)
+            idxs = None
+            if spec["kind"] == "sha256_chain_sampled":
+                # ★[M-165] R4-1 — 형식-사전검사(암호-무·락 안 짧게):
+                # 쓰레기-형식이 무-비용으로 ocommit 원장-비대를 만들지 못하게
+                pok, pwhy = JOBS.precheck_sampled(spec, output)
+                if not pok:
+                    raise Fl21Error(f"산출 검증 실패 — 이행 불인정"
+                                    f"({pwhy.get('why', '형식')})")
+                # ★[M-164] 커밋-표본: 커밋 랜딩 후 head-유도 인덱스로 검증
+                idxs, cseq = nd.ocommit_and_derive(env, output)
+        if idxs is not None:      # 2) 락 밖: 유도-표본으로 무거운 검증
+            ok, detail = JOBS.verify_output(spec, output, idxs=idxs)
+            if ok:
+                detail["ocommit_seq"] = cseq
+                detail["sample"] = "ledger-derived"
+        else:
+            ok, detail = JOBS.verify_output(spec, output)
+        if not ok:
+            raise Fl21Error(
+                f"산출 검증 실패 — 이행 불인정({detail.get('why', '불일치')})")
+        with nd.lock:             # 3) 짧게: 재확인 후 커널 커밋
+            return self._send(200, nd.deliver_commit(env, output, detail))
+
 
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -1540,34 +1617,29 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/deliver":       # ★B2 — 검증(서브프로세스·재해시)은 락 밖에서
                 env = body.get("env")
                 output = body.get("output", "")
-                with nd.lock:         # 1) 짧게: 잡 확인·스펙 복사
-                    spec = nd.deliver_lookup(env)
-                    idxs = None
-                    if spec["kind"] == "sha256_chain_sampled":
-                        # ★[M-165] R4-1 — 형식-사전검사(암호-무·락 안 짧게):
-                        # 쓰레기-형식이 무-비용으로 ocommit 원장-비대를 만들지 못하게
-                        pok, pwhy = JOBS.precheck_sampled(spec, output)
-                        if not pok:
-                            raise Fl21Error(f"산출 검증 실패 — 이행 불인정"
-                                            f"({pwhy.get('why', '형식')})")
-                        # ★[M-164] 커밋-표본: 커밋 랜딩 후 head-유도 인덱스로 검증
-                        idxs, cseq = nd.ocommit_and_derive(env, output)
-                if idxs is not None:  # 2) 락 밖: 유도-표본으로 무거운 검증
-                    ok, detail = JOBS.verify_output(spec, output, idxs=idxs)
-                    if ok:
-                        detail["ocommit_seq"] = cseq
-                        detail["sample"] = "ledger-derived"
-                else:
-                    ok, detail = JOBS.verify_output(spec, output)
-                if not ok:
-                    raise Fl21Error(
-                        f"산출 검증 실패 — 이행 불인정({detail.get('why', '불일치')})")
-                with nd.lock:         # 3) 짧게: 재확인 후 커널 커밋
-                    return self._send(200, nd.deliver_commit(env, output, detail))
+                # ★H-1ⓑ — 슬롯을 **상태 변경 전에** 잡는다: ocommit(원장 기입)이
+                # 먼저 랜딩한 뒤 포화로 되돌리면 고아 커밋이 남는다.
+                if not self._slot_acquire():
+                    return self._send(503, self._BUSY)
+                try:
+                    return self._deliver(nd, env, output)
+                finally:
+                    self._slot_release()
             if p == "/challenge":     # ★P-11([M-126]) — 재검증도 락 밖(B2 동형)
-                with nd.lock:
+                with nd.lock:         # 1) 짧게: 서명 검증 + 스펙·산출 스냅숏
                     spec, output = nd.challenge_lookup(body)
-                okv, detail = JOBS.verify_output(spec, output)
+                # ★H-1ⓐ — 예산은 **서명 검증 뒤에** 깎는다(위조 p 로 남의 예산 소진 방지)
+                if not self._chal_budget_ok(body.get("p")):
+                    return self._send(429, {
+                        "error": f"챌린지 예산 초과 — 주체당 "
+                                 f"{self.challenge_budget}건/{self.challenge_window}초"
+                                 f"(H-1 재검증 예산)"})
+                if not self._slot_acquire():          # ★H-1ⓑ
+                    return self._send(503, self._BUSY)
+                try:
+                    okv, detail = JOBS.verify_output(spec, output)
+                finally:
+                    self._slot_release()
                 with nd.lock:
                     return self._send(200, nd.challenge_commit(body, okv,
                                                                detail))
@@ -1632,7 +1704,9 @@ class Handler(BaseHTTPRequestHandler):
 def serve(data_dir, port, auto_tick=0, join_issue=20, bind="127.0.0.1",
           rate_limit=0, genesis_issue=40, bootstrap_cap=BOOT_CAP,
           cosign_local=None, bridge_ref=None, trust_forwarded=False,
-          join_per_ip=0, unit_scale=1):
+          join_per_ip=0, unit_scale=1,
+          challenge_budget=0, challenge_window=60,
+          verify_slots=0, verify_wait=5.0):
     nd = Node(data_dir, join_issue=join_issue, genesis_issue=genesis_issue,
               bootstrap_cap=bootstrap_cap, cosign_local=cosign_local,
               bridge_ref=bridge_ref, unit_scale=unit_scale)
@@ -1642,6 +1716,14 @@ def serve(data_dir, port, auto_tick=0, join_issue=20, bind="127.0.0.1",
     Handler.rate_limit = rate_limit   # ★D-6
     Handler.join_per_ip = int(join_per_ip)   # ★REACH-3 — 시빌 속도 제어
     Handler._joins = {}
+    # ★H-1([M-188]) — 락-밖 재실행의 유계화(0 = 끔 · 배포 시 켬)
+    Handler.challenge_budget = int(challenge_budget)
+    Handler.challenge_window = float(challenge_window or 60)
+    Handler.verify_slots = int(verify_slots)
+    Handler.verify_wait = float(verify_wait)
+    Handler._chal = {}
+    Handler._slots = (threading.BoundedSemaphore(int(verify_slots))
+                      if int(verify_slots) > 0 else None)
     srv = ThreadingHTTPServer((bind, port), Handler)   # ★D-5 — 바인딩 선택
     if auto_tick > 0:
         def _tk():
@@ -1678,13 +1760,25 @@ def main():
                     help="join 상한/IP(0 = 끔 · ★공개 초기 = 시빌 속도 제어 REACH-3)")
     ap.add_argument("--unit-scale", type=int, default=1,
                     help="1 AU = 이만큼 기본단위([M-127] — 프로덕션 1000 = mAU)")
+    # ★H-1([M-188] RISK-1) — 재검증 자원 유계화(0 = 끔 · ⚠️배포에서 반드시 켠다)
+    ap.add_argument("--challenge-budget", type=int, default=0,
+                    help="주체당 창-당 챌린지 상한(0 = 끔 · H-1ⓐ)")
+    ap.add_argument("--challenge-window", type=float, default=60,
+                    help="그 예산의 창(초 · 기본 60)")
+    ap.add_argument("--verify-slots", type=int, default=0,
+                    help="동시 재실행 상한(0 = 끔 · H-1ⓑ — 포화 = 503)")
+    ap.add_argument("--verify-wait", type=float, default=5.0,
+                    help="슬롯 대기 상한(초) — 초과 = 503(대기도 자원이다)")
     a = ap.parse_args()
     nd, srv = serve(a.data, a.port, a.auto_tick, a.join_issue,
                     bind=a.bind, rate_limit=a.rate_limit,
                     genesis_issue=a.genesis_issue, bootstrap_cap=a.bootstrap_cap,
                     cosign_local=tuple(x for x in a.cosign_local.split(",") if x),
                     bridge_ref=a.bridge_ref, trust_forwarded=a.trust_forwarded,
-                    join_per_ip=a.join_per_ip, unit_scale=a.unit_scale)
+                    join_per_ip=a.join_per_ip, unit_scale=a.unit_scale,
+                    challenge_budget=a.challenge_budget,
+                    challenge_window=a.challenge_window,
+                    verify_slots=a.verify_slots, verify_wait=a.verify_wait)
     print(json.dumps({"r1": "up", "port": a.port, "seq": len(nd.w.log),
                       "epoch": nd.w.epoch, "audit": nd.audit()["ok"]},
                      ensure_ascii=False), flush=True)

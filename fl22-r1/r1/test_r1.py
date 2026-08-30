@@ -1641,6 +1641,104 @@ def gate_TCHALLENGE(port=8816):
     return out
 
 
+def gate_TEXHAUST(port=8836):
+    """★H-1([M-188] RISK-1 경화) — 락-밖 재실행의 자원 유계화.
+    구멍의 실체는 「join_per_ip 는 **가입**을 제한하지 **챌린지**를 제한하지 않고,
+    동시 재실행 수에는 상한이 아예 없었다」였다. 두 다이얼을 **양성 + 음성 대조**로
+    잰다(⚠️[M-149] 교훈 — 검사기 자신의 침묵-실패를 막으려면 「끄면 안 잡힌다」까지
+    확인해야 한다)."""
+    out = {}
+    nd, srv, data = _serve(port, challenge_budget=2, challenge_window=60,
+                           verify_slots=1, verify_wait=0.3)
+    c = _client(port, "ex", data)
+    c.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}",
+                      os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]["nid"]
+    wk.split(g, [1, 1, 1, wk.notes()[0]["face"] - 3])
+    for n in [x for x in wk.notes() if x["face"] == 1][:3]:
+        wk.xfer("ex", n["nid"])
+    nid = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j = c.redeem_job("anchor0", nid, seed="ef" * 8, n=1000)
+    wk.work_once()
+
+    # ── ⓐ 양성: 가드가 켜져도 정상 챌린지는 그대로 산다 ──
+    out["양성 — 가드 하에 챌린지 정상"] = c.challenge(j["ref"])["verified"] is True
+
+    # ── ⓑ 음성(예산): 예산 2 → 3번째가 429 ──
+    c.challenge(j["ref"])                                  # 2/2 소진
+    try:
+        c.challenge(j["ref"])
+        out["★음성 — 예산 초과 = 429"] = False
+    except RuntimeError as e:
+        out["★음성 — 예산 초과 = 429"] = "HTTP 429" in str(e)
+
+    # ── ⓒ ★예산은 서명 검증 뒤에 깎는다(위조 p 로 남의 예산 소진 불가) ──
+    # 다른 주체 ex2 의 예산이 위조 요청으로 줄어들면 안 된다 = 갈취-레버 차단.
+    c2 = _client(port, "ex2", data)
+    c2.join()
+    forged = {"ref": j["ref"], "p": "ex2", "sig": "00" * 64}
+    for _ in range(5):
+        try:
+            c2._post("/challenge", forged)                 # 위조 서명 — 거부돼야 함
+        except RuntimeError:
+            pass
+    out["★위조 p 가 남의 예산을 못 깎는다"] = \
+        c2.challenge(j["ref"])["verified"] is True         # ex2 예산 온전
+
+    # ── ⓓ 음성(동시 상한): 슬롯 1을 점유한 채로 오면 503 ──
+    NODE.Handler._chal = {}                                # 예산 창 초기화(축 분리)
+    assert NODE.Handler._slots.acquire(timeout=1)          # 재실행 1건 in-flight 모사
+    try:
+        try:
+            c.challenge(j["ref"])
+            out["★음성 — 슬롯 포화 = 503"] = False
+        except RuntimeError as e:
+            out["★음성 — 슬롯 포화 = 503"] = "HTTP 503" in str(e)
+    finally:
+        NODE.Handler._slots.release()
+    out["슬롯 반납 후 회복"] = c.challenge(j["ref"])["verified"] is True
+
+    # ── ⓔ 이행 경로(/deliver)도 같은 슬롯을 쓴다(자원이 공유이므로 바운드도 공유) ──
+    nid2 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] == 1][0]
+    j2 = c.redeem_job("anchor0", nid2, seed="ab" * 8, n=1000)
+    spec2 = c.job(j2["ref"])["job"]
+    o2 = JOBS.compute(spec2["kind"], spec2["seed"], spec2["n"])
+    assert NODE.Handler._slots.acquire(timeout=1)
+    try:
+        try:
+            wk.deliver_job(j2["ref"], o2)          # ★H2 결박 경로 그대로
+            out["★deliver 도 같은 슬롯 = 503"] = False
+        except RuntimeError as e:
+            out["★deliver 도 같은 슬롯 = 503"] = "HTTP 503" in str(e)
+    finally:
+        NODE.Handler._slots.release()
+    out["슬롯 반납 후 이행 정상"] = \
+        wk.deliver_job(j2["ref"], o2).get("seq", 0) > 0
+    srv.shutdown()
+
+    # ── ⓕ ★대조군: 다이얼을 끄면(기본값) 위 음성이 **안 잡힌다** ──
+    # 이게 없으면 「게이트가 통과했다」가 「가드가 있다」를 뜻하지 않는다([M-149]).
+    nd2, srv2, data2 = _serve(port + 1)                    # 무설정 = 종전 동작
+    c3 = _client(port + 1, "ex3", data2)
+    c3.join()
+    wk2 = AnchorWorker(f"http://127.0.0.1:{port + 1}",
+                       os.path.join(data2, "anchor0.key"))
+    g2 = wk2.notes()[0]["nid"]
+    wk2.split(g2, [1, wk2.notes()[0]["face"] - 1])
+    wk2.xfer("ex3", [x for x in wk2.notes() if x["face"] == 1][0]["nid"])
+    nid3 = [n["nid"] for n in c3.notes_of("anchor0") if n["face"] == 1][0]
+    j3 = c3.redeem_job("anchor0", nid3, seed="cd" * 8, n=1000)
+    wk2.work_once()
+    out["대조군 — 기본값 = 끔(슬롯 없음)"] = NODE.Handler._slots is None
+    many = [c3.challenge(j3["ref"])["verified"] for _ in range(6)]
+    out["★대조군 — 끄면 예산 제한 없음"] = all(many)   # 6회 전부 통과 = 가드 부재
+    srv2.shutdown()
+
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def gate_TGEN22(port=8818):
     """★FL2.2 세대 게이트([M-127]): ⓐ단위-정책(1 AU = 1000단위 — 가격-결박 스케일)
     ⓑ★미시-보험 입도 돌파(prem 1단위 = 0.1%@1AU — [M-118] 100% 하한의 해소)
@@ -2364,6 +2462,7 @@ def main():
              "T-ROOT 뿌리(무작위×불변식)": gate_TROOT(),
              "T-SCOPE 범위결박": gate_TSCOPE(),
              "T-CHALLENGE 챌린지창": gate_TCHALLENGE(),
+             "T-EXHAUST 자원소진(H-1)": gate_TEXHAUST(),
              "T-GEN22 세대(단위·잡별T·H7)": gate_TGEN22(),
              "T-ERC8004 어댑터": gate_TERC8004(),
              "T-VALVE 단방향밸브": gate_TVALVE(),
