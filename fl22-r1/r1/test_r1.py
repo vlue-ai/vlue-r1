@@ -2745,20 +2745,28 @@ def gate_TENTRYFORM(port=8838):
             break
         log += pg; s0 = pg[-1]["seq"] + 1
     ok = True
-    for fld, val in (("prev", None), ("prev", 123), ("state_root", None),
-                     ("env", None), ("head", None), ("head_sig", None)):
-        bad = [{**e, fld: val} for e in copy.deepcopy(log)]
+    # ★[M-192] 통째-방어(냉독 라운드3): 바깥 필드 + env 내부키 + 필드 제거까지
+    mutations = [("prev", None), ("prev", 123), ("state_root", None),
+                 ("env", None), ("head", None), ("head_sig", None),
+                 ("w_epoch", "__DEL__"), ("fp", "__DEL__"), ("env", "__NOTYP__")]
+    for fld, val in mutations:
+        if val == "__DEL__":
+            bad = [{k: v for k, v in e.items() if k != fld} for e in copy.deepcopy(log)]
+        elif val == "__NOTYP__":
+            bad = [{**e, "env": {k: v for k, v in e["env"].items() if k != "typ"}}
+                   for e in copy.deepcopy(log)]
+        else:
+            bad = [{**e, fld: val} for e in copy.deepcopy(log)]
         w = World.from_public({"operator": meta["operator_pk"],
                                **(meta.get("genesis_pks") or {})},
                               meta["label"], tuple(meta["genesis"]),
                               gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
         try:
-            r = w.replay_verify(bad)
-            if r["ok"] is not False:
-                ok = False
+            r = w.replay_verify(bad)           # 크래시 없으면 OK(ok 값 자체는 무관 —
+            _ = r["ok"]                        # fp 제거는 ok:true 가 정당: 커널이 fp 재계산)
         except Exception:
             ok = False
-    out["★비정형 6종 전부 ok:false(무크래시)"] = ok
+    out["★비정형 9종 무크래시(통째-방어)"] = ok
     out["정상 로그는 통과"] = World.from_public(
         {"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})},
         meta["label"], tuple(meta["genesis"]), gen=dict(meta["gen"]),

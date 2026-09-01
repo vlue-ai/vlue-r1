@@ -606,10 +606,14 @@ class Fl21Client:
                     and isinstance(e.get("seq"), int)):
                 sq = e.get("seq") if isinstance(e, dict) else "?"
                 return {"ok": False, "why": f"엔트리 형식 비정형 seq {sq}"}
-            base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
-            if "_force" in e:
-                base = base | {"_force": e["_force"]}
-            head = hashlib.sha256(e["prev"].encode() + canon(base)).hexdigest()
+            try:
+                base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
+                if "_force" in e:
+                    base = base | {"_force": e["_force"]}
+                head = hashlib.sha256(e["prev"].encode() + canon(base)).hexdigest()
+            except Exception:
+                # ★[M-192] 비정형 엔트리는 크래시 아닌 ok:false(냉독 라운드3 — 통째 방어)
+                return {"ok": False, "why": f"엔트리 형식 비정형 seq {e.get('seq')}"}
             if head != e["head"]:
                 return {"ok": False, "why": f"head 불일치 seq {e['seq']}"}
             if prev is not None and e["prev"] != prev:

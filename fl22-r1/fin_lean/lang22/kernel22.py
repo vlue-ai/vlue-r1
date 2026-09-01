@@ -918,9 +918,18 @@ class World:
             except Fl21Error as ex:
                 return {"ok": False,
                         "why": f"리플레이 거부 seq {e.get('seq')}: {ex}"}
-            if r["state_root"] != e["state_root"] or r["head"] != e["head"] \
-               or e["prev"] != prev or r["w_epoch"] != e["w_epoch"] \
-               or r.get("_force") != e.get("_force"):
+            except Exception:
+                # ★[M-192] 비정형 엔트리(env 내부키 부재·오타입)는 크래시 아닌 ok:false
+                # (냉독 라운드3 — M-191 형식검사가 바깥 키만 봤다). 악의 노드가 검증-거부
+                # 대신 트레이스백을 유발하지 못하게 어떤 예외도 여기서 잡는다.
+                return {"ok": False, "why": f"엔트리 처리 예외 seq {e.get('seq')}"}
+            try:
+                bind_bad = (r["state_root"] != e["state_root"] or r["head"] != e["head"]
+                            or e["prev"] != prev or r["w_epoch"] != e.get("w_epoch")
+                            or r.get("_force") != e.get("_force"))
+            except Exception:
+                return {"ok": False, "why": f"결박 필드 비정형 seq {e.get('seq')}"}
+            if bind_bad:
                 return {"ok": False, "why": f"결박 불일치 seq {e.get('seq')}"}
             # ★[M-189] C-1 보안-정정 — 부재를 **거부**한다(옛 `if in`은 서명 없는
             # 로그를 통과 = H7 근간 결함 · 냉독 2차 B1). 이 파일 아래 audit()가 이미
