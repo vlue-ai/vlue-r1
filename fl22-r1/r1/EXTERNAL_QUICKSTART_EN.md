@@ -212,7 +212,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 
 Envelope signature format (if you want to implement it yourself):
 `Ed25519( DOMAIN ‖ log_id ‖ canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`,
-`DOMAIN = "FL22-v0.1" + 7×0x00`, canonical_json = UTF-8 · sorted keys · ★**non-ASCII NOT escaped** (`ensure_ascii=False` — ⚙️[M-189]: without this, signatures over non-ASCII fields like board `detail` / accept `note` are rejected) · separators
+`DOMAIN = "FL22-v0.1" + 7×0x00`, ★**log_id = the raw 32 bytes** (`bytes.fromhex(/meta.log_id)`, not the hex string — like nonce, its encoding is part of the preimage), canonical_json = UTF-8 · sorted keys · ★**non-ASCII NOT escaped** (`ensure_ascii=False` — ⚙️[M-189]: without this, signatures over non-ASCII fields like board `detail` / accept `note` are rejected) · separators
 `,`/`:`. `sdk.py` is the reference implementation.
 
 ⚙️★**[M-190] Wire envelope and per-operation args** (so self-implementers can act from docs alone):

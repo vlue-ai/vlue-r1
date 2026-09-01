@@ -185,7 +185,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
 canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = "FL22-v0.1" + 7×0x00`,
-canonical_json = UTF-8·키 정렬·구분자 `,`/`:`·★**비-ASCII 이스케이프 안 함**(`ensure_ascii=False` — ⚙️[M-189] 명시: 이게 없으면 board `detail`·accept `note` 등 **비-ASCII 필드의 서명이 거부**된다). `sdk.py`가 참조 구현입니다.
+★**log_id = /meta 의 hex 를 raw 32바이트로**(`bytes.fromhex(log_id)` · nonce 처럼 인코딩이 서명에 든다) · canonical_json = UTF-8·키 정렬·구분자 `,`/`:`·★**비-ASCII 이스케이프 안 함**(`ensure_ascii=False` — ⚙️[M-189] 명시: 이게 없으면 board `detail`·accept `note` 등 **비-ASCII 필드의 서명이 거부**된다). `sdk.py`가 참조 구현입니다.
 
 ⚙️★**[M-190] 전송 봉투(wire)와 연산별 args**(자체 구현자용 — 문서만으로 이행 가능하게):
 전송 객체 = `{typ, args, p, epoch, nonce, sig}`(서명은 위 preimage) · `epoch` = GET `/state.epoch` ·

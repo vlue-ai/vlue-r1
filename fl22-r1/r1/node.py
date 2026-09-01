@@ -1015,6 +1015,9 @@ class Node:
                               "output_sha256": osha})
         entry = self._ksubmit(tm)
         self.ocommits[ref] = self.ocommits.get(ref, 0) + 1
+        self._persist_new()          # ★[M-192] phase-1 즉시 영속(냉독 라운드3): ocommit 이
+        # in-memory 로 커밋·서빙(head_sig 포함)되는데 phase-3 까지 디스크에 안 써져,
+        # 그 사이 크래시 시 검증자가 본 head 가 재기동 후 사라진다. 서빙-전 내구화한다.
         want = -(-spec["n"] // JOBS.CKPT)
         k_eff = min(spec.get("k", JOBS.SAMPLE_K), want)
         seed = bytes.fromhex(entry["head"]) + ref.encode()

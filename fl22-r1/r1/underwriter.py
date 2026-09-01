@@ -35,7 +35,7 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from sdk import Fl21Client, canon, ACCEPT_DOMAIN               # noqa: E402
+from sdk import Fl21Client, canon, ACCEPT_DOMAIN, DOMAIN       # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (    # noqa: E402
     Ed25519PrivateKey, Ed25519PublicKey)
 from cryptography.exceptions import InvalidSignature               # noqa: E402
@@ -209,14 +209,23 @@ def scan(c, policy=None):
             js = c._get(f"/jobs?anchor={a}")["jobs"]
         except Exception:
             continue
+        jc = {}                       # ref → job(1회 조회 캐시)
         for ref in sorted(js):
-            j = c.job(ref)
+            try:
+                jc[ref] = c.job(ref)
+            except Exception:
+                pass
+        # ★[M-192] 2-패스(냉독 라운드3 — 단일-패스 λ 캡이 순서-의존이라 늦게-정렬된
+        # 기존 커버를 후보 게이트가 누락했다). 패스1: 기존 부보-노출 전부를 mine_exp·
+        # per_open 에 **먼저** 합산(순서 무관). 패스2: 후보 평가. [M-165] R4-2 유지.
+        for ref in sorted(jc):
+            j = jc[ref]
             if j.get("covered") and not j.get("delivered"):
-                # ★[M-165] R4-2 — δ의 r-분모는 「폭포에 들어올 열린 부보-노출 전부」다:
-                # 후보만 세면 분모 과소 → r 과대 → δ 과소 → **요율 과소**(인수자 손해).
                 per_open[a] = per_open.get(a, 0) + j["exposure"]
                 if j.get("uw") == c.p:
                     mine_exp[a] = mine_exp.get(a, 0) + j["exposure"]
+        for ref in sorted(jc):
+            j = jc[ref]
             if j.get("covered") or j.get("delivered"):
                 continue
             if j.get("holder") == c.p:
@@ -766,22 +775,30 @@ def acceptance(c, tau=None):
         meta = c.meta
         for k, h in (meta.get("genesis_pks") or {}).items():
             pkmap[k] = Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
-        pkmap["operator"] = Ed25519PublicKey.from_public_bytes(
-            bytes.fromhex(meta["operator_pk"]))
+        op_pk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(meta["operator_pk"]))
+        pkmap["operator"] = op_pk
+        # ★[M-192] JOIN pk 를 **operator head_sig 로 결박**(냉독 라운드3: pkmap 이 같은
+        # 노드 /log 출처라 완전-악의 노드가 위조 JOIN+위조 레코드로 검증을 무력화했다).
+        # 각 엔트리의 head_sig 를 operator 로 검증 — 위조 JOIN 은 operator 서명이 없어
+        # 걸러진다(악의 노드는 operator 키가 없다). head_sig 부재/위조 = pkmap 신뢰 철회.
         seq = 0
         while True:
             page = c._get(f"/log?since={seq}")["entries"]
             if not page:
                 break
             for e in page:
+                if "head_sig" not in e:
+                    raise ValueError("head_sig 부재 — pkmap 결박 불가")
+                op_pk.verify(bytes.fromhex(e["head_sig"]),
+                             DOMAIN + bytes.fromhex(e["head"]))   # 위조 시 예외
                 env = e.get("env") or {}
                 if env.get("typ") == "JOIN":
                     a_ = env.get("args") or {}
                     pkmap[a_.get("principal")] = Ed25519PublicKey.from_public_bytes(
                         bytes.fromhex(a_["pk"]))
             seq = page[-1]["seq"] + 1
-    except (OSError, KeyError, ValueError):
-        pkmap = None                         # 로그/메타 접근 불가 = 검증 생략(폴백 표기)
+    except (OSError, KeyError, ValueError, InvalidSignature, TypeError):
+        pkmap = None                         # 로그/메타/서명 실패 = 검증 생략(폴백 표기)
     per_a, per_b = {}, {}
     rejected = 0
     for r in rs:
