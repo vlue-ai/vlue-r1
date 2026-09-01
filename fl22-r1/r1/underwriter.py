@@ -298,7 +298,26 @@ def auto_fill(c, policy=None):
     policy = {**DEFAULT_POLICY, **(policy or {})}
     st = c.stats()
     oc = (st.get("underwriters") or {}).get(c.p, {}).get("open_covers", 0)
-    filled, skipped, fill_exp = [], [], {}
+    # ★[M-194] scan 과 **진짜 동형**으로(냉독 라운드4: fill_exp 가 매-폴 빈-시작이라 다른
+    # 경로[/block RU-2·--direct·이전 폴]로 연 커버를 무시 → λ 캡이 max_concurrent×
+    # max_exposure 로만 유계였다). ⓐfill_exp·per_anchor 를 **기존 열린 커버로 시딩**
+    # ⓑherf 홀드 ⓒper_anchor 캡을 scan 처럼 건다.
+    herf = (st.get("family_concentration") or {}).get("herfindahl_lb")
+    if herf is not None and herf > policy["family_herf_max"]:
+        return {"filled": [], "skipped": ["herf 홀드 %.4f > %.4f" %
+                (herf, policy["family_herf_max"])]}
+    fill_exp, per_anchor = {}, {}
+    for a in (st.get("anchors") or {}):        # 기존 내 열린-커버 시딩
+        try:
+            for ref0 in c._get(f"/jobs?anchor={a}")["jobs"]:
+                j0 = c.job(ref0)
+                if j0.get("uw") == c.p and j0.get("covered") \
+                        and not j0.get("delivered"):
+                    fill_exp[a] = fill_exp.get(a, 0) + j0["exposure"]
+                    per_anchor[a] = per_anchor.get(a, 0) + 1
+        except Exception:
+            pass
+    filled, skipped = [], []
     for m in c.fetch_legs():
         pl = m.get("payload") or {}
         ref, legs = pl.get("ref"), pl.get("legs")
@@ -321,9 +340,12 @@ def auto_fill(c, policy=None):
             # λ 를 무시해 --trust-lambda 방어가 이 경로에서 조용히 새었다). 앵커별
             # 이 폴의 누적 노출 + 이 잡 ≤ λ × delivered_volume. ⚠️크로스-폴 누적은
             # open_covers 로만 유계(잔여 한계 — 근치는 노출 상태를 원장-파생화).
+            aj = j.get("anchor")
+            if per_anchor.get(aj, 0) >= policy["per_anchor"]:
+                skipped.append(f"{ref[:8]} per_anchor 상한")
+                continue
             lam = policy.get("trust_lambda")
             if lam is not None:
-                aj = j.get("anchor")
                 dv = (st.get("anchors", {}).get(aj) or {}).get("delivered_volume", 0)
                 if fill_exp.get(aj, 0) + j["exposure"] > lam * dv:
                     skipped.append(f"{ref[:8]} λ-상한(이행부피 {dv})")
@@ -343,7 +365,8 @@ def auto_fill(c, policy=None):
             uw_leg = make_cover_leg(c, ref, face)
             r = c.submit_block([xfer, uw_leg])
             filled.append({"ref": ref, "prem": face, "seq": r.get("seq")})
-            fill_exp[j.get("anchor")] = fill_exp.get(j.get("anchor"), 0) + j["exposure"]
+            fill_exp[aj] = fill_exp.get(aj, 0) + j["exposure"]
+            per_anchor[aj] = per_anchor.get(aj, 0) + 1
         except Exception as e:
             skipped.append(f"{str(ref)[:8]}:{str(e)[:40]}")
     return {"filled": filled, "skipped": skipped}
@@ -777,6 +800,7 @@ def acceptance(c, tau=None):
             pkmap[k] = Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
         op_pk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(meta["operator_pk"]))
         pkmap["operator"] = op_pk
+        chain_prev = None
         # ★[M-192] JOIN pk 를 **operator head_sig 로 결박**(냉독 라운드3: pkmap 이 같은
         # 노드 /log 출처라 완전-악의 노드가 위조 JOIN+위조 레코드로 검증을 무력화했다).
         # 각 엔트리의 head_sig 를 operator 로 검증 — 위조 JOIN 은 operator 서명이 없어
@@ -789,8 +813,22 @@ def acceptance(c, tau=None):
             for e in page:
                 if "head_sig" not in e:
                     raise ValueError("head_sig 부재 — pkmap 결박 불가")
+                # ★[M-194] env→head 재계산(냉독 라운드4): head_sig 를 head 에 대해서만
+                # 검증하고 env 를 안 묶으면, 악의 노드가 **진짜 (head,head_sig) 쌍에 위조
+                # env(가짜 JOIN)를 접붙여** 임의 pk 를 등록시킨다(operator 키 불요).
+                # sdk.verify_chain(:610) 동형으로 head = sha256(prev‖canon(base)) 재계산·
+                # 불일치 거부 → head_sig 가 서명한 head 가 이 env 에서 나온 것임을 결박.
+                base = {k: e[k] for k in ("env", "fp", "w_epoch", "state_root")}
+                if "_force" in e:
+                    base = base | {"_force": e["_force"]}
+                rehead = __import__("hashlib").sha256(
+                    e["prev"].encode() + canon(base)).hexdigest()
+                if rehead != e["head"] or (chain_prev is not None
+                                           and e["prev"] != chain_prev):
+                    raise ValueError("head≠env 재계산 — 접붙임 거부")
                 op_pk.verify(bytes.fromhex(e["head_sig"]),
                              DOMAIN + bytes.fromhex(e["head"]))   # 위조 시 예외
+                chain_prev = e["head"]
                 env = e.get("env") or {}
                 if env.get("typ") == "JOIN":
                     a_ = env.get("args") or {}

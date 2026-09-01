@@ -651,8 +651,9 @@ class Fl21Client:
                         co_pks[c].verify(bytes.fromhex(sig),
                                          DOMAIN + bytes.fromhex(e["head"]))
                         good += 1
-                    except (KeyError, InvalidSignature):
-                        pass
+                    except (KeyError, InvalidSignature, ValueError, TypeError):
+                        pass    # ★[M-194] 비-hex·홀수-길이·비-str cosig sig 크래시 봉합
+                        # (냉독 라운드4 — 통째-방어가 cosig 루프를 안 덮었다 · 형제 _co_ok 동형)
             if good >= k_need:
                 confirmed += 1
             else:

@@ -2776,6 +2776,103 @@ def gate_TENTRYFORM(port=8838):
     return out
 
 
+def gate_TDELIVERCAP(port=8839):
+    """★[M-194] rate-dos(냉독 라운드4): full-chain /deliver 재검증이 ref당 시도-상한으로
+    유계 — 틀린 산출 반복 재전송이 DELIVER_CAP 에서 멈춘다(전 kind)."""
+    import urllib.request, urllib.error
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    out = {}
+    nd, srv, data = _serve(port)
+    atk = _client(port, "atk", data); atk.join()
+    atk.split(atk.notes()[0]["nid"], [1, 19])
+    m1 = [n["nid"] for n in atk.notes() if n["face"] == 1][0]
+    ref = atk.redeem_job("atk", m1, seed="aa" * 8, n=100)["ref"]   # full-chain
+    ak = Fl21Client.__new__(Fl21Client); ak.p = "atk"; ak.base = f"http://127.0.0.1:{port}"
+    ak.key = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(open(os.path.join(data, "atk.key")).read().strip()))
+    ak.log_id = atk.log_id
+    n0 = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/nonce/atk").read())["nonce"]
+    body = {"typ": "DELIVER", "args": {"anchor": "atk", "ref": ref}, "p": "atk",
+            "epoch": atk.state()["epoch"]}
+    sig = ak.key.sign(DOMAIN + atk.log_id + canon(body) + int(n0).to_bytes(8, "big")).hex()
+    capped = 0
+    for _ in range(NODE.DELIVER_CAP + 12):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/deliver",
+            data=json.dumps({"env": {**body, "nonce": n0, "sig": sig}, "output": "wrong"}).encode(),
+            method="POST", headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+        except urllib.error.HTTPError as e:
+            if "시도 상한" in e.read().decode("utf-8", "replace"):
+                capped += 1
+    out["★재검증 시도 상한 발동"] = capped > 0
+    out["상한 = DELIVER_CAP"] = nd.deliver_attempts.get(ref, 0) == NODE.DELIVER_CAP
+    out["원장 무오염"] = nd.audit()["ok"] is True
+    srv.shutdown()
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TACCEPTBIND(port=8840):
+    """★[M-194] acceptance 가 head 를 env 에서 **재계산**해 접붙임 위조를 거부(냉독 라운드4):
+    진짜 (head,head_sig) 에 위조 JOIN env 를 붙여 임의 pk 등록 못 함."""
+    import copy, hashlib as _h
+    from urllib.parse import urlparse, parse_qs
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    out = {}
+    nd, srv, data = _serve(port)
+    b = _client(port, "buyer", data); b.join()
+    wk = AnchorWorker(f"http://127.0.0.1:{port}", os.path.join(data, "anchor0.key"))
+    g = wk.notes()[0]; wk.split(g["nid"], [5, g["face"] - 5])
+    wk.xfer("buyer", [x for x in wk.notes() if x["face"] == 5][0]["nid"])
+    nid = [x for x in b.notes_of("anchor0") if x["face"] == 5][0]["nid"]
+    ref = b.redeem_job("anchor0", nid, seed="aa" * 8, n=1000)["ref"]
+    sp = b.job(ref)["job"]; wk.deliver_job(ref, JOBS.compute(sp["kind"], sp["seed"], sp["n"]))
+    meta = b._get("/meta"); log, s0 = [], 0
+    while True:
+        pg = b._get(f"/log?since={s0}")["entries"]
+        if not pg:
+            break
+        log += pg; s0 = pg[-1]["seq"] + 1
+    srv.shutdown()
+    genuine = log[1]
+    forged = dict(genuine)
+    forged["env"] = {"typ": "JOIN", "args": {"principal": "ghost", "pk": "11" * 32},
+                     "p": "operator", "epoch": 0, "nonce": 0, "sig": "00" * 64}
+    mal = [forged if e is genuine else e for e in log]
+    accepts = {"F": {"id": "F", "rec": {"ref": ref, "p": "ghost", "verdict": "rework",
+               "note": "x", "expires": 10 ** 9}, "sig": "00" * 64}}
+
+    class Mock(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            u = urlparse(self.path)
+            if u.path == "/meta":
+                body = meta
+            elif u.path == "/log":
+                sq = int((parse_qs(u.query).get("since") or ["0"])[0])
+                body = {"entries": [e for e in mal if e["seq"] >= sq]}
+            elif u.path == "/accept":
+                body = {"records": list(accepts.values())}
+            elif u.path.startswith("/job/"):
+                body = {"job": {"anchor": "anchor0", "delivered": True, "holder": "buyer"}}
+            elif u.path == "/stats":
+                body = {"epoch": 10}
+            else:
+                body = {}
+            bb = json.dumps(body).encode(); self.send_response(200)
+            self.send_header("Content-Length", str(len(bb))); self.end_headers(); self.wfile.write(bb)
+    m = ThreadingHTTPServer(("127.0.0.1", port + 1), Mock)
+    threading.Thread(target=m.serve_forever, daemon=True).start()
+    r = UWT.acceptance(UWT._RoClient(f"http://127.0.0.1:{port + 1}", "obs"))
+    m.shutdown()
+    out["★접붙임 위조 봉쇄(ghost 미등록)"] = "ghost" not in r.get("buyers", {})
+    out["결박 활성(sig_verified False 또는 rejected>0)"] = (
+        r.get("sig_verified") is False or r.get("sig_rejected", 0) >= 1)
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
 def main():
     gates = {"T-SIG 골든서명": gate_TSIG(), "T-PERIL 실물페릴": gate_TPERIL(),
              "T-RECOV 복구": gate_TRECOV(), "T-FUZZ 경계방어": gate_TFUZZ(),
@@ -2810,7 +2907,9 @@ def main():
              "T-NULLSIG null-head_sig 견고성": gate_TNULLSIG(),
              "T-ACCEPTSIG 수락-서명 재검증": gate_TACCEPTSIG(),
              "T-DELIVERTYPE /deliver-typ강제(CRIT)": gate_TDELIVERTYPE(),
-             "T-ENTRYFORM 엔트리-형식 견고성": gate_TENTRYFORM()}
+             "T-ENTRYFORM 엔트리-형식 견고성": gate_TENTRYFORM(),
+             "T-DELIVERCAP 재검증-시도-상한(rate-dos)": gate_TDELIVERCAP(),
+             "T-ACCEPTBIND 수락-env→head 결박": gate_TACCEPTBIND()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

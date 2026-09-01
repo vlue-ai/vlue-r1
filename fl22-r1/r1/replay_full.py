@@ -45,11 +45,17 @@ def main():
     ok_id = (w.log_id.hex() == meta["log_id"] and w.fp0 == meta["fp0"])
     entries, s = [], 0
     for _ in range(a.batches):
-        page = _get(url, f"/log?since={s}")["entries"]
-        if not page:
+        page = _get(url, f"/log?since={s}").get("entries")
+        if not isinstance(page, list) or not page:
             break
         entries += page
-        s = page[-1]["seq"] + 1
+        # ★[M-194] 악의 노드의 비정형 페이지(마지막 항 seq 부재·비-int)가 페이지네이션을
+        # 크래시하지 못하게(냉독 라운드4 · 검증-도구 견고성 부류). 진전 없으면 중단.
+        last = page[-1]
+        nxt = last.get("seq") if isinstance(last, dict) else None
+        if not isinstance(nxt, int) or nxt + 1 <= s:
+            break
+        s = nxt + 1
     # ★[M-189] C-1 — 커널 호출 **전에** head_sig 부재를 선-거부한다(벨트: 커널
     # replay_verify 도 부재-거부로 고쳤지만, 이 층이 도구의 계약을 명시적으로 문다).
     miss = next((e.get("seq") for e in entries if "head_sig" not in e), None)

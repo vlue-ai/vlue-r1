@@ -47,6 +47,7 @@ COSIGN_K = 2
 _PNAME = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 BOOT_CAP = 8                         # ★[M-103] 상호-신용 스왑 상한(주체당 · anchor0-IOU)
 BLOCK_LEG_TYPES = ("XFER", "UW", "REDEEM", "TICKMARK")   # 색-추적 가능 다리만
+DELIVER_CAP = 32                     # ★[M-194] ref당 /deliver 재검증 시도 상한(전 kind)
 OCOMMIT_CAP = 64                      # ★[M-190] ref당 ocommit(재추첨) 상한 —
 # C-2 변종(냉독 최대판): 유효-서명 앵커가 틀린 산출로 /deliver 를 재생하면 매번
 # ocommit 이 원장에 남는다(nonce 미소비 · deep-verify 실패는 롤백 안 됨). C-2 로
@@ -91,6 +92,7 @@ class Node:
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
         self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
         self.ocommits = {}              # ★[M-164] ref → 산출-커밋 수(재추첨 흔적)
+        self.deliver_attempts = {}      # ★[M-194] ref → /deliver 재검증 시도 수(전 kind)
         self.note_touch = {}            # ★[M-170] nid → 최근 접촉 에포크(F-9a 원료)
         self.board_p = os.path.join(data_dir, "board.json")
         self.board = {}              # id → {post, sig, id}
@@ -990,6 +992,14 @@ class Node:
         rp = self.w.redeem_pending.get(ref)   # ⓑ 커널 권위원본으로 이행자 = 앵커 확인
         if rp is None or env.get("p") != rp.get("anchor"):
             raise Fl21Error("DELIVER: 행위자 = 앵커(ocommit 전 인가)")
+        # ★[M-194] ref당 재검증 시도 상한(냉독 라운드4 rate-dos): 기본 kind=sha256_chain 은
+        # 전수 재계산(N_MAX 5M ≈ 1.9 CPU-s)이고 실패-이행은 nonce 를 안 써 **무한 재전송**
+        # 가능했다(OCOMMIT_CAP 은 sampled 만 덮었다). 값비싼 verify_output **전**에 전 kind
+        # 공통으로 시도를 유계화한다(ref 생성은 노트 소각 = 경제적 상한과 곱해져 총량 유계).
+        if self.deliver_attempts.get(ref, 0) >= DELIVER_CAP:
+            raise Fl21Error(f"DELIVER: 재검증 시도 상한 {DELIVER_CAP} 초과"
+                            "(정상 이행 1회 · 반복 실패 = 자원 남용)")
+        self.deliver_attempts[ref] = self.deliver_attempts.get(ref, 0) + 1
         return dict(j["job"])         # 스펙 스냅샷(검증 중 공유 상태 무접촉)
 
     # ── ★[M-164] V-B 커밋-표본 — 표본-무작위성을 원장-유도로(천장-깊이) ──
@@ -1015,9 +1025,13 @@ class Node:
                               "output_sha256": osha})
         entry = self._ksubmit(tm)
         self.ocommits[ref] = self.ocommits.get(ref, 0) + 1
-        self._persist_new()          # ★[M-192] phase-1 즉시 영속(냉독 라운드3): ocommit 이
-        # in-memory 로 커밋·서빙(head_sig 포함)되는데 phase-3 까지 디스크에 안 써져,
-        # 그 사이 크래시 시 검증자가 본 head 가 재기동 후 사라진다. 서빙-전 내구화한다.
+        # ★[M-194] phase-1 persist 되돌림(냉독 라운드4): M-192 의 즉시 _persist_new() 는
+        # **거부되는 /deliver 마다 jobs.json 전체 재기록 + 3 fsync 를 전역-락 안에서** 하게 만들어
+        # 오히려 DoS 증폭이 됐다(고치려던 것보다 나쁨). 실패-이행의 ocommit 은 「실패-시도
+        # 마커」라 크래시 시 소실돼도 무해하고(재기동 카운터는 영속 원장에서 재구성 · 다음
+        # 틱/성공-op 에서 자연 영속), 서빙-전-영속의 이득은 ≤1틱 창의 소소한 정합뿐이라
+        # DoS 대비 순-손해다. ⟹ phase-1 즉시-영속 제거 · 그 창은 알려진 한계로 고지.
+        # (근치 = 값싼 증분-영속 · FL2.3 축)
         want = -(-spec["n"] // JOBS.CKPT)
         k_eff = min(spec.get("k", JOBS.SAMPLE_K), want)
         seed = bytes.fromhex(entry["head"]) + ref.encode()
