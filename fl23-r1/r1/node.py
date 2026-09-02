@@ -1644,7 +1644,10 @@ class Node:
         j["output"] = output
         j["verify"] = detail
         self._sync_jobs()
-        self._persist_new()
+        try:
+            self._persist_new()
+        except Exception as _ex:                       # ★[M-215] 커밋됨 → 500(재시도는 「이미 이행」 400 = 멱등)
+            raise Fl21Internal(f"커밋 뒤 단계 실패(이행은 원장에 있음): {type(_ex).__name__}") from _ex
         return {"seq": entry["seq"], "head": entry["head"], "ref": ref,
                 "verify": detail}
 
@@ -1688,7 +1691,9 @@ class Node:
             else:                    # ★[M-210] R3-F03-1 — 같은 주체의 후속 다리: 시뮬레이션된 nonce 로 커널-동형 검증(구판은 여기서 합법 블록을 "nonce 위반"으로 봉쇄)
                 self._verify_leg_at(lg, _sim_nonce[lg.get("p")])
             _sim_nonce[lg.get("p")] = (lg.get("nonce") if isinstance(lg.get("nonce"), int) else 0) + 1
-            self._env_size_guard(lg); self._write_budget(lg.get("p"), lg)      # ★[M-211] 다리도 봉투 — 크기·예산 **검사**(다리 서명자 귀속) · 과금은 커밋 뒤([M-212] R5-F03-1)
+            self._env_size_guard(lg)
+            if lg.get("p") != "operator":
+                self._write_budget(lg.get("p"), lg)      # ★[M-211] 다리도 봉투 — 크기·예산 **검사**(다리 서명자 귀속 · 운영자 제외) · 과금은 커밋 뒤([M-212] R5-F03-1)
             # ★[M-208] R4-5(냉독 4) — 다리의 **의미-실패**를 값싼 O(1) 커널-동형 선체크로 거부: 노드 선검증을 통과하고
             #   커널 _apply 에서 실패하는 다리(예: 미소유 노트 XFER)는 operator 제출이라 REJECT·nonce 소비가 없어 무계 재생되며,
             #   매 재생이 _ksubmit 의 O(노트) 색-스냅숏을 전역 락 안에서 강제했다(재현 1.08→1.98ms @55k 노트). 소유권은 _own 동형.
@@ -1773,7 +1778,8 @@ class Node:
         # 두지 않는다(위 주석).
         entry = self._ksubmit(self.w.sign_env("operator", "BLOCK", {"legs": legs}))
         for lg in legs:                                                   # ★[M-212] 블록이 실제로 기록된 뒤에만 다리 서명자에 과금
-            self._write_budget(lg.get("p"), lg, charge=True)
+            if lg.get("p") != "operator":
+                self._write_budget(lg.get("p"), lg, charge=True)
         try:
             for ref, fee in pv:
                 self.jobs[ref]["prem_verified"] = fee
@@ -2437,7 +2443,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": _why, "code": "bad_query"})
             if p.split("?")[0] == "/jobs":                                                # ★[M-211] R4-F11-M2 — /jobs 도 같은 계약
                 return self._send(400, {"error": "anchor=<주체명> 필수", "code": "bad_query"})
-            return self._send(404, {"error": "미지 경로"})
+            return self._send(404, {"error": "미지 경로", "code": "unknown_route"})
         except Exception as e:                   # 경계 격리(A-4) — 노드 생존
             return self._send(400, {"error": f"{type(e).__name__}: {e}"[:200]})
 
@@ -2533,7 +2539,7 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "tick: 이 노드는 자기 시계로 돈다"
                                      "(--auto-tick) — 외부 틱 불가"})
                     return self._send(200, nd.tick())
-            return self._send(404, {"error": "미지 경로"})
+            return self._send(404, {"error": "미지 경로", "code": "unknown_route"})
         except Fl21Error as e:
             body = {"error": str(e)[:200], "code": _err_code(str(e))}
             if getattr(e, "reject_seq", None) is not None:

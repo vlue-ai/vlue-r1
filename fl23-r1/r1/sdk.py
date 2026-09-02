@@ -317,6 +317,11 @@ class Fl21Client:
         if _cur != new_pk.hex():
             self.key_next_unresolved = True
             return {**(r if isinstance(r, dict) else {"r": r}), "new_pk": new_pk.hex(), "note": "노드 /pk 가 새 키를 확인하지 않아 키 파일을 교체하지 않았다(.next 유지 · 다음 서명 전 재조정)"}
+        if not os.path.exists(nxt):                       # ★[M-215] D1-1 — 같은 키 파일을 쓰는 다른 프로세스가 이미 재조정(승격 또는 stale 보관)
+            if not self._recover_from_store(new_pk.hex()):
+                self.key_next_unresolved = True
+                return {**(r if isinstance(r, dict) else {"r": r}), "new_pk": new_pk.hex(), "note": "다른 프로세스가 .next 를 처리했고 새 키를 보관소에서 찾지 못했다(다음 서명 전 재조정)"}
+            return {**(r if isinstance(r, dict) else {"r": r}), "new_pk": new_pk.hex(), "note": "다른 프로세스가 먼저 재조정 — 보관소에서 새 키 채택"}
         self._backup_key(".prev")
         os.replace(nxt, self.key_path)
         self.key = new
@@ -437,13 +442,15 @@ class Fl21Client:
     def _recover_from_store(self, cur_hex):
         """★[M-213] 노드가 아는 현행 키(cur_hex)가 내 현행 키와 다르면 보관소(.next · .prev-* · .next.stale-*)에서 같은 pk 의 키를 찾아 승격."""
         import glob as _gl
-        cands = [self.key_path + ".next"] + sorted(_gl.glob(self.key_path + ".prev-*")) + sorted(_gl.glob(self.key_path + ".next.stale-*"))
+        cands = [self.key_path, self.key_path + ".next"] + sorted(_gl.glob(self.key_path + ".prev-*")) + sorted(_gl.glob(self.key_path + ".next.stale-*"))   # ★[M-215] D1-1 — 다른 프로세스가 이미 승격한 키 파일 자체도 후보
         for fp in cands:
             try:
                 priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(open(fp).read().strip()))
             except (OSError, ValueError):
                 continue
             if priv.public_key().public_bytes_raw().hex() == cur_hex:
+                if fp == self.key_path:                  # 이미 파일이 원장 키 — 메모리만 갱신
+                    self.key = priv; return True
                 self._backup_key(".prev")
                 if fp == self.key_path + ".next":
                     os.replace(fp, self.key_path)
@@ -841,7 +848,9 @@ class Fl21Client:
     def verify_attest(self, att):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey as _PK)
-        doc = att["doc"]
+        doc = att.get("doc") if isinstance(att, dict) else None
+        if not isinstance(doc, dict) or not isinstance(att.get("operator_sig"), str):   # ★[M-215] D2-10 — 비정형 입력은 예외가 아니라 ok:false
+            return {"ok": False, "why": "어테스트 형식 비정형(doc/operator_sig)"}
         if doc.get("complete") is not True:
             return {"ok": False, "why": "부분 발췌 = 무효(전량-아니면-무) — stale 어테스트(as_of < upto)도 여기 포함"}
         if doc.get("log_id") != self.log_id.hex():         # ★[M-211] 다른 원장의 어테스트를 이 원장 것으로 받지 않는다

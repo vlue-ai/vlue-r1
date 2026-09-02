@@ -32,7 +32,8 @@ def _kernel_for(domain):
     import importlib
     pre = str(domain)[:4]
     if pre not in _GENERATIONS:
-        raise SystemExit(json.dumps({"H7_FULL_REPLAY": False, "why": f"미지 세대 도메인 {domain!r} — 이 도구가 아는 세대: {sorted(_GENERATIONS)}"}, ensure_ascii=False))
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": f"미지 세대 도메인 {domain!r} — 이 도구가 아는 세대: {sorted(_GENERATIONS)}"}, ensure_ascii=False))
+        raise SystemExit(1)                                            # ★[M-215] D3-12 — 판정 JSON 은 stdout(도구 소비자 계약)
     lang, mod = _GENERATIONS[pre]
     sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", lang))
     return importlib.import_module(mod).World

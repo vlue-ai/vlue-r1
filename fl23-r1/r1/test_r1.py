@@ -3801,6 +3801,26 @@ def gate_TREKEY23(port=8845):
     c4.sign_env("TICKMARK", {"kind": "fl21.version", "v": "v10"})       # 서명 전 재조정 → 진짜 /pk 로 승격
     out["★복귀 뒤 승격 = 원장 키와 일치"] = (not os.path.exists(kp4 + ".next")) and c4._get("/pk/rk4")["pk"] == c4.pk_hex()
     out["★.prev 도 append-only"] = len(_gl4.glob(kp4 + ".prev-*")) >= 1 and not os.path.exists(kp4 + ".prev")
+    # ★[M-215] D1-1 — 같은 키 파일의 두 프로세스 경합: 회전 비행 중 B 가 (a) 커밋 뒤 승격 (b) 커밋 전 stale 보관 — A 는 예외 없이 원장 키를 채택한다
+    for tag, pre in (("promote", False), ("stale", True)):
+        nm = "rk5" + tag[:1]
+        c5 = _client(port, nm, data); c5.join(); kp5 = c5.key_path; _rp5 = c5._post
+        def _race(path, body, _r=_rp5, _pre=pre, _kp=kp5, _nm=nm):
+            if _pre:
+                Bc = Fl21Client(f"http://127.0.0.1:{port}", _nm, _kp); Bc._reconcile_key_next()      # 커밋 전: /pk = 구 키 → .next 를 stale 로
+                r_ = _r(path, body)
+            else:
+                r_ = _r(path, body); Fl21Client(f"http://127.0.0.1:{port}", _nm, _kp)             # 커밋 뒤: B 생성자가 .next 승격
+            return r_
+        c5._post = _race
+        try:
+            r5 = c5.rekey(); okr = "new_pk" in r5
+        except Exception as ex:
+            okr = f"EXC {type(ex).__name__}"
+        c5._post = _rp5
+        out[f"★두-프로세스 경합({tag}): rekey 예외 없음"] = okr is True
+        out[f"★두-프로세스 경합({tag}): A 키 == 원장 키"] = c5.pk_hex() == c5._get(f"/pk/{nm}")["pk"]
+        out[f"★두-프로세스 경합({tag}): 서명 가능"] = "seq" in c5._post("/submit", {"env": c5.sign_env("TICKMARK", {"kind": "fl21.version", "v": "r5"})})
     srv.shutdown()
     # ★[M-208] R4-10(냉독 4 · F06-F2) — 회전 뒤 재기동: 정상 = 통과 · operator.key 유실 = **명시 기동 거부**(침묵 브릭 아님) ·
     #   회전-중 크래시 잔재(.next · 원장에 없는 키) = 폐기 후 정상 기동.
