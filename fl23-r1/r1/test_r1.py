@@ -361,6 +361,16 @@ def gate_TDURABLE(port=8801, port2=8802):
     open(nd.cosig_p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     # 재기동(재-리플레이 → 자기치유) 후 검증 정상 복귀
     nd2, srv2, _ = _serve(port2, data=data)
+    # ★[M-216] N-32/N-44/N-45 — 잡 저장구조(스냅샷+저널+산출 파일)·증분 카운터·기동 1회 리플레이
+    out["★저널 파일 존재(jobs.jsonl · 잡 있을 때)"] = os.path.exists(nd2.jobs_jnl_p) or not nd2.jobs
+    out["★재기동 뒤 잡 레코드 동일"] = json.dumps(nd2.jobs, sort_keys=True) == json.dumps(nd.jobs, sort_keys=True)
+    out["★outstanding 카운터 = 전수 스캔(재기동 뒤)"] = all(nd2.outstanding(c) == nd2._outstanding_slow(c) for c in set(nd2.colors.values()))
+    _prev_lines = nd2._jnl_lines; nd2._jnl_lines = 10 ** 6            # 컴팩션 강제
+    nd2.jobs["__probe__"] = {"job": {"kind": "sha256_chain", "seed": "00", "n": 1}, "state": "open"}
+    nd2._persist_jobs()
+    out["★컴팩션 = 스냅샷 생성 · 저널 비움"] = os.path.exists(nd2.jobs_snap_p) and nd2._jnl_lines == 0 and os.path.getsize(nd2.jobs_jnl_p) == 0
+    del nd2.jobs["__probe__"]; nd2._persist_jobs()
+    out["★삭제 = 저널 1줄(rec null)"] = nd2._jnl_lines == 1
     out["★재기동 뒤 REJECT 예산 카운터 재구성"] = _rh0 == 2 and (nd2.reject_hits.get("dur") or (0, 0))[1] == 2
     out["★재기동 뒤 쓰기 예산 카운터 재구성"] = (nd2.write_bytes.get("dur") or [0, 0])[1] > 0
     c2 = _client(port2, "dur", data)
@@ -1436,6 +1446,12 @@ def gate_THASHBIND(port=8810):
     out["★워커-경로 결박(SR-1)"] = st3.get("delivered") is True and \
         d3["args"].get("output_sha256") == output_sha256(st3["output"])
     out["audit"] = c._get("/audit")["ok"]
+    # ★[M-216] N-32 — 산출은 별도 파일 · 레코드에는 마커 · /job 은 산출을 합쳐 서빙(계약 불변)
+    _dj = next((j for j in nd.jobs.values() if j.get("delivered")), None)
+    out["★산출 파일 분리(레코드 = 마커)"] = isinstance((_dj or {}).get("output"), dict) and "$out" in _dj["output"] and os.path.exists(os.path.join(nd.outputs_dir, f"{_dj['output']['$out']}.json"))
+    _ref = next(r for r, j in nd.jobs.items() if j is _dj)
+    _served = c._get(f"/job/{_ref}")
+    out["★/job 은 산출 본문을 서빙"] = "output" in _served and not (isinstance(_served["output"], dict) and "$out" in _served["output"])
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -1773,6 +1789,17 @@ def gate_TCHALLENGE(port=8816):
     out["★요청자별 상한 도달"] = _hit_cap
     cB = _client(port, "chal_b", data); cB.join()
     out["★다른 요청자는 여전히 챌린지 가능"] = isinstance(cB.challenge(j["ref"]), dict)
+    # ★[M-216] D4-b — 산출 파일 유실 시 챌린지는 500(노드 장애) · 원장에 「불일치」를 남기지 않는다 · /job 은 output_missing 표시
+    _prev_out = nd.jobs[j["ref"]].get("output"); nd.jobs[j["ref"]]["output"] = {"$out": j["ref"]}   # 앞 검사가 산출을 인라인으로 변조했을 수 있어 마커로 되돌린다
+    _of = os.path.join(nd.outputs_dir, f"{j['ref']}.json"); os.rename(_of, _of + ".bak")
+    _n0 = len(nd.w.log)
+    try:
+        cB.challenge(j["ref"]); out["★산출 유실 챌린지 = 500"] = False
+    except RuntimeError as ex:
+        out["★산출 유실 챌린지 = 500"] = "HTTP 500" in str(ex)
+    out["★산출 유실 = 원장 무기록"] = len(nd.w.log) == _n0
+    out["★/job output_missing 표시"] = c._get(f"/job/{j['ref']}").get("output_missing") is True
+    os.rename(_of + ".bak", _of); nd.jobs[j["ref"]]["output"] = _prev_out
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2597,6 +2624,9 @@ def gate_TACCEPT(port=8857):
     except RuntimeError as ex:
         out["★커밋-후 실패 = 500"] = "HTTP 500" in str(ex) and len(nd.w.log) == _seq0 + 1
     nd._persist_new = _pn
+    # ★[M-216] N-44 — 증분 카운터 = 전수 스캔(모든 색 · 정산·소각·민트 뒤)
+    out["★outstanding 카운터 정합"] = all(nd.outstanding(c) == nd._outstanding_slow(c) for c in set(nd.colors.values()) | {"acan", "acby"})
+    out["★audit 는 카운터 정합도 본다"] = nd.audit()["ok"] is True
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out

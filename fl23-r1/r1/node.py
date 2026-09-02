@@ -201,7 +201,14 @@ class Node:
         self.cosig_map = {}          # ★N-3([M-110]) — seq→병합 서명(/cosigs 서빙 정본)
         self.ledger_p = os.path.join(data_dir, "entries.jsonl")
         self.cosig_p = os.path.join(data_dir, "cosigs.jsonl")
-        self.jobs_p = os.path.join(data_dir, "jobs.json")
+        self.jobs_p = os.path.join(data_dir, "jobs.json")            # 구판(전량 재기록) — 이제 이주 원천으로만 읽는다
+        self.jobs_snap_p = os.path.join(data_dir, "jobs.snapshot.json")   # ★[M-216] N-32 — 스냅샷 + append-only 저널(변경 레코드만) + 산출 별도 파일
+        self.jobs_jnl_p = os.path.join(data_dir, "jobs.jsonl")
+        self.outputs_dir = os.path.join(data_dir, "outputs")
+        self._job_h = {}                                              # ref → 레코드 해시(변경 감지)
+        self._jnl_lines = 0
+        self._col_face = {}                                           # ★[M-216] N-44 — 색별 유통 액면(증분 · outstanding O(1))
+        self._face_of = {}                                            # nid → 액면(소멸 시 차감용 미러)
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
         self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
         self.ocommits = {}              # ★[M-164] ref → 산출-커밋 수(재추첨 흔적)
@@ -398,17 +405,11 @@ class Node:
                 n += 1
             for i, e in enumerate(self._read_ledger_lines(self.ledger_p)[:n]):
                 self.w.log[i] = e        # 서명 포함 원본 복원(관용 절단·정합)
-        if os.path.exists(self.jobs_p):
-            try:
-                self.jobs = json.load(open(self.jobs_p, encoding="utf-8"))
-                for _j in self.jobs.values():                 # ★[M-213] Q-9 — [M-211] 이전 잡: pv_seq 부재 = 재탄생 검사 면제(소실 방지)
-                    if isinstance(_j, dict) and _j.get("prem_verified") and "pv_seq" not in _j:
-                        _j["pv_seq"] = 10 ** 12
-            except (json.JSONDecodeError, OSError):
-                self.jobs = {}           # ★H5 — 잡 메타 손상은 무해(고아 = GC · 대장이 정본)
-        a = self.w.audit()
-        if not a["ok"]:
-            raise Fl21Error("기동 audit 실패")
+        self._load_jobs()                # ★[M-216] N-32 — 스냅샷 + 저널(구판 jobs.json 은 이주 원천)
+        # ★[M-216] N-45 — 기동 리플레이 1회: 위 루프가 모든 항을 커널에 재유도해 head·prev 를 대조했다(= 법 재유도 검증).
+        #   구판은 여기서 self.w.audit()(시드에서 새 세계 + 전량 재-리플레이)를 한 번 더 돌렸다 — 기동 직후 라이브 상태 = 리플레이 상태이므로 중복.
+        #   상태-루트 캐시만 전량 재계산해 워밍한다(O(J) · 원장-비례 아님). 경로-밖 변조 검출(K-0ⓔ)은 GET /audit(스로틀)이 계속 한다.
+        self.w._root_full()
         self.persisted = n
         for _e in self.w.log:           # ★[M-165] R4-9 — 재기동 시 ocommit 재구성
             if _e["env"].get("p") == "operator" and \
@@ -742,6 +743,7 @@ class Node:
         else:
             for nid in added:                              # 방어(도달 불가 경로)
                 self.colors[nid] = self.w.notes[nid]["owner"]
+        _repaired = len(self.colors) != len(self.w.notes)   # ★[M-216] 보정 발동 여부(카운터 재구성 트리거)
         if len(self.colors) != len(self.w.notes):          # ★색 전체성 불변식
             # ★[M-209] O(변경) 델타의 후보 규칙이 소멸을 놓친 경우(드묾) — 전체 대조로 보정(성공 커밋 뒤라 상태는 이미 법대로다)
             for nid in [c for c in self.colors if c not in self.w.notes]:
@@ -751,6 +753,25 @@ class Node:
                 self.colors[nid] = self.w.notes[nid]["owner"]
             if len(self.colors) != len(self.w.notes):
                 raise Fl21Error(f"색 불변식 파손 seq {entry['seq']}")
+        # ★[M-216] N-44 — 색별 유통 액면 증분(소멸 = 미러 액면 차감 · 생성 = 현 액면 가산) · 보정이 돌았으면 전량 재구성
+        if _repaired:
+            self._rebuild_col_face()
+        else:
+            for nid in removed:
+                f = self._face_of.pop(nid, 0); c = rcol.get(nid)
+                if c is not None:
+                    v = self._col_face.get(c, 0) - f
+                    if v:
+                        self._col_face[c] = v
+                    else:
+                        self._col_face.pop(c, None)
+            for nid in added:
+                n_ = self.w.notes.get(nid)
+                if n_ is None:
+                    continue
+                self._face_of[nid] = n_["face"]; c = self.colors.get(nid)
+                if c is not None:
+                    self._col_face[c] = self._col_face.get(c, 0) + n_["face"]
 
     def _scope_step(self, e):
         """★H5([M-126]) — 작업-범위 선언의 로그-파생(live·리플레이 공통 경로 =
@@ -901,17 +922,102 @@ class Node:
         self._persist_jobs()
         self._persist_ledger()
 
+    # ── ★[M-216] N-32 — 잡 저장구조: 스냅샷 + append-only 저널 + 산출 별도 파일 ──
+    @staticmethod
+    def _rec_h(rec):
+        return hashlib.sha256(json.dumps(rec, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).digest()
+
+    def _load_jobs(self):
+        self.jobs = {}
+        src = self.jobs_snap_p if os.path.exists(self.jobs_snap_p) else (self.jobs_p if os.path.exists(self.jobs_p) else None)
+        if src:
+            try:
+                self.jobs = json.load(open(src, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.jobs = {}           # ★H5 — 잡 메타 손상은 무해(고아 = GC · 대장이 정본)
+        self._jnl_lines = 0
+        if os.path.exists(self.jobs_jnl_p):
+            for line in open(self.jobs_jnl_p, encoding="utf-8"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    it = json.loads(line)
+                except json.JSONDecodeError:
+                    continue             # ★[M-216] 찢어진 줄은 건너뛴다(되감기가 실패한 드문 경우에도 뒤 레코드를 잃지 않는다)
+                self._jnl_lines += 1
+                if it.get("rec") is None:
+                    self.jobs.pop(it.get("ref"), None)
+                else:
+                    self.jobs[it["ref"]] = it["rec"]
+        for _j in self.jobs.values():    # ★[M-213] Q-9 — [M-211] 이전 잡: pv_seq 부재 = 재탄생 검사 면제(소실 방지)
+            if isinstance(_j, dict) and _j.get("prem_verified") and "pv_seq" not in _j:
+                _j["pv_seq"] = 10 ** 12
+        self._job_h = {r: self._rec_h(j) for r, j in self.jobs.items()}
+
     def _persist_jobs(self):
-        blob = json.dumps(self.jobs, ensure_ascii=False)
-        h = hashlib.sha256(blob.encode("utf-8")).digest()
-        if getattr(self, "_jobs_blob_h", None) == h:            # ★[M-211] R4-F08-3 — 잡 상태가 안 바뀐 쓰기(XFER·TICKMARK…)는 jobs.json 을 다시 쓰지 않는다(쓰기당 91% 비용)
+        """변경된 레코드만 저널에 append(fsync) — 구판은 매 쓰기마다 jobs.json 전량 재기록(+fsync)이었다(쓰기 비용의 91% · F08).
+        저널이 스냅샷의 4배(≥ 2,000줄)를 넘으면 스냅샷으로 컴팩션."""
+        changed = []
+        for r, j in self.jobs.items():
+            h = self._rec_h(j)
+            if self._job_h.get(r) != h:
+                changed.append((r, j, h))
+        removed = [r for r in list(self._job_h) if r not in self.jobs]
+        if not changed and not removed:
             return
-        tmp = self.jobs_p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as jf:
-            jf.write(blob)
+        prev_size = os.path.getsize(self.jobs_jnl_p) if os.path.exists(self.jobs_jnl_p) else 0
+        try:
+            with open(self.jobs_jnl_p, "a", encoding="utf-8") as jf:
+                for r, j, h in changed:
+                    jf.write(json.dumps({"ref": r, "rec": j}, ensure_ascii=False) + "\n")
+                for r in removed:
+                    jf.write(json.dumps({"ref": r, "rec": None}) + "\n")
+                self._fsync(jf)
+        except Exception:
+            try:                                                   # ★[M-216] D5-b — 부분 기록 되감기(찢어진 줄이 뒤 레코드를 가리지 않게)
+                if os.path.exists(self.jobs_jnl_p):
+                    os.truncate(self.jobs_jnl_p, prev_size)
+            except OSError:
+                pass
+            raise                                                  # 해시 미갱신 → 다음 쓰기에서 같은 레코드를 다시 시도(따라잡음)
+        for r, j, h in changed:                                    # ★[M-216] D5-b — 해시 갱신은 **fsync 성공 뒤**(구판은 기록 전 갱신 → 실패 레코드 영구 누락)
+            self._job_h[r] = h
+        for r in removed:
+            self._job_h.pop(r, None)
+        self._jnl_lines += len(changed) + len(removed)
+        if self._jnl_lines > max(2000, 4 * len(self.jobs)):
+            self._compact_jobs()
+
+    def _compact_jobs(self):
+        tmp = self.jobs_snap_p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as sf:
+            json.dump(self.jobs, sf, ensure_ascii=False); self._fsync(sf)
+        os.replace(tmp, self.jobs_snap_p)
+        with open(self.jobs_jnl_p, "w", encoding="utf-8") as jf:
             self._fsync(jf)
-        os.replace(tmp, self.jobs_p)
-        self._jobs_blob_h = h
+        self._jnl_lines = 0
+        if os.path.exists(self.jobs_p):
+            os.replace(self.jobs_p, self.jobs_p + ".migrated")   # 구판 파일은 이주 뒤 보관(이중 원천 방지)
+
+    def _store_output(self, ref, output):
+        """산출 본문은 별도 파일(outputs/<ref>.json · fsync) — 레코드에는 마커만(저널·스냅샷·해시에서 큰 바이트 제거)."""
+        os.makedirs(self.outputs_dir, exist_ok=True)
+        fp = os.path.join(self.outputs_dir, f"{ref}.json"); tmp = fp + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as of:
+            json.dump(output, of, ensure_ascii=False); self._fsync(of)
+        os.replace(tmp, fp)
+        return {"$out": ref}
+
+    def _job_output(self, j):
+        o = (j or {}).get("output")
+        if isinstance(o, dict) and "$out" in o and len(o) == 1:
+            fp = os.path.join(self.outputs_dir, f"{o['$out']}.json")
+            try:
+                return json.load(open(fp, encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+        return o
 
     def _persist_ledger(self):
         """★증분-영속(FL2.3 · [M-194 D] 교훈): 대장·공동서명 **append 만** — REJECT 항 영속에도 쓰인다."""
@@ -1389,9 +1495,22 @@ class Node:
                 "note": "record-only — deps 는 스펙 해시(H2)에 결박 · 정산·요율 무접촉 · 사설 다운스트림 손실은 선언해야 보인다"}
 
     def outstanding(self, principal):
-        """색 = principal인 유통량(에스크로 포함) = 그 발행자의 미결 이행-부채."""
+        """색 = principal인 유통량(에스크로 포함) = 그 발행자의 미결 이행-부채. ★[M-216] N-44 — 증분 카운터 O(1)(구판 O(노트) 스캔 · /issue·EXIT 에서 호출)."""
+        return self._col_face.get(principal, 0)
+
+    def _outstanding_slow(self, principal):
+        """전수 스캔(정본 정의) — audit·게이트가 카운터와 대조한다."""
         return sum(n["face"] for nid, n in self.w.notes.items()
                    if self.colors.get(nid) == principal)
+
+    def _rebuild_col_face(self):
+        self._face_of = {nid: n["face"] for nid, n in self.w.notes.items()}
+        cf = {}
+        for nid, n in self.w.notes.items():
+            c = self.colors.get(nid)
+            if c is not None:
+                cf[c] = cf.get(c, 0) + n["face"]
+        self._col_face = cf
 
     def issue(self, env):
         """★[M-104] 회전-발행(재점검 F-1): 발행권 = 일회 지급이 아니라 **회전 한도** —
@@ -1641,7 +1760,7 @@ class Node:
             raise Fl21Error("DELIVER: typ 불일치")
         entry = self._ksubmit(env)    # ref/anchor/failed 재검증은 커널이 강제
         j["delivered"] = True
-        j["output"] = output
+        j["output"] = self._store_output(ref, output)        # ★[M-216] N-32 — 산출은 별도 파일 · 레코드엔 마커
         j["verify"] = detail
         self._sync_jobs()
         try:
@@ -1842,6 +1961,13 @@ class Node:
             return c
         a = self.w.audit()
         ok = a["ok"] and set(self.colors) == set(self.w.notes)   # ★색 전체성
+        if ok:                                                   # ★[M-216] N-44 — 증분 카운터 = 전수 스캔(정본 정의) 정합
+            _cf = {}
+            for nid, n in self.w.notes.items():
+                c = self.colors.get(nid)
+                if c is not None:
+                    _cf[c] = _cf.get(c, 0) + n["face"]
+            ok = ok and _cf == {k: v for k, v in self._col_face.items() if v}
         out = {"ok": ok, "entries": a.get("entries")}
         self._audit_cache = (key, out); self._audit_ts = time.monotonic(); self._audit_dur = self._audit_ts - _now
         return out
@@ -2156,7 +2282,10 @@ class Node:
         self.challenge_attempts[_ck] = [_cw, (_ca[1] + 1) if (_ca and _ca[0] == _cw) else 1]
         if len(self.challenge_attempts) > 65536:                                  # 키 성장 상한(낡은 창 축출)
             self.challenge_attempts = {k: v for k, v in self.challenge_attempts.items() if v[0] == _cw}
-        return dict(j["job"]), j["output"]
+        _out = self._job_output(j)
+        if _out is None:                                   # ★[M-216] D4-b — 노드 저장 장애(산출 파일 유실)는 앵커의 「불일치」로 기록하지 않는다
+            raise Fl21Internal("산출 파일 유실 — 재검증 불가(노드 저장 장애 · 앵커 실적 무접촉)")
+        return dict(j["job"]), _out
 
     def challenge_commit(self, body, okv, detail):
         """락 안(짧게): 결과 기록 — 일치 = 계수만(오프-원장) · 불일치 = 온-원장 기록."""
@@ -2435,7 +2564,12 @@ class Handler(BaseHTTPRequestHandler):
                         cov["cover_history"] = j["cover"]
                     if ref in nd.ocommits:            # ★[M-164] 재추첨 공개 계수
                         cov["ocommits"] = nd.ocommits[ref]
-                    return self._send(200, {"ref": ref, **j, **cov})
+                    _jo = dict(j)
+                    if "output" in _jo:
+                        _jo["output"] = nd._job_output(j)     # ★[M-216] 산출은 파일에서 합쳐 서빙(계약 불변)
+                        if _jo["output"] is None and j.get("delivered"):
+                            _jo["output_missing"] = True      # 노드 저장 장애 표시(정직 · 재검증 불가)
+                    return self._send(200, {"ref": ref, **_jo, **cov})
             if p.split("?")[0] in ("/log", "/cosigs") or p.startswith("/notes/"):   # ★[M-210] R3-F12-9 — 필수 since= 누락은 404 가 아니라 400+code
                 _why = "since=<정수>(≤18자리) 하나만 지원 — 추가 파라미터(limit 등)를 제거" if "since=" in p else "since=<정수> 필수"   # ★[M-211] R4-F12-L7
                 if p.startswith("/notes/") and not re.match(r"^/notes/[a-z0-9_-]{1,64}\?", p):
@@ -2637,7 +2771,7 @@ def main():
                     verify_slots=a.verify_slots, verify_wait=a.verify_wait,
                     notes_per_owner_max=a.notes_per_owner_max, genesis_import=a.genesis_import)
     print(json.dumps({"r1": "up", "port": a.port, "seq": len(nd.w.log),
-                      "epoch": nd.w.epoch, "audit": nd.audit()["ok"]},
+                      "epoch": nd.w.epoch, "audit": (nd.audit()["ok"] if len(nd.w.log) <= 2000 else "deferred")},   # ★[M-216] N-45 — 큰 원장은 기동 시 3번째 리플레이 생략
                      ensure_ascii=False), flush=True)
     srv.serve_forever()
 

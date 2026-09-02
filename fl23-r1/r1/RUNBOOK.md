@@ -101,7 +101,7 @@ python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key
 | `anchor0.key` | 워커 좌석 키 | 워커 사칭 |
 
 ★백업(둘 다 필요):
-- **노드 호스트**: `entries.jsonl`·`cosigs.jsonl`·`jobs.json` + `node_secret`·`cosign1.key`·
+- **노드 호스트**: `entries.jsonl`·`cosigs.jsonl`·`jobs.snapshot.json`+`jobs.jsonl`(★[M-216] 잡 = 스냅샷+append-only 저널 · 구판 `jobs.json` 은 이주 원천)·`outputs/`(산출 본문) + `node_secret`·`cosign1.key`·
   `cosign_pubs.json`·`anchor0.key`(node 정지 중 복사 권장 — ack=내구는 fsync가 보장하나
   백업은 정지-중 사본이 안전).
 - ★**각 서명자 호스트**: `cosignN.key`와 그 `cosignN.key.state`(커서)를 **독립 백업** —
