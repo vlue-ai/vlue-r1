@@ -132,9 +132,10 @@ def a3_domain(port):
         out["★원장 도메인 → /challenge 거부"] = _post(port, "/challenge", {
             **bbody, "sig": c.key.sign(DOMAIN + lid + canon(bbody)).hex()})[0] != 200
         # 대조군: 올바른 도메인은 통과
+        cbody = {**bbody, "epoch": nd.w.epoch, "nonce": "ctrl"}          # ★[M-211] 챌린지 본문 신선도(epoch ±8 · 1회 서명) — 대조군도 현행 프로토콜로
         out["대조군 — 올바른 도메인 통과"] = _post(port, "/challenge", {
-            **bbody,
-            "sig": c.key.sign(b"FL23-CHAL" + lid + canon(bbody)).hex()})[0] == 200
+            **cbody,
+            "sig": c.key.sign(b"FL23-CHAL" + lid + canon(cbody)).hex()})[0] == 200
         out["원장 무오염"] = nd.audit()["ok"] is True
     finally:
         srv.shutdown()
@@ -323,12 +324,12 @@ def a10_mixed(port):
                            challenge_budget=20, challenge_window=60)
     try:
         c, _wk, ref = _prep(port, data, name="mx")
-        body = {"ref": ref, "p": "mx"}
-        sig = c.key.sign(b"FL23-CHAL" + c.log_id + canon(body)).hex()
-        payload = {**body, "sig": sig}
         codes, lock = [], threading.Lock()
+        _ep = nd.w.epoch
 
         def hit():
+            body = {"ref": ref, "p": "mx", "epoch": _ep, "nonce": os.urandom(4).hex()}   # ★[M-211] 요청마다 새 본문(신선도 · 서명 1회 사용)
+            payload = {**body, "sig": c.key.sign(b"FL23-CHAL" + c.log_id + canon(body)).hex()}
             r = _post(port, "/challenge", payload, timeout=30)[0]
             with lock:
                 codes.append(r)

@@ -129,8 +129,8 @@ you by display order (absence of the position-bias channel is a property).
 - `sdk.py` from this folder (no other file is needed)
 - A node address (e.g. `http://127.0.0.1:8788`)
 
-⚠️Runtime error messages from the node and SDK are currently in **Korean** (error codes /
-English messages are a registered next-release item). Every rule those errors enforce is
+⚠️Runtime error message **text** from the node and SDK is currently in **Korean**; every 400 also carries a
+stable English `code` token (live — see the table above). English message text is a registered next-release item. Every rule those errors enforce is
 documented in this file — if you hit a 400, the relevant section here explains why.
 
 ## Five-minute onboarding
@@ -200,9 +200,9 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
   (no seed, no secrets) — the node's `/audit` is a cross-check, not a dependency.
   Details: `VERIFIER_EN.md`.
 - **What you must trust (current stage — two things remain)**: ⓐ**availability** — a
-  single sequencer can stop serving or drop your message (censorship is defended by the
-  ledger law's REQUEST/FORCE mandatory-inclusion; history already served cannot be
-  retroactively rewritten) ⓑ**checker execution** — checks run at the node when a job
+  single sequencer can stop serving or drop your message (the ledger law's REQUEST/FORCE
+  mandatory-inclusion is the censorship defense, but ⚠️it is not yet wired to the r1 surface — see
+  VERIFIER's remaining-trust table; history already served cannot be retroactively rewritten) ⓑ**checker execution** — checks run at the node when a job
   settles (every settled claim stays re-checkable afterward, by `challenge` and by full
   replay). · ★Your first fetch of `/meta`'s public keys **from the node is
   trust-on-first-use (TOFU)** — strict verifiers should compare log_id, the
@@ -224,7 +224,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `GET /job/{ref}` | Job status (including output and verification detail) |
 | `GET /board` · `POST /board {post, sig}` | ★Order board (off-ledger — ask/want posts · retraction body `{rm, p}`) |
 | `GET /accept` · `POST /accept {rec, sig}` | ★Acceptance channel ([M-181] — **record-only**: no settlement or rate contact): buyer only, post-delivery, verdict ∈ {accept, rework}, one record per (ref, buyer) — repost replaces. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · signing domain `FL23-ACPT`. Public on both sides (sellers' rework rates ↔ buyers' rejection rates — `underwriter.py acceptance`) |
-| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) · fetch body `{p, fetch: true, epoch}` — `epoch` within ±3 of the node's, one use per signature (no static bearer token) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) · fetch body `{p, fetch: true, epoch, nonce}` — `epoch` within ±8 of the node's; **each signature is single-use**, so re-polling within the same epoch must change the body via `nonce` (any string) to get a fresh signature (no static bearer token) |
 | `GET /stats` | Records (p̂) · loss ratios · supply by color · ★fill tape (`tape`) |
 
 Envelope signature format (if you want to implement it yourself):
@@ -434,7 +434,7 @@ c.declare_version("beta/m2")        # (anchors) declare a deployment change — 
 
 ⚠️Honest disclosure (v0): the integrity of output verification currently rests on the
 node operator — but `/job/{ref}` publishes outputs, so **anyone can re-verify**, and
-a post-hoc **challenge** is live: `c.challenge(ref)` / `POST /challenge` records a recompute mismatch on the ledger
+a post-hoc **challenge** is live: `c.challenge(ref)` / `POST /challenge` (body `{ref, p, epoch, nonce, sig}` — domain `FL23-CHAL`, `epoch` within ±8 of the node's, each signature single-use) records a recompute mismatch on the ledger
 (`/stats.anchors[*].challenged`); full-state replay (`replay_full.py`) re-derives every settlement.
 
 ## How to read verify_chain (confirmed vs pending)
@@ -444,8 +444,9 @@ co-signatures can arrive very slightly late (within a tick) on just-created entr
 **querying at a moment of rapid ledger growth may report the newest one or two entries as
 `pending`** (not yet confirmed) — this is normal; querying an idle ledger or between ticks
 usually shows `pending: 0` ("fully confirmed"). ★On production the second co-signer
-(cosign2) runs on a ~30-minute remote schedule, so **dozens of pending entries are
-normal** — confirmed absorbs the 2-of-3 lag and catches up (see RELEASE's signer table). `ok: true` means the confirmed prefix is
+(cosign2) runs on a GitHub Actions 30-minute schedule that **frequently skips** (fires roughly half the time), so
+**dozens of pending entries are normal and lags of ~100 entries have been observed** — the operator dispatches the
+signer manually; confirmation of an entry is delayed, never reverted (see RELEASE's signer table). `ok: true` means the confirmed prefix is
 intact; a pending tail confirms shortly. `ok: false` occurs only on real problems (head
 mismatch · forged signature · a gap between confirmed entries). To strictly await a
 specific transaction's confirmation, re-query until its seq enters the `confirmed` range

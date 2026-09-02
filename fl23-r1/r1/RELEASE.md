@@ -31,7 +31,7 @@ AU = 프로토콜 회계 단위(법정통화·증권·투자상품·보험상품
 | fp0 (창세 지문) | `994c73da8ceb854adbd40a602e0fa2253bd5c2c0057037e58fbaff9d1fa45cea` |
 | operator_pk | `175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd` — ★FL2.3: 이 값 = `/meta.operator_pk0`(창세 키 = 검증 시작점 · 번들 매니페스트 서명 키) · REKEY 뒤엔 `/meta.operator_pk`(현행)가 달라진다(키-일정은 로그-파생) |
 | anchor0_pk (창세 좌석) | `cd0aff94664e9509763179eeeff6628138fb58adb2c556bebf73e2b93d649d3e` |
-| cosigner pks (2-of-3) | cosign1 `cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3`(노드 호스트) · cosign2 `3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214`(★분리 — GitHub Actions 서명자 · 30분 주기 = 확정 비동기·pending 정상) · cosign3 `bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad`(콜드 예비 — 비가동) |
+| cosigner pks (2-of-3) | cosign1 `cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3`(노드 호스트) · cosign2 `3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214`(★분리 — GitHub Actions 서명자 · 30분 스케줄 **최선-노력**: 스케줄이 절반쯤 건너뛰어 2-of-3 확정은 비동기이고 ~100항 지연이 관측됨 · 운영자 수동 dispatch · pending 정상) · cosign3 `bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad`(콜드 예비 — 비가동) |
 |  bridge_ref (세대 계보) | `3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd` — **FL2.2 프로덕션 원장 최종 head**(FL2.2 log_id `e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e` · 전량 아카이브 = 공개 리포 `archive/fl22/` · kernel22 로 영원히 재검증) · ★정직([M-209]): 이 head(seq 10,899)는 운영자 + cosign1(노드 호스트) 서명만 있고 **마지막 2-of-3 확정 head 는 seq 10,762 `005a5035…`** — 꼬리 137항은 전부 운영자 TICK(잔고 무변)이라 승계 상태는 동일하다(`archive/fl22/README`). |
 | ★genesis_head (seq 0 head) | `5a387eea3aecf6ed86f94f77dc32fb39cacabafeb97e15459c641c3f8a1ebb49` — GENESIS_IMPORT 항의 head(정체성 log_id·fp0 는 창세 **내용**을 약속하지 않으므로 이 값이 「어느 창세인가」를 고정한다 · 냉독 4 F07) |
 | ★snapshot_hash (창세 수입) | `acf1f24e71ba37daaf9d6ac9db0949063bf42f91cf3eab4b25f05876f3361844` — FL2.2 아카이브 최종 상태(anchor0 40,000 · F 0 · F_uw 0 · exited 0)를 J-11 형태로 정규화한 해시 · `archive/fl22` 리플레이로 재유도 가능 |
@@ -41,7 +41,7 @@ AU = 프로토콜 회계 단위(법정통화·증권·투자상품·보험상품
 ## 세대 계보 (전량 검증-가능)
 
 FL2.0 파일럿 → FL2.1 파일럿(`bridge_ref 2d0132…`) → **FL2.1 프로덕션**(`3d9946…7112` ·
-3,225항 · 아카이브 공개 — kernel21로 audit 재실행 가능) → **FL2.2 프로덕션**(log_id `e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e` · 아카이브 `archive/fl22/` · kernel22 로 재실행 가능) → **FL2.3 프로덕션(현행)** —
+3,225항 · 아카이브 공개 — head-사슬·운영자 서명·공동서명은 누구나 재검증 · ⚠️법-리플레이는 kernel21 이 공개 API(from_public) 가 없어 창세 시드가 필요) → **FL2.2 프로덕션**(log_id `e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e` · 아카이브 `archive/fl22/` · kernel22 로 재실행 가능) → **FL2.3 프로덕션(현행)** —
 각 세대의 최종 head가 다음 창세에 결박된다(U-0 계보). FL2.3 창세는 ★**GENESIS_IMPORT**(J-11)로 전임 잔고를 첫 엔트리에 수입한다(이번은 anchor0 자기-IOU 만 — 승계 리허설).
 
 ## ★FL2.3에서 달라진 것 (「완성의 형태」 — 법이 규모·적대·키-수명·정합에 닫힘)

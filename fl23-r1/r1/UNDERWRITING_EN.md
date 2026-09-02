@@ -46,7 +46,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
   covering expired claims (instant loss) · compensation notes are issued in the
   defaulting anchor's color (the risk tag stays in circulation).
 - ★**Track record = asset**: your history is ledger-derived at
-  `/stats.underwriters` and portable via `/attest` · ★since [M-164] a **bound
+  `/stats.underwriters` and portable via `/attest` (the document's `underwriter` field · [M-211]) · ⚠️anchor p̂ / segments are **job-path only** (raw REDEEM deliveries and failures have no checker and are not counted · [M-211]) · ★since [M-164] a **bound
   premium** rides along: premiums settled atomically (/block) are captured from the
   live notes pre-commit and served as `prem_verified` / `loss_ratio_verified` — ★a **bound face**, not "payment by an independent counterparty" (payer- and color-agnostic; a self-IOU qualifies — see §Honesty) — a
   forge-proof loss-ratio denominator, separate from self-declared prem (UW-1); the
@@ -462,6 +462,7 @@ this section is its summary).
   a "second-loss position" is **not enforced by law**. Buyers should inspect the collateral color before closing a cover (`/notes/@uw:<ref>` now returns the escrow's color · [M-208]);
   the value of collateral is the trust exchange-rate of its color (A-2).
 - **Premiums have a color too.** A premium paid in the claim anchor's own color is worth 0 if that anchor absconds — `auto_fill` can reject **both the claim anchor's color and the payer's (buyer's) own color** via the policy `prem_reject_anchor_color` (off by default — the dominant issuer's color is the ordinary premium path; [M-209] R2-F10-B; `prem_colors` allow-list optional)
+  ⚠️The opt-in flag alone is not enough: it filters only the anchor's and the payer's colors, so a **third identity's self-IOU color** still fills — unattended `auto_fill` must be combined with a `prem_colors=[...]` allow-list ([M-211] R4-F10-7).
   and prices with the same ctx (δ·carry) as `scan` ([M-208] R4-22·23).
 - **Settlement change is re-issued in the owner's own color** (collateral remainder · seized change — the A-2 rule). An underwriter who posted foreign-color assets bears the cost of that
   change turning into its own liability — documented, but rate v2 does not price it (registered · color-preserving change is a generation item).

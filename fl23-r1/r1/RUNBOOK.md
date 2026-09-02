@@ -72,10 +72,11 @@ python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key
   (한도 BOOT_CAP=8 — 소스 상수). 색은 로그-파생이라 백업 대상 아님(리플레이가 재구성).
 - 정지: SIGTERM/SIGKILL 모두 안전(A-3 — 기동 시 전체 리플레이·audit·색 재구성 · ⚙️FL2.3: REJECT 항 재유도 포함).
 - ⚙️★**FL2.3 다이얼**: `--notes-per-owner-max N`(소유자별 유통-노트 상한 · 기본 GEN 512 · 0 = 끔 — 자발 민트 한정) ·
-  `--genesis-import PATH`(첫 기동에서만 · 첫 엔트리 GENESIS_IMPORT = 승계 스냅샷 — 창세 자기-IOU 를 **대체**한다 · 절차 =
-  `deploy/FL23_GENESIS.md`).
+  `--genesis-import PATH`(첫 기동에서만 · 첫 엔트리 GENESIS_IMPORT = 승계 스냅샷 — 창세 자기-IOU 를 **대체**한다 · 운영자-측 절차는
+  비공개 · 스냅샷 사상 규칙은 `VERIFIER.md` 의 J-11 레시피 참조).
+- ⚙️**per-IP join 창**(`--join-per-ip N` · 성공 join 만 계수 · 창 = `epoch // 60`): 창이 에포크로 회전하므로 `--auto-tick 0`(수동 틱) 노드에서는 창이 얼어 평생 상한이 된다 — auto-tick 과 함께 쓴다([M-210] N-42). `--rate-limit`·`--challenge-budget` 도 같은 에포크-창 규약.
 - ⚙️★**운영자 키 선-회전**(FL2.3 J-4): 노드 프로세스 안에서 `Node.rekey_operator()`(전역 락 · REKEY 제출 → 서명 키 교체 →
-  `operator.key` 원자 기록) — 절차·한계 = `deploy/KEY_ROTATION.md §6′`. 재기동 시 `operator.key` 가 있으면 그 키로 서명한다
+  `operator.key` 원자 기록) — 절차·한계 = 아래 「운영자 키 회전 절차(공개판)」(운영자 사설 문서 `deploy/KEY_ROTATION.md` 는 번들에 없다). 재기동 시 `operator.key` 가 있으면 그 키로 서명한다
   (`node_secret` 은 창세 시드 — 불변). 검증자는 `/meta.operator_pk0` 에서 시작해 로그의 REKEY 로 키를 따라온다.
 - ⚙️**400 본문**: `{error(한국어 법 문언), code(영문 안정 코드), reject_seq?}` — `reject_seq` 는 원장의 REJECT 항(인증-거부 기록).
 - ⚙️★**운영자 키 회전 절차(공개판 · [M-210])** — 사설 `KEY_ROTATION.md` 없이도 재현 가능한 전문: ① 노드 프로세스 안에서
@@ -83,7 +84,7 @@ python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key
   소유-증명) 제출 → ④ 서명 키 교체 → ⑤ `operator.key.next` → `operator.key` 원자 교체. 크래시 매트릭스(재기동 `_reconcile_operator_key`):
   ②~③ 사이 = `.next` 폐기·구 키 유지 / ③~⑤ 사이 = 원장 REKEY 와 대조해 `.next` 승격 / `.next` 손상 + 미커밋 = 폐기 / `.next` 손상 + 커밋됨
   = **명시적 기동 거부**(무음 브릭 없음 — 백업 키에서 복구). 검증자는 `/meta.operator_pk0` 에서 시작해 REKEY 로 키를 따라오므로 회전은
-  외부 공지 없이 검증된다. 참여자 SDK `c.rekey()` 도 같은 `.next` 선기록 순서(`/pk/<p>` 로 재조정).
+  외부 공지 없이 검증된다. 참여자 SDK `c.rekey()` 매트릭스([M-211]): `.next` 선기록(O_EXCL · 기존 `.next` 가 있으면 먼저 재조정 · 미해결이면 거부) → 제출 → 4xx 거부 = `.next` → `.next.stale-<ts>` 보관 · 성공 = 구 키 `.prev` 보관 뒤 교체 · 5xx/타임아웃 = `.next` 유지. 재기동 재조정은 `/pk/<p>` 가 **새 키와 같을 때만 승격**, 현행 키와 같으면 미커밋 확정(보관), 그 외(조회 실패·타 키)는 무접촉 + 다음 서명 전 재시도 — 어떤 갈래도 키 재료를 지우지 않는다.
 
 ## 비밀·키 (D-1 — 전부 data_dir · 0600 · 첫 기동 시 자동 생성)
 

@@ -173,12 +173,12 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
   전-상태를 재실행해 검증합니다 — 노드의 `/audit`는 교차-참고이지 의존이 아닙니다.
   상세는 `VERIFIER.md`.
 - **믿어야 하는 것(현 단계 정직 고지 — 남는 것은 둘)**: ⓐ**가용성** — 단일 시퀀서라
-  운영자가 서빙을 멈추거나 메시지를 떨어뜨릴 수 있습니다(검열은 원장 법의 REQUEST/FORCE
-  강제-포함으로 방어 · 이미 서빙한 역사의 소급 수정은 불가) ⓑ**checker 실행** — 판정
+  운영자가 서빙을 멈추거나 메시지를 떨어뜨릴 수 있습니다(검열 방어 = 원장 법의 REQUEST/FORCE
+  강제-포함이나 ⚠️r1 표면에는 아직 배선되지 않음(VERIFIER 「남은 신뢰 가정」) · 이미 서빙한 역사의 소급 수정은 불가) ⓑ**checker 실행** — 판정
   코드는 정산 시점에 노드에서 실행됩니다(정산된 청구는 이후에도 `challenge`와 전-원장
   리플레이로 재검증 가능). · ★`/meta`의 공개키들을 **노드에게서 받는 첫 조회는
-  신뢰-최초-사용(TOFU)**입니다 — 엄격한 검증자는 log_id·운영자/공동서명 공개키를 게시
-  리포의 `RELEASE.md`(대역-외 채널)와 대조하십시오.
+  신뢰-최초-사용(TOFU)**입니다 — 엄격한 검증자는 log_id·운영자/공동서명 공개키 **와 `genesis_head`** 를 게시
+  리포의 `RELEASE.md`(대역-외 채널)와 대조하십시오(SDK·`replay_full.py` 는 번들 RELEASE 의 `genesis_head` 를 기본 핀으로 쓴다).
 
 ## API 참조(요약)
 
@@ -195,7 +195,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
 | `GET /accept` · `POST /accept {rec, sig}` | ★수락-채널([M-181] — **record-only**·정산·요율 무접촉): 이행-후 매수자만, verdict ∈ {accept, rework}, (ref, p)당 1건 — 재게시 = 교체. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · 서명 도메인 `FL23-ACPT`. 양측-공개(판매자 재작업률 ↔ 매수자 거절률 — `underwriter.py acceptance`) |
-| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) · fetch 본문 `{p, fetch: true, epoch}` — `epoch` 는 노드 ±3 · 서명 1회 사용(정적 자격 재생 불가) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) · fetch 본문 `{p, fetch: true, epoch, nonce}` — `epoch` 는 노드 ±8 · **서명 1회 사용**이므로 같은 에포크 재-폴링은 `nonce`(임의 문자열)로 본문을 바꿔 새 서명을 만든다(정적 자격 재생 불가) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
@@ -379,7 +379,7 @@ c.declare_version("acme/m2")        # (앵커) 배포 선언 — ★관례 = "�
 ```
 
 ⚠️정직 고지(v0): 산출 검증의 성실성은 현재 노드 운영자에 기댄다 — 단 `/job/{ref}`가
-산출을 공개하므로 **누구나 재검증**할 수 있고, 사후 **챌린지**가 라이브입니다: `c.challenge(ref)` / `POST /challenge` 가
+산출을 공개하므로 **누구나 재검증**할 수 있고, 사후 **챌린지**가 라이브입니다: `c.challenge(ref)` / `POST /challenge`(본문 `{ref, p, epoch, nonce, sig}` — 도메인 `FL23-CHAL` · `epoch` 는 노드 ±8 · 서명 1회 사용) 가
 재계산 불일치를 원장에 기록(`/stats.anchors[*].challenged`) · 전-상태 리플레이(`replay_full.py`)가 모든 정산을 재유도합니다.
 
 ## verify_chain 읽는 법 (확정과 pending)
@@ -388,7 +388,7 @@ c.declare_version("acme/m2")        # (앵커) 배포 선언 — ★관례 = "�
 방금 만들어진 항목에 아주 짧게(1틱 이내) 늦게 도착할 수 있어, **원장이 빠르게 갱신되는
 순간에 조회하면 최신 한두 개가 `pending`**(확정 미도달)으로 보고될 수 있습니다 — 정상이며,
 한가한 원장이나 틱 사이에 조회하면 대개 `pending: 0`("전량 확정")입니다.
-★프로덕션의 둘째 서명자(cosign2)는 **30분-주기 원격 서명자**라 pending 수십도 정상입니다 —
+★프로덕션의 둘째 서명자(cosign2)는 **GitHub Actions 30분 스케줄의 원격 서명자**인데 그 스케줄은 **자주 건너뛴다**(발화율 ≈ 절반) — pending 수십은 정상이고 **~100 항까지의 지연이 관측**됐다(운영자가 수동 dispatch 로 회복 · 한 항의 확정이 늦어질 뿐 되돌려지지는 않는다) —
 confirmed가 2-of-3 지연을 흡수하며 따라옵니다(RELEASE의 서명자 구성 그대로). `ok: true`면 확정
 prefix가 무결하다는 뜻이고, pending 꼬리는 곧 확정됩니다. `ok: false`는 진짜 문제(head
 불일치·서명 위조·확정 사이 구멍)일 때만 납니다. 특정 거래의 확정을 엄격히 기다린다면 그

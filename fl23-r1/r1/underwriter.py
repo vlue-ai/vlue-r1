@@ -841,10 +841,15 @@ def acceptance(c, tau=None):
         # ERC8004_BINDING 값과 대조 — QUICKSTART 신뢰-사다리 0단). acceptance 는 자문
         # 계기라 그 핀을 강제하지 않는다 · sig_verified 의 뜻을 note 에 자격한다.
         seq = 0
+        pkhist = {}                                              # ★[M-211] R4-F06-4 — 주체 → [이전 키…](REKEY 뒤 옛 레코드도 서명-시점 키로 검증)
+        _rounds, _bytes = 0, 0
         while True:
             page = c._get(f"/log?since={seq}")["entries"]
             if not page:
                 break
+            _rounds += 1; _bytes += len(json.dumps(page))
+            if _rounds > 10_000 or _bytes > 256 * 1024 * 1024:     # ★[M-211] R4-F11-M3 — 형제 경로(verify_chain·cosigner)와 같은 누적 상한
+                raise ValueError("acceptance: /log 누적 상한 초과(악의 노드 방어)")
             for e in page:
                 if "head_sig" not in e:
                     raise ValueError("head_sig 부재 — pkmap 결박 불가")
@@ -872,6 +877,8 @@ def acceptance(c, tau=None):
                 elif env.get("typ") == "REKEY" and e.get("kind") != "REJECT":   # ★[M-208] 키-일정 추종(operator·참여자)
                     a_ = env.get("args") or {}
                     _npk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(a_["new_pk"]))
+                    if a_.get("principal") in pkmap:
+                        pkhist.setdefault(a_.get("principal"), []).append(pkmap[a_.get("principal")])
                     pkmap[a_.get("principal")] = _npk
                     if a_.get("principal") == "operator":
                         op_pk = _npk
@@ -890,9 +897,13 @@ def acceptance(c, tau=None):
             if pk is None or not isinstance(sig, str):
                 rejected += 1
                 continue
-            try:
-                pk.verify(bytes.fromhex(sig), ACCEPT_DOMAIN + c.log_id + canon(rec))
-            except (InvalidSignature, ValueError, TypeError):
+            _okv = False
+            for _pk in [pk] + list(pkhist.get(rec.get("p"), [])):   # ★[M-211] 현행 키 → 이전 키들(회전 뒤 옛 레코드 보존)
+                try:
+                    _pk.verify(bytes.fromhex(sig), ACCEPT_DOMAIN + c.log_id + canon(rec)); _okv = True; break
+                except (InvalidSignature, ValueError, TypeError):
+                    continue
+            if not _okv:
                 rejected += 1
                 continue
         try:

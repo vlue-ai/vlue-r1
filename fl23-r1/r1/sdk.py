@@ -76,26 +76,59 @@ def ed25519_weak_pk(pk_bytes):
 
 MAX_TOTAL_RESP = 256 * 1024 * 1024           # ★[M-209] R2-F11-2 — verify_chain 이 누적 판독하는 총량 상한(페이지 반복으로 메모리 무계 방지)
 
-def release_pins(path=None):
-    """★[M-210] R3-F07-1 — 번들에 동봉된 RELEASE(_EN).md 에서 대역-외 핀(genesis_head · log_id · operator_pk0)을 읽는다.
-    검증기가 같은 저장소의 RELEASE 를 0단 재료로 이미 신뢰하므로, 핀을 명시 안 하면 이 값을 기본으로 쓴다(핀 없는 검증 = 동일-정체성·다른-창세 임포스터 통과)."""
-    import os as _os, re as _re
-    here = _os.path.dirname(_os.path.abspath(__file__))
+RELEASE_PINS = {   # ★[M-211] R4-F07/F12/F05 — 번들 RELEASE 정체성 값의 **내장 사본**(sdk.py 단독 복사에도 핀 유지 · T-IMPORT23 가 RELEASE 파일과 대조)
+    "log_id": "3128a815d8657e0624eb91b81a1dec621cc7674cc7e9e677159268f83e0a6faf",
+    "genesis_head": "5a387eea3aecf6ed86f94f77dc32fb39cacabafeb97e15459c641c3f8a1ebb49",
+    "operator_pk0": "175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd",
+    "cosigners": ["cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3",
+                  "3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214",
+                  "bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad"],
+    "cosign_k": 2,
+}
+
+
+def _parse_release(txt):
+    """RELEASE(_EN).md 정체성 표에서 핀 값을 읽는다 — 표 **셀** 기준(산문 속 다른 해시를 집지 않는다)."""
+    import re as _re
     out = {}
-    for fn in ([path] if path else ["RELEASE_EN.md", "RELEASE.md"]):
-        fp = fn if (path and _os.path.isabs(fn)) else _os.path.join(here, fn)
+    for key, pat in (("log_id", r"^\|\s*\**log_id\**\s*\|\s*`([0-9a-f]{64})`"),
+                     ("operator_pk0", r"^\|\s*\**operator_pk[^|\n]*\|\s*`([0-9a-f]{64})`"),
+                     ("genesis_head", r"^\|[\s★\*]*genesis_head[^|\n]*\|\s*`([0-9a-f]{64})`")):   # 행 머리의 ★/굵게 표식 허용(다른 행의 산문은 안 집는다)
+        m = _re.search(pat, txt, flags=_re.M)
+        if m:
+            out[key] = m.group(1)
+    m = _re.search(r"^\|\s*cosigner pks \((\d)-of-(\d)\)\s*\|([^\n]*)", txt, flags=_re.M)
+    if m:
+        out["cosign_k"] = int(m.group(1))
+        out["cosigners"] = _re.findall(r"`([0-9a-f]{64})`", m.group(3))
+    return out
+
+
+def release_pins(path=None):
+    """★[M-210]/[M-211] 대역-외 핀(genesis_head · log_id · operator_pk0 · cosigners · cosign_k).
+    원천 = sdk.py 옆의 RELEASE_EN.md·RELEASE.md(둘 다 읽어 교차) → 없으면 내장 RELEASE_PINS.
+    파일과 내장값이 어긋나면 **핀을 내지 않고** conflict 를 표시한다(틀린 핀으로 조용히 통과/실패하지 않는다)."""
+    import os as _os
+    here = _os.path.dirname(_os.path.realpath(__file__))
+    files = [path] if path else [_os.path.join(here, "RELEASE_EN.md"), _os.path.join(here, "RELEASE.md")]
+    parsed = []
+    for fp in files:
         try:
-            txt = open(fp, encoding="utf-8").read()
+            parsed.append(_parse_release(open(fp, encoding="utf-8").read()))
         except OSError:
             continue
-        for key, pat in (("genesis_head", r"genesis_head[^\n]*?`([0-9a-f]{64})`"), ("log_id", r"\| log_id \| `([0-9a-f]{64})`"),
-                         ("operator_pk0", r"\| operator_pk \| `([0-9a-f]{64})`")):
-            m = _re.search(pat, txt)
-            if m and key not in out:
-                out[key] = m.group(1)
-        if out:
-            break
-    return out
+    parsed = [x for x in parsed if x.get("log_id") and x.get("genesis_head")]
+    if not parsed:
+        return {**RELEASE_PINS, "source": "embedded"}
+    base = dict(parsed[0])
+    for other in parsed[1:] + [RELEASE_PINS]:
+        for k in ("log_id", "genesis_head", "operator_pk0"):
+            if other.get(k) and base.get(k) and other[k] != base[k]:
+                return {"source": "conflict", "conflict": k}
+    for k in ("operator_pk0", "cosigners", "cosign_k"):
+        base.setdefault(k, RELEASE_PINS[k])
+    base["source"] = "file"
+    return base
 
 
 MAX_RESP = 32 * 1024 * 1024                  # ★[M-208] 응답 본문 상한(32MB — /log 500항 × 16KB 봉투 상한 = 8MB 여유)
@@ -232,6 +265,11 @@ class Fl21Client:
         if os.path.exists(self.key_path):
             raw = bytes.fromhex(open(self.key_path).read().strip())
             return Ed25519PrivateKey.from_private_bytes(raw)
+        nxt = self.key_path + ".next"
+        if os.path.exists(nxt):                          # ★[M-211] R4-F06-8 — 키 파일 부재 + 회전 잔재 = 그 키가 유일 사본: 새 키를 만들지 않고 승격
+            os.replace(nxt, self.key_path)
+            raw = bytes.fromhex(open(self.key_path).read().strip())
+            return Ed25519PrivateKey.from_private_bytes(raw)
         k = Ed25519PrivateKey.generate()
         # ★비밀 원자-권한 생성([M-143] F-D): write-후-chmod의 umask 노출 창 제거
         fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -243,6 +281,9 @@ class Fl21Client:
     def rekey(self):
         """새 키 생성 → 소유-증명(새 키가 DOMAIN‖log_id‖REKEY‖p‖new_pk‖old_pk 에 서명) → REKEY 제출 →
         수용되면 키 파일을 원자 교체. 구-키 서명은 그 항 다음부터 거부된다."""
+        self._reconcile_key_next()                        # ★[M-211] R4-F02-1/F06-2 — 이전 회전 잔재를 먼저 해소(응답 유실 뒤 재시도가 유일 사본을 덮던 것)
+        if os.path.exists(self.key_path + ".next"):
+            raise RuntimeError("rekey: 이전 회전이 미해결(.next 존재 · /pk 대조 불가) — 노드 복귀 뒤 클라이언트를 재생성하면 자동 재조정된다")
         new = Ed25519PrivateKey.generate()
         new_pk = new.public_key().public_bytes_raw()
         old_pk = self.key.public_key().public_bytes_raw()
@@ -250,10 +291,17 @@ class Fl21Client:
         env = self.sign_env("REKEY", {"principal": self.p, "new_pk": new_pk.hex(),
                                       "new_sig": new.sign(msg).hex()})
         nxt = self.key_path + ".next"                    # ★[M-210] R3-F06-2 — 새 키를 제출 **전에** .next 로 fsync(제출 뒤 크래시 = 새 키 유실·구 키 거부 = 자기-브릭 방지)
-        fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)     # ★[M-211] O_EXCL — 기존 .next 를 절대 덮지 않는다
         with os.fdopen(fd, "w") as fh:
             fh.write(new.private_bytes_raw().hex()); fh.flush(); os.fsync(fh.fileno())
-        r = self._post("/submit", {"env": env})
+        try:
+            r = self._post("/submit", {"env": env})
+        except RuntimeError as _e:
+            if "HTTP 4" in str(_e):                      # 커널/노드가 거부 = 미커밋 확정 → .next 보관(삭제 아님) · 구 키 유지
+                import time as _t
+                os.replace(nxt, f"{nxt}.stale-{int(_t.time())}")
+            raise                                         # 5xx/타임아웃 = 커밋 여부 불명 → .next 그대로(다음 재조정이 /pk 로 판정)
+        self._backup_key(".prev")
         os.replace(nxt, self.key_path)
         self.key = new
         return {**(r if isinstance(r, dict) else {"r": r}), "new_pk": new_pk.hex()}
@@ -301,22 +349,40 @@ class Fl21Client:
         return self.key.public_key().public_bytes_raw().hex()
 
     def _reconcile_key_next(self):
-        """★[M-210] key_path.next 가 있으면(회전 제출 뒤 파일 교체 전 크래시) 노드의 현행 공개키(/pk/<p>)와 대조 — 같으면 승격 · 다르면 폐기."""
+        """★[M-210]/[M-211] key_path.next(회전 제출 뒤 파일 교체 전 크래시 잔재)를 노드 현행 공개키(/pk/<p>)와 대조.
+        ① /pk == .next 키 → 승격(구 키는 .prev 로 보관) ② /pk == 현행 키 → 회전 미커밋 확정 → .next 를 .stale-<ts> 로 **보관**(삭제 아님)
+        ③ 그 외(조회 실패·비정형·타 키) → **무접촉** + key_next_unresolved 표시(서명 전 재시도) — 어떤 갈래도 키 재료를 지우지 않는다(R4-F02/F06 HIGH)."""
         nxt = self.key_path + ".next"
+        self.key_next_unresolved = False
         if not os.path.exists(nxt):
             return
         try:
             cand = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(open(nxt).read().strip()))
+        except Exception:
+            self.key_next_unresolved = True          # 손상 .next — 보존(운영자 노드와 달리 기동 거부는 안 하되 경고 플래그)
+            return
+        try:
             cur = (self._get(f"/pk/{self.p}") or {}).get("pk")
         except Exception:
-            cand, cur = None, None
-        if cand is not None and cur and cand.public_key().public_bytes_raw().hex() == cur:
+            cur = None
+        cand_hex = cand.public_key().public_bytes_raw().hex()
+        my_hex = self.key.public_key().public_bytes_raw().hex() if getattr(self, "key", None) else None
+        if isinstance(cur, str) and cur == cand_hex:
+            self._backup_key(".prev")
             os.replace(nxt, self.key_path); self.key = cand
+        elif isinstance(cur, str) and my_hex and cur == my_hex:
+            import time as _t
+            os.replace(nxt, f"{nxt}.stale-{int(_t.time())}")   # 미커밋 확정 — 보관만
         else:
-            try:
-                os.remove(nxt)
-            except OSError:
-                pass
+            self.key_next_unresolved = True
+
+    def _backup_key(self, suffix):
+        try:
+            if os.path.exists(self.key_path):
+                import shutil as _sh
+                _sh.copy2(self.key_path, self.key_path + suffix)
+        except OSError:
+            pass
 
     # ── HTTP ──
     def _req(self, method, path, obj=None):
@@ -343,6 +409,8 @@ class Fl21Client:
     # ── 봉투 서명(커널과 바이트-동일 — 골든 결박) ──
     def sign_env(self, typ, args, nonce=None):
         """서명 봉투. ★[M-210] nonce 명시 = 같은 주체가 한 /block 에 둘 이상의 다리를 넣을 때(커널은 다리마다 nonce 를 전진: n, n+1, …)."""
+        if getattr(self, "key_next_unresolved", False):     # ★[M-211] 회전 잔재 미해결 → 서명 전 재조정 재시도(브릭 대신 자기치유)
+            self._reconcile_key_next()
         st = self._get(f"/nonce/{self.p}")
         _n = st["nonce"] if nonce is None else int(nonce)
         body = {"typ": typ, "args": args, "p": self.p, "epoch": st["epoch"]}
@@ -505,7 +573,8 @@ class Fl21Client:
         """이행-완료 잡의 재검증을 노드에 요구한다(등록 주체 서명 — 오프-원장 요청).
         일치 = 계수만 · ★불일치 = 온-원장 기록(fl21.challenge — 앵커 공개 실적).
         표본-검증 클래스는 재검증마다 새 구간을 뽑아 검증 깊이가 실제로 깊어진다."""
-        body = {"ref": str(ref), "p": self.p}
+        import secrets as _sec
+        body = {"ref": str(ref), "p": self.p, "epoch": self._get("/state")["epoch"], "nonce": _sec.token_hex(8)}   # ★[M-211] R4-F09-3 — 릴레이 동형 신선-서명(영구 재생 토큰 차단)
         sig = self.key.sign(self._d["chal"] + self.log_id + canon(body)).hex()
         return self._post("/challenge", {**body, "sig": sig})
 
@@ -668,28 +737,71 @@ class Fl21Client:
     def fetch_attest(self, principal):
         return self._get(f"/attest/{principal}")
 
+    def _operator_key_schedule(self):
+        """★[M-211] R4-F06-3 — 운영자 키-일정 [(발효 seq, pk_hex)]: 시작 = operator_pk0(RELEASE 핀이 있으면 그 값 · 없으면 /meta.operator_pk0),
+        이후 로그의 운영자 REKEY(비-REJECT) 항마다 교체. /meta.operator_pk(노드 주장 현행 키)는 **믿지 않는다**(미러가 /meta 만 바꿔 위조 어테스트를 통과시키던 것)."""
+        meta = self._get("/meta"); n = int((self._get("/state") or {}).get("seq") or 0)
+        cache = getattr(self, "_opk_cache", None)
+        if cache and cache[0] == n:
+            return cache[1]
+        pins = release_pins()
+        pk0 = pins.get("operator_pk0") if pins.get("source") != "conflict" and str(meta.get("log_id")) == pins.get("log_id") else None
+        pk0 = pk0 or meta.get("operator_pk0") or meta["operator_pk"]
+        sched = [(0, pk0)]
+        if meta.get("operator_pk") != pk0:                # 회전이 있었다고 주장 → 로그에서 REKEY 를 실제로 찾는다(없으면 일정은 pk0 하나)
+            s_, seen = 0, 0
+            while seen < 200:
+                page = (self._get(f"/log?since={s_}") or {}).get("entries") or []
+                if not page:
+                    break
+                for e in page:
+                    env = e.get("env") or {}
+                    if e.get("kind") != "REJECT" and env.get("typ") == "REKEY" and env.get("p") == "operator":
+                        sched.append((int(e.get("seq", 0)) + 1, str((env.get("args") or {}).get("new_pk"))))
+                s_ += len(page); seen += 1
+        self._opk_cache = (n, sched)
+        return sched
+
     def verify_attest(self, att):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey as _PK)
         doc = att["doc"]
         if doc.get("complete") is not True:
-            return {"ok": False, "why": "부분 발췌 = 무효(전량-아니면-무)"}
-        self.meta = self._get("/meta")                     # ★[M-210] R3-F06-5 — 운영자 회전 뒤 캐시된 키로 오탐 거부하지 않게 매번 현행 /meta
-        pk = _PK.from_public_bytes(bytes.fromhex(self.meta["operator_pk"]))
+            return {"ok": False, "why": "부분 발췌 = 무효(전량-아니면-무) — stale 어테스트(as_of < upto)도 여기 포함"}
+        if doc.get("log_id") != self.log_id.hex():         # ★[M-211] 다른 원장의 어테스트를 이 원장 것으로 받지 않는다
+            return {"ok": False, "why": "log_id 불일치(다른 원장의 어테스트)"}
+        sched = self._operator_key_schedule()
+        upto = int(doc.get("upto_seq") or 0)
+        active = [pk for (frm, pk) in sched if frm <= upto]
+        try_pks = [active[-1]] if active else [sched[0][1]]
         try:
-            pk.verify(bytes.fromhex(att["operator_sig"]),
-                      self.domain + canon(doc))
-            return {"ok": True, "principal": doc["principal"],
-                    "upto_seq": doc["upto_seq"]}
-        except InvalidSignature:
-            return {"ok": False, "why": "서명 위조"}
+            for hx in try_pks:
+                try:
+                    _PK.from_public_bytes(bytes.fromhex(hx)).verify(bytes.fromhex(att["operator_sig"]), self.domain + canon(doc))
+                    return {"ok": True, "principal": doc["principal"], "upto_seq": doc["upto_seq"], "key": hx[:16]}
+                except InvalidSignature:
+                    continue
+            return {"ok": False, "why": "서명 위조(발효 운영자 키-일정 아래 검증 실패)"}
+        except (ValueError, TypeError):
+            return {"ok": False, "why": "어테스트 형식 비정형"}
 
     # ── 라이트 검증(A-6 · R-6 봉합): 확정 높이까지 엄격 검증 + 미서명 최신 꼬리는 pending ──
     def verify_chain(self, since=0, limit_batches=200, expect_genesis_head=None):
-        if expect_genesis_head is None:                      # ★[M-210] 기본 핀 = 동봉 RELEASE 의 genesis_head — 노드가 RELEASE 의 log_id 를 주장할 때만(다른 배포는 무핀)
-            _pins = release_pins()
-            if _pins.get("log_id") and str((self.meta or {}).get("log_id")) == _pins["log_id"]:
-                expect_genesis_head = _pins.get("genesis_head")
+        # ★[M-210]/[M-211] 기본 핀 = RELEASE(파일 또는 내장 사본)의 genesis_head — 노드가 RELEASE 의 log_id 를 주장할 때만.
+        #   결과는 핀 여부를 **증언**한다(genesis_pin · release_identity) — 핀 없는 ok 와 핀 있는 ok 가 같은 출력이던 것(R4).
+        _pins = release_pins()
+        _pin_src = "flag" if expect_genesis_head is not None else None
+        _rel = "unknown"
+        if _pins.get("source") == "conflict":
+            _rel = "conflict"
+        elif _pins.get("log_id"):
+            _rel = "match" if str((self.meta or {}).get("log_id")) == _pins["log_id"] else "mismatch"
+        self._release_pins_eff = _pins if _rel == "match" else {}
+        if expect_genesis_head is None and _rel == "match":
+            expect_genesis_head = _pins.get("genesis_head"); _pin_src = "release"
+        if expect_genesis_head is None and _rel == "conflict":
+            return {"ok": False, "why": f"RELEASE 핀 충돌({_pins.get('conflict')}) — 파일과 내장 사본이 다르다 · expect_genesis_head= 를 명시하라",
+                    "genesis_pin": None, "release_identity": _rel}
         """head 사슬·운영자 서명은 전량 엄격. 공동-서명(k-of-n)은 비동기 도착하므로
         ★공동-서명이 아직 부족한 **최신 연속 꼬리**는 위반이 아니라 `pending`(확정 미도달).
         블록체인 confirmation-depth 시맨틱 — 확정 prefix가 정합이면 ok(pending 별도 보고).
@@ -703,7 +815,14 @@ class Fl21Client:
         비정형을 서빙해도 크래시(트레이스백) 대신 ok:false 를 돌려준다. 정당한 ok:false
         반환은 예외가 아니라 return 이라 이 래퍼를 그대로 통과한다."""
         try:
-            return self._verify_chain_inner(since, limit_batches, expect_genesis_head)
+            _r = self._verify_chain_inner(since, limit_batches, expect_genesis_head)
+            if isinstance(_r, dict):
+                _r["genesis_pin"] = _pin_src
+                _r["release_identity"] = _rel
+                if _pin_src is None:
+                    _r["pin_note"] = ("이 노드는 RELEASE 의 원장이 아니다(log_id 불일치) — 다른 배포면 정상 · 발표 원장을 기대했다면 위조" if _rel == "mismatch"
+                                      else "genesis_head 무핀 — expect_genesis_head= 를 명시하라")
+            return _r
         except Exception as e:
             return {"ok": False,
                     "why": f"검증 예외(악의 노드의 비정형 서빙 추정): {type(e).__name__}"}
@@ -716,6 +835,11 @@ class Fl21Client:
         co_pks = {c: Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
                   for c, h in meta["cosigners"].items()}
         k_need = meta["cosign_k"]
+        self._fetched_bytes = 0                                   # ★[M-211] R4-F05-7 — 호출마다 누적 리셋(조기 반환 잔량 합산 방지)
+        _pe = getattr(self, "_release_pins_eff", {}) or {}
+        if _pe.get("cosign_k") is not None:                      # ★[M-211] R4-F05-2 — 노드-선언 k·공동서명자 집합을 RELEASE 로 대조(k=0 「전량 확정」 위조 차단)
+            if int(k_need) < int(_pe["cosign_k"]) or set(meta["cosigners"].values()) != set(_pe.get("cosigners") or []):
+                return {"ok": False, "why": f"공동서명 구성이 RELEASE 와 다르다(노드 k={k_need} · 서명자 {len(meta['cosigners'])}명 vs RELEASE k={_pe['cosign_k']} · {len(_pe.get('cosigners') or [])}명)"}
         # ★[M-115] 봉투-서명 전량 검증 원료(냉독 결함 1 봉합 — 문서 주장을 참으로):
         # 참여자 pk = JOIN 항목에서 등록 · 창세 좌석 pk = /meta.genesis_pks · 운영자 = op_pk.
         # 이로써 「악의 운영자가 사용자-행위를 위조해 끼워 넣는」 것까지 라이트 검증이 잡는다.
@@ -817,8 +941,10 @@ class Fl21Client:
                     return {"ok": False, "why": f"약한 키 등록 seq {e.get('seq')}({_env['typ']}) — 저-위수 공개키는 소유-증명이 아니다(위조 가능 주체)"}
         try:
             claimed = int(self._get("/state").get("seq"))
+            if claimed < 0:
+                raise ValueError
         except Exception:
-            claimed = None
+            return {"ok": False, "why": "/state 비정형 — 꼬리-생략 검사를 할 수 없다(fail-closed)"}   # ★[M-211] R4-F05-6
         if entries and claimed is not None and entries[-1].get("seq") is not None and claimed > int(entries[-1]["seq"]) + 1:
             return {"ok": False, "why": f"꼬리 생략: 노드 /state.seq {claimed} > 서빙된 마지막 seq {entries[-1]['seq']}"}
         prev = None

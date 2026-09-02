@@ -11,7 +11,7 @@ four rungs (0 to 3) — trust decreases as you climb.
 
 ## Rung 0 — Out-of-band comparison (removes TOFU · mandatory before starting)
 
-Compare `log_id`, `operator_pk`, and the `cosigners` public keys from `GET /meta` against
+Compare `log_id`, `operator_pk`, the `cosigners` public keys **and `genesis_head`** (plus `snapshot_hash` for an imported genesis) from `GET /meta` against
 the **public release announcement** (`r1/RELEASE_EN.md` in this bundle — after publication,
 against the copy on the public announcement channel). If you simply accept the first keys
 the node hands you (trust-on-first-use), a malicious node can serve you a self-consistent
@@ -116,7 +116,8 @@ pure-stdlib and self-tested · on-chain submission is the operator's).
   ★Recipe (J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` with `sort_keys=True`,
   `separators=(",", ":")`, `ensure_ascii=False` — the FL2.3 value `acf1f24e…` re-derives from the FL2.2 archive's final state
   (anchor0 40,000 · F 0 · F_uw 0 · exited []).
-- **Archives**: the FL2.2 ledger (`archive/fl22/`) re-verifies with `fin_lean/lang22/kernel22.py`, FL2.1 with kernel21 — the
+  Mapping rule (predecessor final state → snapshot): notes keep their granularity as `{owner, face, issuer}` (`issuer` = the note's color = the FL2.2 service-layer EXT_IN recipient; the genesis self-IOU is anchor0) · `principals` = registry principals outside the genesis seats as `{p, pk}` · `F`/`F_uw` = fund balances · `exited` = the exit list.
+- **Archives**: the FL2.2 ledger (`archive/fl22/`) replays in full with `fin_lean/lang22/kernel22.py`; FL2.1 (`archive/fl21/`) re-verifies down to the head chain and signatures only (kernel21 has no seed-free replay API — last 2-of-3 confirmed seq 3,164 · 60-entry TICK tail) — the
   generation is chosen by the `/meta.domain` prefix (`FL22-` / `FL23-`).
 
 ## ★Full public state replay (H7 — since FL2.2 · the top trust rung)

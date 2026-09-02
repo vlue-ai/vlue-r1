@@ -30,7 +30,7 @@
 ## 실행
 
 ```bash
-python3 r1/test_r1.py                     # 수용 게이트 전량(R1_GATES_PASS)
+python3 r1/test_r1.py                     # 수용 게이트 전량(R1_GATES_PASS) · ⚠️로컬 포트 8791~8860 이 비어 있어야 한다(고정 포트 · 3~4분 · 다른 게이트 스위트와 동시 실행 금지)
 python3 r1/node.py --data DIR --port 8788 --auto-tick 2       # 노드
 python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key  # 앵커 워커
 ```

@@ -924,6 +924,19 @@ def gate_TSAMPLED(port=8797):
     out["★replay_full H7 true(표본 대조 포함)"] = _d.get("H7_FULL_REPLAY") is True and _d.get("balance_mismatch") == []
     out["★sample_union = 노드 checked"] = (sorted(r3["verify"]["checked"]) == _su.get(j3["ref"])
                                         and sorted(r2["verify"]["checked"]) == _su.get(j2["ref"]))
+    # ★[M-211] R4-F04-1/F05-1 — **음성** 케이스: 노드가 위조 checked 를 서빙하면 replay_full 은 H7 false(구판은 죽은 코드라 true)
+    _orig_chk = list(nd.jobs[j3["ref"]]["verify"]["checked"])
+    with nd.lock:
+        nd.jobs[j3["ref"]]["verify"]["checked"] = [999, 1000]
+    _rpn = _sp.run([_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_full.py"),
+                    "--url", f"http://127.0.0.1:{port}"], capture_output=True, text=True, timeout=120)
+    try:
+        _dn = json.loads(_rpn.stdout.strip().splitlines()[-1]) if not _rpn.stdout.strip().startswith("{") else json.loads(_rpn.stdout)
+    except Exception:
+        _dn = {}
+    out["★위조 checked → replay_full H7 false"] = _dn.get("H7_FULL_REPLAY") is False and any(m.get("ref") == j3["ref"] for m in (_dn.get("balance_mismatch") or []) if isinstance(m, dict))
+    with nd.lock:
+        nd.jobs[j3["ref"]]["verify"]["checked"] = _orig_chk
     # ★[M-210] R3-F05-H1 — 공개 재유도 _sample_union 은 노드-제어 n·k 에 유계(want≤100·k≤16 · 집합) — 악의 /job 이 검증자를 세우지 못한다
     import replay_full as _RF2
     import time as _tm2
@@ -1709,6 +1722,23 @@ def gate_TCHALLENGE(port=8816):
     v = c.verify_chain()
     out["라이트 검증 정합"] = v["ok"] is True
     out["audit"] = c._get("/audit")["ok"]
+    # ★[M-211] R4-F09-3 — 챌린지 본문 신선도(epoch ±8) + 서명 1회 사용
+    from sdk import canon as _cn3
+    _cb = {"ref": j["ref"], "p": c.p}
+    _cs = c.key.sign(c._d["chal"] + c.log_id + _cn3(_cb)).hex()
+    try:
+        c._post("/challenge", {**_cb, "sig": _cs})
+        out["★epoch 없는 챌린지 거부"] = False
+    except RuntimeError as ex:
+        out["★epoch 없는 챌린지 거부"] = "신선도" in str(ex) or "epoch" in str(ex)
+    _cb2 = {"ref": j["ref"], "p": c.p, "epoch": c._get("/state")["epoch"], "nonce": "aa"}
+    _cs2 = c.key.sign(c._d["chal"] + c.log_id + _cn3(_cb2)).hex()
+    _ok1 = isinstance(c._post("/challenge", {**_cb2, "sig": _cs2}), dict)
+    try:
+        c._post("/challenge", {**_cb2, "sig": _cs2})
+        out["★챌린지 서명 재생 거부"] = False
+    except RuntimeError as ex:
+        out["★챌린지 서명 재생 거부"] = _ok1 and "재생" in str(ex)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2503,6 +2533,12 @@ def gate_TACCEPT(port=8857):
     except Exception as ex:
         out["★epoch 없는 fetch 거부"] = "epoch" in str(ex)
     out["SDK fetch_legs 정상"] = isinstance(by.fetch_legs(), (list, dict))
+    # ★[M-211] R4-F06-4 — 매수자 REKEY 뒤에도 옛 수락 레코드는 서명-시점 키로 검증돼 이력이 남는다(회전 = 세탁 아님)
+    _agg_b = UWT.acceptance(by)
+    by.rekey()
+    _agg_a = UWT.acceptance(by)
+    out["★매수자 회전 뒤 수락 이력 유지(sig_rejected 0)"] = _agg_a.get("sig_rejected", 0) == 0 and \
+        _agg_a["anchors"]["acan"]["rated"] == _agg_b["anchors"]["acan"]["rated"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2770,6 +2806,28 @@ def gate_TBLOCKGUARD(port=8833):
         except RuntimeError as ex:
             out[f"★선거부 {key}"] = "선거부" in str(ex) or "색-일치" in str(ex)
     out["★UW/REDEEM 미러 선거부 = 원장 무성장"] = len(nd.w.log) == n2
+    # ★[M-211] R4-F10-1 — [UW(u), XFER u→u] 한 블록은 prem_verified 를 만들지 않는다(원가 0 부양)
+    nb19 = max(bb.notes_of("bb"), key=lambda x: x["face"])
+    bb.split(nb19["nid"], [1, nb19["face"] - 1])
+    hb1 = [n["nid"] for n in bb.notes_of("bb") if n["face"] == 1][0]
+    bb.xfer("holder", hb1)
+    hj = holder.redeem_job("bb", hb1, seed="ab" * 4, n=500)
+    sn = max(subm.notes_of("subm"), key=lambda x: x["face"])
+    subm.split(sn["nid"], [1, sn["face"] - 1])
+    s1 = [n["nid"] for n in subm.notes_of("subm") if n["face"] == 1][0]
+    s_big = [n["nid"] for n in subm.notes_of("subm") if n["face"] > 1][0]
+    nn2 = subm._get("/nonce/subm")["nonce"]
+    lu = subm.sign_env("UW", {"uw": "subm", "ref": hj["ref"], "cov_notes": [s1], "prem": 0}, nonce=nn2)
+    lx = subm.sign_env("XFER", {"frm": "subm", "to": "subm", "note": s_big}, nonce=nn2 + 1)
+    rb = subm.submit_block([lu, lx])
+    out["★자기-XFER 블록 성립(커널 합법)"] = bool(rb.get("seq"))
+    out["★자기-XFER 보험료 미포획"] = not nd.jobs[hj["ref"]].get("prem_verified")
+    # ★[M-211] R4-F08-2 — 임의-kind TICKMARK 크기 상한(15 KB 행 팽창 차단)
+    try:
+        aa._post("/submit", {"env": aa.sign_env("TICKMARK", {"kind": "fl21.version", "v": "x" * 3000})})
+        out["★TICKMARK 크기 상한"] = False
+    except RuntimeError as ex:
+        out["★TICKMARK 크기 상한"] = "크기" in str(ex)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3252,6 +3310,18 @@ def gate_TREPLAYCAP(port=8842):
     out["★REJECT DELIVER = anchors 무영향"] = sum(seg.get("delivered", 0) for seg in st1["anchors"].get("vv", {}).get("segments", {}).values()) == \
         sum(seg.get("delivered", 0) for seg in st0["anchors"].get("vv", {}).get("segments", {}).values())
     out["★REJECT UW = 유령 인수자 없음"] = "ghost_uw" not in st1.get("underwriters", {})
+    # ★[M-211] R4-F11-H1 — 오버사이즈 봉투는 REJECT 행으로 적재되지 않는다(기록 전 무기록 거부) · 쓰기 예산 단위 검사
+    try:
+        nd._env_size_guard({"typ": "XFER", "args": {"frm": "vv", "to": "vv", "note": "1", "pad": "x" * 20000}, "p": "vv", "epoch": 0, "nonce": 0, "sig": "00"})
+        out["★봉투 크기 가드"] = False
+    except Exception as ex:
+        out["★봉투 크기 가드"] = "봉투 크기" in str(ex)
+    nd._write_budget("zz_budget", {"a": "x" * 1_500_000})
+    try:
+        nd._write_budget("zz_budget", {"a": "x" * 1_500_000})
+        out["★쓰기 예산 소진 거부"] = False
+    except Exception as ex:
+        out["★쓰기 예산 소진 거부"] = "쓰기 예산" in str(ex)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3524,6 +3594,7 @@ def gate_TREKEY23(port=8845):
     out = {}
     nd, srv, data = _serve(port)
     c = _client(port, "rk", data); c.join()
+    att0 = c.fetch_attest("anchor0")                       # ★[M-211] 회전 **전** 어테스트(키-일정 검증 대상)
     old_key, old_pk = c.key, c.pk_hex()
     r = c.rekey()
     out["★사용자 REKEY 수용·키 파일 교체"] = isinstance(r, dict) and "seq" in r and c.pk_hex() != old_pk
@@ -3570,6 +3641,61 @@ def gate_TREKEY23(port=8845):
     from sdk import ed25519_weak_pk as _wk
     out["★약한-키 판별(항등점 True · 실키 False)"] = _wk(bytes.fromhex(_idp)) is True and _wk(bytes.fromhex(c2.pk_hex())) is False \
         and _wk(bytes.fromhex("ec" + "ff" * 30 + "7f")) is True
+    # ★[M-211] R4-F06-3 — verify_attest 는 노드 주장 현행 키가 아니라 operator_pk0 + 로그 REKEY 일정으로 검증
+    ca = _client(port, "rk", data)
+    out["★회전 전 어테스트 = 키-일정으로 ok"] = ca.verify_attest(att0).get("ok") is True
+    out["★회전 후 어테스트 ok"] = ca.verify_attest(ca.fetch_attest("anchor0")).get("ok") is True
+    _bad = json.loads(json.dumps(ca.fetch_attest("anchor0"))); _bad["doc"]["principal"] = "zz"
+    out["★변조 어테스트 거부"] = ca.verify_attest(_bad).get("ok") is False
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _EK
+    _atk = _EK.generate(); _real_get = ca._get
+    _fm = dict(_real_get("/meta")); _fm["operator_pk"] = _atk.public_key().public_bytes_raw().hex()
+    ca._get = lambda path, _rg=_real_get, _fm=_fm: dict(_fm) if path == "/meta" else _rg(path)
+    ca._opk_cache = None
+    _doc = dict(att0["doc"]); import kernel23 as _K23
+    _forged = {"doc": _doc, "operator_sig": _atk.sign(ca.domain + _K23._canon(_doc)).hex()}
+    out["★미러(/meta.operator_pk 만 교체)의 위조 어테스트 거부"] = ca.verify_attest(_forged).get("ok") is False
+    ca._get = _real_get
+    # ★[M-211] R4-F02-1/2·F06-1/2 — SDK 회전 매트릭스: 응답 유실·재시도·/pk 장애·거짓 /pk 어디서도 키 재료를 지우지 않는다
+    c3 = _client(port, "rk3", data); c3.join(); kp = c3.key_path
+    _rp3 = c3._post
+    def _lost(path, body, _r=_rp3):
+        _r(path, body); raise RuntimeError("HTTP 502 (simulated lost response)")
+    c3._post = _lost
+    try:
+        c3.rekey()
+    except RuntimeError:
+        pass
+    c3._post = _rp3
+    out["★응답 유실: .next 보존"] = os.path.exists(kp + ".next")
+    r3 = c3.rekey()                                          # 같은 프로세스 재시도 = 먼저 재조정(승격) → 새 회전
+    out["★재시도 = 재조정 뒤 성공(유일 사본 무손실)"] = "seq" in r3 and not os.path.exists(kp + ".next") and c3._get("/pk/rk3")["pk"] == c3.pk_hex()
+    c3._post = _lost
+    try:
+        c3.rekey()
+    except RuntimeError:
+        pass
+    c3._post = _rp3
+    _rg3 = c3._get
+    c3._get = lambda path, _g=_rg3: (_ for _ in ()).throw(RuntimeError("HTTP 503")) if path.startswith("/pk/") else _g(path)
+    c3._reconcile_key_next()
+    out["★/pk 장애: .next 무접촉 + 미해결 표시"] = os.path.exists(kp + ".next") and c3.key_next_unresolved is True
+    c3._get = _rg3
+    c3.sign_env("TICKMARK", {"kind": "fl21.version", "v": "v9"})   # 서명 전 자기치유(재조정 → 승격)
+    out["★복귀 뒤 자기치유(승격·/pk 일치)"] = (not os.path.exists(kp + ".next")) and c3._get("/pk/rk3")["pk"] == c3.pk_hex()
+    out["★구 키 .prev 보관"] = os.path.exists(kp + ".prev")
+    c3._post = _lost
+    try:
+        c3.rekey()
+    except RuntimeError:
+        pass
+    c3._post = _rp3
+    _old_hex = c3.pk_hex()
+    c3._get = lambda path, _g=_rg3, _o=_old_hex: {"p": "rk3", "pk": _o} if path.startswith("/pk/") else _g(path)   # 거짓 /pk = 구 키 반환
+    c3._reconcile_key_next()
+    c3._get = _rg3
+    import glob as _gl
+    out["★거짓 /pk(구 키): 삭제 아닌 .stale 보관"] = (not os.path.exists(kp + ".next")) and bool(_gl.glob(kp + ".next.stale-*"))
     srv.shutdown()
     # ★[M-208] R4-10(냉독 4 · F06-F2) — 회전 뒤 재기동: 정상 = 통과 · operator.key 유실 = **명시 기동 거부**(침묵 브릭 아님) ·
     #   회전-중 크래시 잔재(.next · 원장에 없는 키) = 폐기 후 정상 기동.
@@ -3645,6 +3771,26 @@ def gate_TIMPORT23(port=8846):
         out["★수입 약한 키 거부"] = False
     except Exception as ex:
         out["★수입 약한 키 거부"] = "약한 키" in str(ex)
+    # ★[M-211] R4-F07-1/F12-M1/F05-4 — 핀 원천(RELEASE 파일 = 내장 사본) · verify_chain 결과가 핀 여부를 증언 · 임포스터 창세 거부
+    import sdk as _SDK
+    _pins = _SDK.release_pins()
+    out["★RELEASE 파일 핀 = 내장 핀"] = _pins.get("source") == "file" and all(_pins.get(k) == _SDK.RELEASE_PINS[k] for k in ("log_id", "genesis_head", "operator_pk0")) \
+        and sorted(_pins.get("cosigners") or []) == sorted(_SDK.RELEASE_PINS["cosigners"]) and _pins.get("cosign_k") == 2
+    _cv = c.verify_chain()
+    out["★로컬 노드 = 발표 원장 아님 표시(무핀 증언)"] = _cv.get("ok") is True and _cv.get("genesis_pin") is None and _cv.get("release_identity") == "mismatch" and "pin_note" in _cv
+    _meta_l = c._get("/meta"); _orig_rp = _SDK.release_pins
+    _loc = {"source": "file", "log_id": _meta_l["log_id"], "genesis_head": nd.w.log[0]["head"], "operator_pk0": _meta_l.get("operator_pk0") or _meta_l["operator_pk"],
+            "cosigners": list(_meta_l["cosigners"].values()), "cosign_k": _meta_l["cosign_k"]}
+    _SDK.release_pins = lambda path=None: dict(_loc)
+    _cv2 = c.verify_chain()
+    out["★RELEASE 가 이 원장을 가리키면 기본 핀 = release"] = _cv2.get("ok") is True and _cv2.get("genesis_pin") == "release"
+    _SDK.release_pins = lambda path=None: dict(_loc, genesis_head="00" * 32)
+    _cv3 = c.verify_chain()
+    out["★같은 log_id·다른 창세 = 거부"] = _cv3.get("ok") is False and "genesis_head" in str(_cv3.get("why"))
+    _SDK.release_pins = lambda path=None: dict(_loc, cosign_k=2, cosigners=["00" * 32])
+    _cv4 = c.verify_chain()
+    out["★공동서명자 집합 불일치 = 거부"] = _cv4.get("ok") is False and "공동서명" in str(_cv4.get("why"))
+    _SDK.release_pins = _orig_rp
     srv.shutdown(); srv.server_close()
     nd2, srv2, _ = _serve(port + 50, data=data, genesis_import=ip)   # 재기동 = 리플레이(수입은 재실행되지 않는다)
     out["★재기동 리플레이 동일"] = nd2.w.log[-1]["head"] == head and nd2.audit()["ok"] is True and nd2.colors.get(imp[0]) == "z1"

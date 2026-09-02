@@ -82,7 +82,7 @@ def _main_inner():
     ap.add_argument("--url", required=True)
     ap.add_argument("--batches", type=int, default=10_000)
     ap.add_argument("--genesis-head", default=None, help="★[M-209] 대역-외 창세 head(RELEASE) — 첫 항 head 와 대조(같은 정체성의 다른 창세 거부)")
-    ap.add_argument("--max-total-mb", type=int, default=2048, help="누적 판독 총량 상한(MB)")
+    ap.add_argument("--max-total-mb", type=int, default=512, help="누적 판독 총량 상한(MB)")
     a = ap.parse_args()
     url = a.url.rstrip("/")
     _TOTAL["cap"] = int(a.max_total_mb) * 1024 * 1024
@@ -131,6 +131,13 @@ def _main_inner():
                 a.genesis_head = _pins["genesis_head"]; pin_src = "release"
         except Exception:
             pass
+    # ★[M-211] R4-F05-6 — 꼬리-생략 검사(verify_chain 동형): /state.seq 가 서빙된 마지막 seq 보다 크면 실패 · /state 비정형 = 실패
+    try:
+        _claimed = int(_get(url, "/state").get("seq"))
+    except Exception:
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": "/state 비정형 — 꼬리-생략 검사 불가(fail-closed)"}, ensure_ascii=False)); return 1
+    if entries and isinstance(entries[-1].get("seq"), int) and _claimed > entries[-1]["seq"] + 1:
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": f"꼬리 생략: /state.seq {_claimed} > 서빙된 마지막 seq {entries[-1]['seq']}"}, ensure_ascii=False)); return 1
     # ★[M-209] R2-F07-1 — 창세 내용 고정: 대역-외 genesis_head 대조 · /meta.genesis_head 정합
     if a.genesis_head and str(entries[0].get("head")) != str(a.genesis_head):
         print(json.dumps({"H7_FULL_REPLAY": False, "why": f"genesis_head 불일치: 원장 {str(entries[0].get('head'))[:12]}… ≠ 기대 {a.genesis_head[:12]}…"}, ensure_ascii=False))
@@ -140,6 +147,7 @@ def _main_inner():
         return 1
     # ★[M-209] R2-F06-1 — JOIN/REKEY 저-위수 키 = 위조 가능 주체(fail-closed)
     from sdk import ed25519_weak_pk
+    import jobs as _JOBS
     for e in entries:
         env = e.get("env") or {}
         pks = []
@@ -175,17 +183,30 @@ def _main_inner():
             env = e.get("env") or {}; a_ = env.get("args") or {}
             if env.get("typ") == "TICKMARK" and a_.get("kind") == "fl21.ocommit" and e.get("kind") != "REJECT":
                 samples.setdefault(a_.get("ref"), None)
-        for ref in list(samples)[:64]:
-            j = _get(url, f"/job/{ref}").get("job") or {}
-            spec = j.get("job") or j
-            if isinstance(spec, dict) and spec.get("kind") == "sha256_chain_sampled" and isinstance(spec.get("n"), int) \
-                    and 1 <= spec["n"] <= 5_000_000 and 1 <= int(spec.get("k", 2)) <= 16:                  # ★[M-210] 노드-제어 n·k 스키마 상한 밖 = 무시
-                import jobs as _JOBS                                   # ★[M-210] R3-F04-1 — 체크포인트 간격은 jobs.CKPT(50,000) 하나의 정본(구판 100,000 오기)
-                want = -(-spec["n"] // _JOBS.CKPT)
-                samples[ref] = _sample_union(entries, ref, want, int(spec.get("k", 2)))
-                chk = ((j.get("verify") or {}).get("checked")) if isinstance(j, dict) else None
-                if j.get("delivered") and isinstance(chk, list) and sorted(chk) != samples[ref]:
-                    mism.append({"ref": ref, "checked": sorted(chk), "sample_union": samples[ref]})   # ★공개 재유도 ≠ 노드 검사 = 실패
+        # ★[M-211] R4-F04-1/F05-1 — 구판은 `/job` 응답의 스펙 하위-딕트를 잡아 verify/delivered 가 항상 None(교차대조 **죽은 코드**).
+        #   이제: 이행된(원장 DELIVER 비-REJECT) 표본-잡마다 노드 레코드의 `verify.checked` 가 **정확히** 공개 재유도 합집합과 같아야 한다 —
+        #   레코드 부재·비정형·checked 부재·예외 = 전부 불일치(fail-closed) · 상한 4096 ref(넘으면 truncated = 실패).
+        _delivered = {str((e.get("env") or {}).get("args", {}).get("ref")) for e in entries
+                      if e.get("kind") != "REJECT" and (e.get("env") or {}).get("typ") == "DELIVER"}
+        _refs = list(samples)
+        if len(_refs) > 4096:
+            mism.append({"samples_truncated": len(_refs)})
+        for ref in _refs[:4096]:
+            try:
+                rec = _get(url, f"/job/{ref}")
+                rec = rec if isinstance(rec, dict) else {}
+                spec = rec.get("job") if isinstance(rec.get("job"), dict) else {}
+                n_ = spec.get("n"); k_ = spec.get("k", 2)
+                if spec.get("kind") == "sha256_chain_sampled" and isinstance(n_, int) and 1 <= n_ <= _JOBS.N_MAX and isinstance(k_, int) and 1 <= k_ <= 16:
+                    want = -(-n_ // _JOBS.CKPT)
+                    samples[ref] = _sample_union(entries, ref, want, k_)
+                    chk = (rec.get("verify") or {}).get("checked") if isinstance(rec.get("verify"), dict) else None
+                    if ref in _delivered and (not isinstance(chk, list) or sorted(chk) != samples[ref]):
+                        mism.append({"ref": ref, "checked": chk, "sample_union": samples[ref]})   # ★공개 재유도 ≠ 노드 검사 = 실패
+                elif ref in _delivered:
+                    mism.append({"ref": ref, "why": "이행된 표본-잡의 스펙을 노드가 서빙하지 않는다"})
+            except Exception as ex:
+                mism.append({"ref": ref, "why": f"교차대조 예외 {type(ex).__name__}"})
     except Exception as ex:
         samples = {"error": str(ex)[:80]}
     out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id and not mism),

@@ -63,6 +63,13 @@ class Cosigner:
         # 재-서명 — forward-only 커서가 신규 로그를 영구 건너뛰던 under-sign 봉합.
         st = self._req("GET", "/state")
         dom = domains_for(self._req("GET", "/meta"))["env"]      # ★FL2.3 — 세대-적응(FL22 노드·FL23 노드 모두)
+        _dp = self.state_p + ".domain"                           # ★[M-211] R4-F05-8 — 첫 실행의 도메인을 핀: 노드가 /meta.domain 을 바꿔 다른 세대 도메인 서명을 뽑아내지 못한다
+        if os.path.exists(_dp):
+            if open(_dp).read().strip() != dom.hex():
+                raise RuntimeError(f"서명 도메인 변경 감지({dom!r} ≠ 핀 {open(_dp).read().strip()[:16]}…) — 서명 중단(세대 전환은 새 상태 파일로)")
+        else:
+            with open(_dp, "w") as fh:
+                fh.write(dom.hex())
         if self.next > st["seq"]:
             self.next = 0
         rounds = 0
@@ -80,6 +87,12 @@ class Cosigner:
                 raise RuntimeError(f"/log 비-단조·비정형 페이지(since {self.next}) — 서명 중단(악의 노드 방어)")
             for e in page:
                 prev_h = self.heads.get(int(e["seq"]))
+                _mine_prev = self.heads.get(int(e["seq"]) - 1)
+                if _mine_prev is not None and e.get("prev") != _mine_prev:      # ★[M-211] R4-F05-3 — 커서 아래에서 갈라진 가지(같은 seq 비교만으론 못 잡던 것)
+                    ev = {"seq": e["seq"], "signed_prev": _mine_prev, "offered_prev": e.get("prev"), "name": self.name}
+                    with open(self.state_p + ".fork", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(ev) + "\n")
+                    raise RuntimeError(f"★포크 증거: seq {e['seq']} 의 prev {str(e.get('prev'))[:12]}… ≠ 내가 서명한 seq {int(e['seq']) - 1} head {_mine_prev[:12]}…(증거 = {self.state_p}.fork)")
                 if prev_h is not None and prev_h != e["head"]:
                     ev = {"seq": e["seq"], "signed_head": prev_h, "offered_head": e["head"], "name": self.name}
                     with open(self.state_p + ".fork", "a", encoding="utf-8") as fh:

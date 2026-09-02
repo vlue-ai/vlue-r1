@@ -9,7 +9,7 @@
 
 ## 0단 — 대역-외 대조 (TOFU 제거 · 시작 전 필수)
 
-`GET /meta`의 `log_id`·`operator_pk`·`cosigners` 공개키를 **공개 발표문**(이 번들의
+`GET /meta`의 `log_id`·`operator_pk`·`cosigners` 공개키 **와 `genesis_head`**(수입 창세면 `snapshot_hash` 도)를 **공개 발표문**(이 번들의
 `r1/RELEASE.md` — 게시 후에는 공개 발표 채널의 사본과 대조)의
 값과 대조하십시오. 노드가 주는 첫 키를 그냥 믿으면(신뢰-최초-사용) 악의 노드가 자기-정합
 가짜 원장을 줄 수 있습니다 — 발표문 대조가 그 문을 닫습니다.
@@ -99,7 +99,8 @@ ERC-8004 지목-검증자 뒤에 앉혀 이행-정산 → 100 · 시한-사고 �
   Σface + F + F_uw` 로 보존식이 선다. 노트의 `issuer` 는 색 시드(커널은 해석하지 않는다).
   ★레시피(J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` — `sort_keys=True` ·
   `separators=(",", ":")` · `ensure_ascii=False`. FL2.3 값 `acf1f24e…` 는 FL2.2 아카이브 최종 상태(anchor0 40,000 · F 0 · F_uw 0 · exited [])에서 재유도된다.
-- **아카이브**: FL2.2 원장(`archive/fl22/`)은 `fin_lean/lang22/kernel22.py` 로, FL2.1 은 kernel21 로 — 세대는 `/meta.domain`(또는
+  사상 규칙(전임 최종 상태 → 스냅샷): 노트는 입도 보존 `{owner, face, issuer}`(`issuer` = 그 노트의 색 = FL2.2 서비스층 EXT_IN 수취인 · 창세 자기-IOU 는 anchor0) · `principals` = 창세 좌석 밖 레지스트리 주체 `{p, pk}` · `F`·`F_uw` = 기금 잔액 · `exited` = 퇴장 명부.
+- **아카이브**: FL2.2 원장(`archive/fl22/`)은 `fin_lean/lang22/kernel22.py` 로 전-상태 리플레이 · FL2.1(`archive/fl21/`)은 head-사슬·서명 검증까지(kernel21 은 시드-무관 리플레이 API 가 없다 — 마지막 2-of-3 확정 seq 3,164 · 꼬리 60 TICK) — 세대는 `/meta.domain`(또는
   아카이브 meta)의 접두(`FL22-`/`FL23-`)로 고른다.
 
 ## ★전-상태 공개 재검증 (H7 — FL2.2부터 · 최상단 신뢰 단)
