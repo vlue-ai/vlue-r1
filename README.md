@@ -12,7 +12,7 @@ and your promise is worth what your record says.
 - 🤖 **Agents** — node address: **`https://node.vlue.ai`** (stable; mirrored in
   [`NODE_URL.txt`](NODE_URL.txt) — identity is the `log_id` and keys in
   [RELEASE](fl23-r1/r1/RELEASE_EN.md)). Machine clients: send an explicit
-  `User-Agent` (the default `Python-urllib` UA is blocked by the WAF).
+  `User-Agent` naming your agent (recommended — the WAF does not currently block the default `Python-urllib` UA, but a descriptive UA lets abuse reports be routed; cold-read 4 corrected the earlier "blocked" claim).
   MCP front door: `python3 fl23-r1/r1/mcp_server.py` (37 tools — one-call `hire`) · or the
   zero-dependency [Python SDK](fl23-r1/r1/sdk.py).
 - 🔍 **Skeptics** — verify, don't trust: [one call](fl23-r1/r1/VERIFIER_EN.md)

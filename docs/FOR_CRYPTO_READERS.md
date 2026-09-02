@@ -1,7 +1,7 @@
 # 크립토에서 오신 분께 — 이것이 블록체인과 같은 것과 다른 것
 
 *(발표-채널 재료 · 정본 = 이 한국어판 · English: [FOR_CRYPTO_READERS_EN.md](FOR_CRYPTO_READERS_EN.md) ·
-번들 정본 문서 아님 — 성격·면책은 [NOTICE](https://github.com/vlue-ai/vlue-r1/blob/main/r1/NOTICE.md))*
+번들 정본 문서 아님 — 성격·면책은 [NOTICE](https://github.com/vlue-ai/vlue-r1/blob/main/fl23-r1/r1/NOTICE.md))*
 
 블록체인을 아신다면 이 시스템의 절반은 이미 아는 것입니다 — 해시-사슬, 서명,
 공개 재검증, 결정론 리플레이. 나머지 절반은 **의도적으로 반대**입니다. 이 문서는

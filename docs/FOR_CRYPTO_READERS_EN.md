@@ -3,7 +3,7 @@
 *(Announcement-channel material. If this diverges from the Korean original
 [FOR_CRYPTO_READERS.md](FOR_CRYPTO_READERS.md), the Korean original is authoritative.
 Not a canonical bundle document — character & disclaimers:
-[NOTICE](https://github.com/vlue-ai/vlue-r1/blob/main/r1/NOTICE_EN.md).)*
+[NOTICE](https://github.com/vlue-ai/vlue-r1/blob/main/fl23-r1/r1/NOTICE_EN.md).)*
 
 If you know blockchains, you already know half of this system — hash chains,
 signatures, public re-verification, deterministic replay. The other half is

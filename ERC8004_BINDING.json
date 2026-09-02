@@ -2,8 +2,8 @@
  "binding": {
   "address": "0x4cb02cbd7fea59f81d09f04eac55fd1312106dc1",
   "agent_id": null,
-  "bound_at": "2026-08-28",
-  "chain": "eip155:11155111 (Sepolia testnet \u2014 mainnet requires a separate, explicitly recorded decision)",
+  "bound_at": "2026-09-02",
+  "chain": "eip155:11155111 (Sepolia testnet — mainnet requires a separate, explicitly recorded decision)",
   "identity_registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
   "ledger": {
    "log_id": "3128a815d8657e0624eb91b81a1dec621cc7674cc7e9e677159268f83e0a6faf",
@@ -13,9 +13,10 @@
   "purpose": "Binds the ERC-8004 on-chain identity below to the VLUE r1 ledger operator. Any transaction from this address that is not an attestation of a settled entry on this ledger is unauthorized (one-way valve: outbound attestations only; chain state is never an input to this ledger).",
   "standard": "VLUE-ERC8004-BINDING v1",
   "verify": "ed25519_verify(operator_pk from https://node.vlue.ai/meta, sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json_of_everything_except_sig))",
-  "generation": "FL2.3 (genesis 2026-09-02 \u00b7 bridge_ref = FL2.2 final head 3274433e\u2026 \u00b7 FL2.2 log_id e687a69e\u2026 archived at archive/fl22/)",
-  "note_on_chain": "setAgentURI must be re-pointed by the operator wallet after this genesis (user action \u2014 recorded, not yet executed)"
+  "generation": "FL2.3 (genesis 2026-09-02 · bridge_ref = FL2.2 final head 3274433e… · FL2.2 log_id e687a69e… archived at archive/fl22/)",
+  "note_on_chain": "setAgentURI must be re-pointed by the operator wallet after the 2026-09-02 genesis (user action — the bound address has never sent a transaction; on-chain nonce 0 as of 2026-09-02).",
+  "genesis_head": "5a387eea3aecf6ed86f94f77dc32fb39cacabafeb97e15459c641c3f8a1ebb49"
  },
- "operator_sig": "1d3530d5342fc4f5bc29abdd9a4ffc58ea9bdbe368c099bbcb5c8871f54e61a2893bf94b64455fbfa467383b474960cc70630c4d0d1f8b1443418ffeb9051303",
- "note": "sig covers canonical(binding) \u2014 sorted keys, compact separators"
+ "operator_sig": "6103b83b5dab8ffa9d12044b581742c85b61c7e0d65d076a2715212fb6d1bc6cda0410ff2a30ac9a48ad0cd12ece78963d91c3107cc13d6c2b8153a31ff15f09",
+ "note": "sig covers canonical(binding) — sorted keys, compact separators, ensure_ascii=False · re-signed 2026-09-02 for the FL2.3 identity (cold-read 4 F12-3: the previous sig was over FL2.2 values)"
 }
