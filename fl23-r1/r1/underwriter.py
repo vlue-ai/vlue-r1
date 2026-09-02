@@ -63,7 +63,13 @@ DEFAULT_POLICY = {"max_exposure": 2000, "min_rate_bp": 10,
                   # 만든다」를 기각 — 기계는 명성을 분 단위로 쌓고 한 번에 태울 수
                   # 있으므로(build-up-burst) 신뢰는 시간이 아니라 **정산된 부피**에
                   # 결박한다: X를 털려면 먼저 X/λ를 실제로 이행해야 한다. None = 끔.
-                  "trust_lambda": None,
+                  # ★[M-208] R4-22(F10-4): 보험료 색 정책 — 청구 앵커 자기-색 보험료 거부(기본 끔 · 주 발행자 색이 통상 경로) ·
+                  #   prem_colors = 허용 색 목록(None = 전부)
+                  "prem_reject_anchor_color": False,
+                  "prem_colors": None,
+                  "trust_lambda": None,       # ⚠️[M-208] R4-21(냉독 4 · F10): 끔이면 자기-이행 부피 경작(0.32초)으로 p̂ 가 21× 할인된다 —
+                  #   실환경 인수자는 --trust-lambda 1.0 을 켜라(권장 · 단 부피 0 앵커[콜드-스타트]는 λ 캡에 걸려 후보에서 빠진다 —
+                  #   T-COVER 가 기본 끔을 전제하므로 기본값은 문서 §8-C 대로 None 유지 · 정책 선택은 인수자 몫)
                   # ★[M-165] C-2 기간-비례 자본-비용(bp/에포크 · 0 = 끔): 담보 β·E가
                   # T 동안 잠긴다 — 기계-경제의 이자율 = 담보 회전율. 장기-T 커버가
                   # 공짜가 아니게 하는 항(인간-보험의 기간-보험료의 기계판).
@@ -355,10 +361,24 @@ def auto_fill(c, policy=None):
                     and (xfer.get("args") or {}).get("to") == c.p):
                 skipped.append(f"{ref[:8]} XFER 아님")
                 continue
-            face = next((n["face"] for n in
-                         c._get(f"/notes/{xfer['args']['frm']}")["notes"]
-                         if n["nid"] == xfer["args"]["note"]), 0)
-            want = _premium(c, ref, j["exposure"], policy)
+            _nt = next((n for n in c._get(f"/notes/{xfer['args']['frm']}")["notes"]
+                        if n["nid"] == xfer["args"]["note"]), None)
+            face = _nt["face"] if _nt else 0
+            # ★[M-208] R4-22(냉독 4 · F10-4) — 보험료의 **색**을 본다: 청구 앵커 자기-색 보험료는 그 앵커가 부재하면 0 이 된다
+            #   (보험료로 인수자를 무-원가 파괴 · 재현 R6). 기본 정책 = 앵커-색 거부 · 허용 색 목록(prem_colors)이 있으면 그 안만.
+            _col = (_nt or {}).get("color")
+            if policy.get("prem_reject_anchor_color") and _col is not None and _col == aj:
+                # 기본 끔: 주 발행자(anchor0)의 색으로 보험료를 내는 것이 통상 경로라 기본 거부는 정상 체결을 막는다(T-COVER) —
+                # 앵커가 주 발행자가 아닐 때 켜라(보험료 가치 ↔ 커버 지급이 같은 부재에 상관 = F10-4 의 그리핑 벡터).
+                skipped.append(f"{ref[:8]} 보험료 색 = 청구 앵커({aj}) — 부재 시 0 가치(정책 prem_reject_anchor_color)")
+                continue
+            _allow = policy.get("prem_colors")
+            if _allow and _col not in _allow:
+                skipped.append(f"{ref[:8]} 보험료 색 {_col} ∉ 허용 {sorted(_allow)}")
+                continue
+            # ★[M-208] R4-23(F10-5) — scan 과 같은 ctx(δ·carry)로 가격: 구판은 ctx 없이 불러 carry 탈락(1500→1000) · δ 91× 과소
+            _ctx = {"job": j, "bal": {}, "open_exp": dict(fill_exp), "epoch": st.get("epoch", 0), "stats": st}
+            want = _premium(c, ref, j["exposure"], policy, _ctx)
             if face < want:
                 skipped.append(f"{ref[:8]} 보험료 {face} < {want}")
                 continue
@@ -807,7 +827,9 @@ def acceptance(c, tau=None):
         meta = c.meta
         for k, h in (meta.get("genesis_pks") or {}).items():
             pkmap[k] = Ed25519PublicKey.from_public_bytes(bytes.fromhex(h))
-        op_pk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(meta["operator_pk"]))
+        # ★[M-208] R4-20(냉독 4 · F06-F1) — 키-일정 시작점 = 창세 키(operator_pk0) · REKEY 항에서 교체(정본 3자 동형).
+        #   구판은 현행 /meta.operator_pk 로 전-사슬을 검증해 첫 운영자 회전 뒤 pkmap=None(레코드 서명 재검증 영구 꺼짐 = fail-open 회귀).
+        op_pk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(meta.get("operator_pk0") or meta["operator_pk"]))
         pkmap["operator"] = op_pk
         chain_prev = None
         # ★[M-192/195] JOIN pk 를 operator head_sig + env→head 재계산으로 결박한다.
@@ -847,6 +869,14 @@ def acceptance(c, tau=None):
                     a_ = env.get("args") or {}
                     pkmap[a_.get("principal")] = Ed25519PublicKey.from_public_bytes(
                         bytes.fromhex(a_["pk"]))
+                elif env.get("typ") == "REKEY" and e.get("kind") != "REJECT":   # ★[M-208] 키-일정 추종(operator·참여자)
+                    a_ = env.get("args") or {}
+                    _npk = Ed25519PublicKey.from_public_bytes(bytes.fromhex(a_["new_pk"]))
+                    pkmap[a_.get("principal")] = _npk
+                    if a_.get("principal") == "operator":
+                        op_pk = _npk
+            if not isinstance(page[-1].get("seq"), int) or page[-1]["seq"] + 1 <= seq:
+                raise ValueError("/log 페이지 비-전진")
             seq = page[-1]["seq"] + 1
     except (OSError, KeyError, ValueError, InvalidSignature, TypeError):
         pkmap = None                         # 로그/메타/서명 실패 = 검증 생략(폴백 표기)

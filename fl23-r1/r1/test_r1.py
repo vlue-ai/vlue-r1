@@ -878,6 +878,40 @@ def gate_TSAMPLED(port=8797):
         out["★정책 min_k 하한"] = "깊이" in str(ex)
     c.policy = None
     out["audit"] = c._get("/audit")["ok"]
+    # ★[M-208] R4-3(냉독 4 · HIGH) — 표본 **누적**: 실패-이행 뒤 재추첨은 검사 인덱스를 더할 뿐이다. 첫 실패로 확정된
+    #   위조 구간 a 는 그 뒤 어느 시도에서도 검사된다(구판 = 최신 커밋 표본만 → 32회 독립 재추첨 = 탈출률 0.22→0.997).
+    nid3 = [n["nid"] for n in c.notes_of("anchor0") if n["face"] >= 2][0]
+    j3 = c.redeem_job("anchor0", nid3, seed="0b" * 4, n=300_000, kind="sha256_chain_sampled")
+    good3 = wk.compute_sha256({"kind": "sha256_chain_sampled", "seed": "0b" * 4, "n": 300_000})
+    allbad = {"final": good3["final"], "ckpts": ["11" * 32] * (len(good3["ckpts"]) - 1) + [good3["final"]]}
+    try:
+        wk._post("/deliver", {"env": wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j3["ref"]}), "output": allbad})
+        first_rejected = False
+    except RuntimeError:
+        first_rejected = True
+    out["★누적: 전-위조 1차 거부"] = first_rejected
+    heads = list(nd.ocommit_heads.get(j3["ref"], []))
+    want3 = -(-300_000 // JOBS.CKPT)
+    union = set()
+    for h in heads:
+        seed3 = bytes.fromhex(h) + j3["ref"].encode()
+        picked, ctr = [], 0
+        while len(picked) < min(JOBS.SAMPLE_K, want3):
+            v = int.from_bytes(hashlib.sha256(seed3 + ctr.to_bytes(4, "big")).digest(), "big") % want3
+            ctr += 1
+            if v not in picked:
+                picked.append(v)
+        union.update(picked)
+    a_idx = min(i for i in union if i < want3 - 1)          # 1차에서 확정된 위조 좌표 하나(마지막 구간 제외 — final 결박)
+    partial = {"final": good3["final"], "ckpts": list(good3["ckpts"])}
+    partial["ckpts"][a_idx] = "22" * 32                     # 오직 a 만 위조 — 구판이면 새 표본이 a 를 안 뽑을 확률 ≈ 0.8 로 통과
+    try:
+        wk._post("/deliver", {"env": wk.sign_env("DELIVER", {"anchor": "anchor0", "ref": j3["ref"]}), "output": partial})
+        out["★누적: 확정 좌표 재-위조는 재추첨으로 못 빠져나간다"] = False
+    except RuntimeError as ex:
+        out["★누적: 확정 좌표 재-위조는 재추첨으로 못 빠져나간다"] = f"구간 {a_idx}" in str(ex) or "불일치" in str(ex)
+    r3 = wk.deliver_job(j3["ref"], good3)
+    out["★누적: 정직 산출은 합집합 검사 통과"] = "checked" in r3["verify"] and len(r3["verify"]["checked"]) >= len(union)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2605,6 +2639,15 @@ def gate_TBLOCKGUARD(port=8833):
     r = aa.submit_block([aa.make_leg("XFER", {"frm": "aa", "to": "bb", "note": xnid})])
     out["정상 /block 유지"] = bool(r.get("seq"))
     out["원장 무오염"] = nd.audit()["ok"] is True
+    # ★[M-208] R4-5(냉독 4) — 의미-실패 다리(미소유 노트 XFER)는 커널 전에 O(1) 선거부 · 원장 무변 · 재생해도 무성장
+    n0 = len(nd.w.log)
+    for _ in range(3):
+        try:
+            aa.submit_block([aa.make_leg("XFER", {"frm": "aa", "to": "bb", "note": "999999999"})])
+            out["★미소유 다리 선거부"] = False
+        except RuntimeError as ex:
+            out["★미소유 다리 선거부"] = "선거부" in str(ex) or "미소유" in str(ex)
+    out["★미소유 다리 재생 = 원장 무성장"] = len(nd.w.log) == n0
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2785,6 +2828,102 @@ def gate_TENTRYFORM(port=8838):
         {"operator": meta["operator_pk"], **(meta.get("genesis_pks") or {})},
         meta["label"], tuple(meta["genesis"]), gen=dict(meta["gen"]),
         bridge_ref=meta.get("bridge_ref")).replay_verify(log)["ok"] is True
+    # ★[M-208] R4-15/16/18(냉독 4 · F05·F11) — 악의 노드 앞의 검증기·공동서명자: 정직 /meta + 빈 로그 → ok:false ·
+    #   전위-절단(창세 항 제거) → ok:false · /state.seq 가 서빙분보다 크다(꼬리 생략) → ok:false · 비-전진 페이지 → ok:false ·
+    #   replay_full 비정형 페이지 → H7 false · cosigner 비-단조 seq → 예외(무한 루프·/cosig 홍수 아님).
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import subprocess, sys as _sys
+    cos_all = c._get("/cosigs?since=0")["cosigs"]
+    MODE = {"m": "empty"}
+
+    class Mal(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            pth = self.path
+            if pth == "/meta":
+                body = meta
+            elif pth.startswith("/state"):
+                body = {"seq": (100 if MODE["m"] == "tail" else len(log)), "epoch": meta.get("epoch", 0)}
+            elif pth.startswith("/cosigs"):
+                body = {"cosigs": [] if MODE["m"] == "empty" else (cos_all if "since=0" in pth else [])}
+            elif pth.startswith("/log"):
+                since = int(pth.split("since=")[1])
+                if MODE["m"] == "empty":
+                    body = {"entries": []}
+                elif MODE["m"] == "front":
+                    body = {"entries": log[1:][since:since + 500] if since < len(log) else []}
+                elif MODE["m"] == "nonadv":
+                    body = {"entries": log[:2]}
+                elif MODE["m"] == "garbage":
+                    body = {"entries": "garbage"}
+                elif MODE["m"] == "nonmono":
+                    body = {"entries": [log[1], log[0]]}
+                elif MODE["m"] == "regen":
+                    body = {"entries": ([{**log[0], "head": "ab" * 32}] + log[1:2]) if since == 0 else []}
+                else:
+                    body = {"entries": log[since:since + 500]}
+            else:
+                body = {"balance": 0}
+            bb = json.dumps(body).encode(); self.send_response(200)
+            self.send_header("Content-Length", str(len(bb))); self.end_headers(); self.wfile.write(bb)
+
+        def do_POST(self):                                  # 공동서명 회신(/cosig) 수용 — 정직 서빙 시 cosigner 왕복용
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            bb = json.dumps({"ok": True}).encode(); self.send_response(200)
+            self.send_header("Content-Length", str(len(bb))); self.end_headers(); self.wfile.write(bb)
+
+    msrv = ThreadingHTTPServer(("127.0.0.1", port + 30), Mal)
+    threading.Thread(target=msrv.serve_forever, daemon=True).start()
+    murl = f"http://127.0.0.1:{port + 30}"
+    try:
+        v = Fl21Client(murl, "mv", os.path.join(data, "mv.key"))
+        MODE["m"] = "empty"; r_empty = v.verify_chain()
+        MODE["m"] = "front"; r_front = v.verify_chain()
+        MODE["m"] = "tail"; r_tail = v.verify_chain()
+        MODE["m"] = "nonadv"; r_nonadv = v.verify_chain(limit_batches=5)
+        MODE["m"] = "honest"; r_ok = v.verify_chain()
+        out["★빈 로그 = ok:false"] = r_empty.get("ok") is False and "0항" in str(r_empty.get("why"))
+        out["★전위-절단 = ok:false"] = r_front.get("ok") is False and "창세" in str(r_front.get("why"))
+        out["★꼬리 생략 = ok:false"] = r_tail.get("ok") is False and "꼬리" in str(r_tail.get("why"))
+        out["★비-전진 페이지 = ok:false"] = r_nonadv.get("ok") is False and "전진" in str(r_nonadv.get("why"))
+        out["정직 서빙 = ok:true"] = r_ok.get("ok") is True
+        MODE["m"] = "garbage"
+        rp = subprocess.run([_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_full.py"),
+                             "--url", murl], capture_output=True, text=True, timeout=60)
+        out["★replay_full 비정형 페이지 = H7 false"] = rp.returncode == 1 and '"H7_FULL_REPLAY": false' in rp.stdout
+        MODE["m"] = "empty"
+        rp2 = subprocess.run([_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_full.py"),
+                              "--url", murl], capture_output=True, text=True, timeout=60)
+        out["★replay_full 빈 로그 = H7 false"] = rp2.returncode == 1
+        MODE["m"] = "nonmono"
+        import cosigner as _CS
+        kp = os.path.join(data, "cs_mal.key")
+        with open(kp, "w") as fh:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _P2
+            fh.write(_P2.generate().private_bytes_raw().hex())
+        cs = _CS.Cosigner(murl, "cosign9", kp)
+        try:
+            cs.run_once()
+            out["★cosigner 비-단조 페이지 = 중단"] = False
+        except RuntimeError as ex:
+            out["★cosigner 비-단조 페이지 = 중단"] = "비-단조" in str(ex) or "비정형" in str(ex)
+        MODE["m"] = "honest"
+        cs2 = _CS.Cosigner(murl, "cosign9", kp, state_path=os.path.join(data, "cs9.state"))
+        n_signed = cs2.run_once()                              # 정직 서빙 = 전량 서명(이력 기록)
+        MODE["m"] = "regen"
+        cs3 = _CS.Cosigner(murl, "cosign9", kp, state_path=os.path.join(data, "cs9.state"))
+        cs3.next = 0                                            # 「짧으면 0부터」 상황 = 재-창세 재서명 시도
+        try:
+            cs3.run_once()
+            out["★cosigner 재-창세(같은 seq 다른 head) = 서명 거부"] = False
+        except RuntimeError as ex:
+            out["★cosigner 재-창세(같은 seq 다른 head) = 서명 거부"] = ("포크" in str(ex) and n_signed >= 1
+                                                                 and os.path.exists(os.path.join(data, "cs9.state.fork")))
+    finally:
+        msrv.shutdown(); msrv.server_close()
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2956,6 +3095,17 @@ def gate_TREPLAYCAP(port=8842):
     r = victim.split(vn, [1, vnote["face"] - 1])
     out["정당 SPLIT 통과"] = isinstance(r, dict) and "seq" in r
     out["원장 무오염"] = nd.audit()["ok"] is True
+    # ★[M-208] R4-4(냉독 4 · HIGH 가용성) — REJECT **기록** 예산: 16 건은 기록됐다(위 오타 16회) · 17번째 인증-거부는
+    #   세이브포인트로 되감겨 **무기록 400**(원장·nonce 무변) · 그 뒤 정직 op 는 여전히 통과(M-198 자기-잠금 재발 없음).
+    n_before = len(nd.w.log)
+    nonce_b = atk._get(f"/nonce/atk")["nonce"]
+    c17, m17 = post(atk.sign_env("SPLIT", {"owner": "atk", "note": vn, "parts": [1, 1]}))
+    out["★REJECT 예산: 17번째 거부 = 무기록 400"] = (c17 == 400 and "예산" in str(m17) and len(nd.w.log) == n_before
+                                                 and atk._get("/nonce/atk")["nonce"] == nonce_b)
+    mine2 = max(atk.notes(), key=lambda x: x["face"])          # face ≥ 2 인 노트(앞 교정-op 가 face-1 노트를 만들었다)
+    r2 = atk.split(mine2["nid"], [1, mine2["face"] - 1])
+    out["★REJECT 예산: 예산 소진 뒤에도 정직 op 통과"] = isinstance(r2, dict) and "seq" in r2
+    out["원장 무오염(예산 뒤)"] = nd.audit()["ok"] is True
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3078,6 +3228,36 @@ def gate_TOPREPLAY(port=8844):
         n["color"] == g0 for n in bob.notes())
     out["원장 무오염"] = nd.audit()["ok"] is True
     srv.shutdown()
+    # ⓒ ★[M-208] FL2.3 J-3 생존-상한 동형(냉독 4 R4-1): 예산까지 JOIN → 초과 거부 → EXIT 1 → 다시 JOIN 은 **200**
+    #   (구 선체크는 exited 를 안 빼서 128 누적 뒤 온보딩 영구 봉쇄 · 커널은 수용 = 노드가 법보다 엄격했다)
+    nd2, srv2, data2 = _serve(port + 60, join_issue=0)
+    try:
+        B2 = f"http://127.0.0.1:{port + 60}"
+        bud = nd2.w.GEN["identity_budget"]
+        cs = []
+        for i in range(bud - 1):                       # anchor0 가 비-좌석 1 을 이미 차지
+            cc = Fl21Client(B2, f"lc{i}", os.path.join(data2, f"lc{i}.key"))
+            cc.join()
+            cs.append(cc)
+        over = Fl21Client(B2, "lc_over", os.path.join(data2, "lc_over.key"))
+        try:
+            over.join()
+            out["★생존-상한: 예산 초과 JOIN 거부"] = False
+        except Exception as e:
+            out["★생존-상한: 예산 초과 JOIN 거부"] = "identity_budget" in str(e)
+        cs[0]._post("/submit", {"env": cs[0].sign_env("EXIT", {"a": "lc0"})})
+        n2 = len(nd2.w.log)
+        try:
+            over.join()
+            out["★생존-상한: EXIT 후 JOIN 수용"] = True
+        except Exception:
+            out["★생존-상한: EXIT 후 JOIN 수용"] = False
+        au = nd2.w.audit()
+        out["★생존-상한: 커널 상태 일치"] = (nd2.w.reg.pk("lc_over") is not None and len(nd2.w.log) > n2
+                                          and bool(au["ok"] if isinstance(au, dict) else au))
+    finally:
+        srv2.shutdown()
+        srv2.server_close()
     out["pass"] = all(v is True for v in out.values())
     return out
 
@@ -3138,6 +3318,32 @@ def gate_TACCEPTBIND(port=8840):
     out["★접붙임 위조 봉쇄(ghost 미등록)"] = "ghost" not in r.get("buyers", {})
     out["결박 활성(sig_verified False 또는 rejected>0)"] = (
         r.get("sig_verified") is False or r.get("sig_rejected", 0) >= 1)
+    out["pass"] = all(v is True for v in out.values())
+    return out
+
+
+def gate_TGENDOC():
+    """★[M-208] 세대-문자열 정합(냉독 4 R4-2 — QUICKSTART 두 표가 `FL22-ACPT` 를 적어 표를 따른 클라이언트의 수락 서명이
+    조용히 거부되던 [M-183] 부류 재발): 번들 문서(r1/*.md)의 서명-도메인 문자열은 현 세대(node/sdk 상수)와 같아야 한다 —
+    구세대 도메인은 아카이브·계보 문맥의 줄에서만 허용."""
+    import glob
+    import re
+    out = {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    gen, prev = "FL23", "FL22"
+    stale = re.compile(prev + r"-(v0\.1|BOARD|CHAL|ACPT|MANIFEST|RELAY)")
+    allow = ("archive", "아카이브", "FL2.2", "계보", "lineage", "bridge_ref", "구세대", "previous generation")
+    hits = []
+    for f in sorted(glob.glob(os.path.join(here, "*.md"))):
+        for i, line in enumerate(open(f, encoding="utf-8"), 1):
+            if stale.search(line) and not any(a in line for a in allow):
+                hits.append(f"{os.path.basename(f)}:{i}")
+    out["★구세대 도메인 문자열 0(문맥-허용 제외)"] = (hits == []) if not hits else hits[:6]
+    cur = {gen + "-ACPT", gen + "-BOARD", gen + "-CHAL", gen + "-RELAY"}   # 오프-원장 도메인(node/sdk 상수)
+    src = open(os.path.join(here, "node.py"), encoding="utf-8").read() + open(os.path.join(here, "sdk.py"), encoding="utf-8").read()
+    out["현 세대 도메인 상수 존재(node/sdk)"] = all(c in src for c in cur)
+    docs = "".join(open(f, encoding="utf-8").read() for f in glob.glob(os.path.join(here, "*.md")))
+    out["문서가 현 세대 수락 도메인을 적는다"] = (gen + "-ACPT") in docs
     out["pass"] = all(v is True for v in out.values())
     return out
 
@@ -3203,6 +3409,36 @@ def gate_TREKEY23(port=8845):
     out["회전 후 사용자 op 수리"] = isinstance(c2.split(n2["nid"], [1, n2["face"] - 1]), dict)
     out["audit"] = nd.audit()["ok"] is True
     srv.shutdown()
+    # ★[M-208] R4-10(냉독 4 · F06-F2) — 회전 뒤 재기동: 정상 = 통과 · operator.key 유실 = **명시 기동 거부**(침묵 브릭 아님) ·
+    #   회전-중 크래시 잔재(.next · 원장에 없는 키) = 폐기 후 정상 기동.
+    okp = os.path.join(data, "operator.key")
+    out["회전 후 operator.key 존재"] = os.path.exists(okp)
+    saved = open(okp).read()
+    nd_r, srv_r, _ = _serve(port + 50, data=data)
+    try:
+        out["★재기동 정합(정상)"] = nd_r.w.reg.pk("operator") == nd_r.w._keys["operator"].public_key().public_bytes_raw()
+        with nd_r.lock:
+            nd_r.tick()                                     # 재기동 후 운영자 봉투가 통과해야 한다
+        out["★재기동 후 TICK 통과"] = True
+    finally:
+        srv_r.shutdown(); srv_r.server_close()
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _P
+    with open(okp + ".next", "w") as fh:                    # 원장에 없는 회전 잔재
+        fh.write(_P.generate().private_bytes_raw().hex())
+    nd_r, srv_r, _ = _serve(port + 51, data=data)
+    try:
+        out["★.next 잔재 폐기 후 정상"] = (not os.path.exists(okp + ".next")) and open(okp).read() == saved
+    finally:
+        srv_r.shutdown(); srv_r.server_close()
+    os.remove(okp)                                          # 키 유실 시나리오
+    try:
+        nd_r, srv_r, _ = _serve(port + 52, data=data)
+        srv_r.shutdown(); srv_r.server_close()
+        out["★키 유실 = 명시 기동 거부"] = False
+    except RuntimeError as ex:
+        out["★키 유실 = 명시 기동 거부"] = "키-일정" in str(ex)
+    with open(okp, "w") as fh:
+        fh.write(saved)
     out["pass"] = all(v is True for v in out.values())
     return out
 
@@ -3340,7 +3576,8 @@ def main():
              "T-REKEY23 키-회전(J-4 노드)": gate_TREKEY23(),
              "T-IMPORT23 승계-수입(J-11 노드)": gate_TIMPORT23(),
              "T-COMPOSE 구성-링크(W-4)": gate_TCOMPOSE(),
-             "T-ERRCODE 오류-코드(W-5b)": gate_TERRCODE()}
+             "T-ERRCODE 오류-코드(W-5b)": gate_TERRCODE(),
+             "T-GENDOC 세대문자열": gate_TGENDOC()}
     ok = all(g["pass"] for g in gates.values())
     res = {**gates, "R1_GATES_PASS": ok}
     os.makedirs(os.path.join(_HERE, "results"), exist_ok=True)

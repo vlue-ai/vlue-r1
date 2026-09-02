@@ -65,7 +65,11 @@ def _main_inner():
     entries, s = [], 0
     for _ in range(a.batches):
         page = _get(url, f"/log?since={s}").get("entries")
-        if not isinstance(page, list) or not page:
+        if not isinstance(page, list):                      # ★[M-208] R4-16(냉독 4 · F05 HIGH) — 비정형 페이지는 break 가 아니라 **실패**
+            print(json.dumps({"H7_FULL_REPLAY": False, "why": f"/log 비정형 페이지(since {s}) — 0항 검증을 성공으로 보고하지 않는다"},
+                             ensure_ascii=False))
+            return 1
+        if not page:
             break
         entries += page
         # ★[M-194] 악의 노드의 비정형 페이지(마지막 항 seq 부재·비-int)가 페이지네이션을
@@ -82,9 +86,24 @@ def _main_inner():
         print(json.dumps({"H7_FULL_REPLAY": False,
                           "why": f"운영자 서명 부재 seq {miss}"}, ensure_ascii=False))
         return 1
+    if not entries:                                     # ★[M-208] R4-16 — 원천-철회(빈 로그)는 「전량 재검증 성공」이 아니다
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": "원장 0항 — 검증 대상 없음(라이브 원장이면 노드가 로그를 감춘 것)"},
+                         ensure_ascii=False))
+        return 1
     r = w.replay_verify(entries)
-    out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id),
-           "identity_rederived": ok_id, **r}
+    # ★[M-208] R4-17(냉독 4 · F12) — 파생-상태 대조: 노드가 주장하는 /balance 가 재실행 잔고와 다르면 거짓 노드(fail-closed)
+    mism = []
+    try:
+        names = sorted({str(n.get("owner")) for n in w.notes.values()} | set(getattr(w, "nonces", {}) or {}))
+        names = [x for x in names if x and not x.startswith("@")][:256]          # 에스크로 좌석(@…) 제외 · 실주체만
+        for pnm in names:
+            bal = _get(url, f"/balance/{pnm}").get("balance")
+            if bal != w.bal(pnm):
+                mism.append({"p": pnm, "node": bal, "replayed": w.bal(pnm)})
+    except Exception as ex:                              # 대조 불가 = 실패로 기록(침묵 통과 금지)
+        mism.append({"error": str(ex)[:80]})
+    out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id and not mism),
+           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "balance_mismatch": mism, **r}
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if out["H7_FULL_REPLAY"] else 1
 

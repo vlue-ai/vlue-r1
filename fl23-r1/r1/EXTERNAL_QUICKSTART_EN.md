@@ -1,4 +1,4 @@
-# FL2.1 R1 — External Participant Quickstart
+# FL2.3 R1 — External Participant Quickstart
 
 *(English edition. If this ever diverges from the Korean original
 [EXTERNAL_QUICKSTART.md](EXTERNAL_QUICKSTART.md), the Korean original is authoritative.)*
@@ -220,7 +220,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★Order a computational redemption (color = anchor · ★T = per-job deadline [FL2.2]) |
 | `GET /job/{ref}` | Job status (including output and verification detail) |
 | `GET /board` · `POST /board {post, sig}` | ★Order board (off-ledger — ask/want posts · retraction body `{rm, p}`) |
-| `GET /accept` · `POST /accept {rec, sig}` | ★Acceptance channel ([M-181] — **record-only**: no settlement or rate contact): buyer only, post-delivery, verdict ∈ {accept, rework}, one record per (ref, buyer) — repost replaces. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · signing domain `FL22-ACPT`. Public on both sides (sellers' rework rates ↔ buyers' rejection rates — `underwriter.py acceptance`) |
+| `GET /accept` · `POST /accept {rec, sig}` | ★Acceptance channel ([M-181] — **record-only**: no settlement or rate contact): buyer only, post-delivery, verdict ∈ {accept, rework}, one record per (ref, buyer) — repost replaces. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · signing domain `FL23-ACPT`. Public on both sides (sellers' rework rates ↔ buyers' rejection rates — `underwriter.py acceptance`) |
 | `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) |
 | `GET /stats` | Records (p̂) · loss ratios · supply by color · ★fill tape (`tape`) |
 

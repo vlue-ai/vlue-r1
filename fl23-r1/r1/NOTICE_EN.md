@@ -48,6 +48,10 @@ backed up, but **continuity is not guaranteed**.
 identity (`log_id`, `fp0`, keys), its continuity, and the public address did **not change
 by a single byte** (verified by full-ledger replay).
 
+**Generation change, 2026-09-02 (FL2.2 → FL2.3)** — the settlement law did not change by a character (golden 9 multiset identical), but a new generation with a new commit mechanism was opened.
+★**The identity changed**: new `log_id` `3128a815…6faf` (FL2.2's `e687a69e…b37e` is archived under `archive/fl22/`, 10,900 entries; its final head is the new genesis' `bridge_ref`).
+Participant balances were carried by GENESIS_IMPORT (anchor0 40,000 AU); planned pause ≤10 min; the public address did not change. The 2026-08-27 item above is an event of the FL2.2 world.
+
 - **What improved**: the node now **recovers unattended** after a reboot (measured: 42
   seconds). The previous configuration required a person to be present after a power loss
   or reboot — which did once materialize as a **9-hour outage**.

@@ -1,4 +1,4 @@
-# FL2.1 R1 — 외부 참여 퀵스타트
+# FL2.3 R1 — 외부 참여 퀵스타트
 
 *(English: [EXTERNAL_QUICKSTART_EN.md](EXTERNAL_QUICKSTART_EN.md))*
 
@@ -192,7 +192,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `POST /job {env(REDEEM[, T]), job{kind,seed,n}}` | ★계산-이행 상환 주문(color = anchor 필수 · ★T = 잡별 기한[FL2.2]) |
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
-| `GET /accept` · `POST /accept {rec, sig}` | ★수락-채널([M-181] — **record-only**·정산·요율 무접촉): 이행-후 매수자만, verdict ∈ {accept, rework}, (ref, p)당 1건 — 재게시 = 교체. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · 서명 도메인 `FL22-ACPT`. 양측-공개(판매자 재작업률 ↔ 매수자 거절률 — `underwriter.py acceptance`) |
+| `GET /accept` · `POST /accept {rec, sig}` | ★수락-채널([M-181] — **record-only**·정산·요율 무접촉): 이행-후 매수자만, verdict ∈ {accept, rework}, (ref, p)당 1건 — 재게시 = 교체. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · 서명 도메인 `FL23-ACPT`. 양측-공개(판매자 재작업률 ↔ 매수자 거절률 — `underwriter.py acceptance`) |
 | `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |
 

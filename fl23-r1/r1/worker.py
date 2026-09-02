@@ -43,6 +43,9 @@ class AnchorWorker(Fl21Client):
         for ref, j in js["jobs"].items():
             if not j["job"]["kind"].startswith("sha256"):
                 continue              # pycheck 등 지능-작업은 워커 몫 아님(P-1 — 외부 앵커)
+            _n = j["job"].get("n")
+            if not isinstance(_n, int) or not (1 <= _n <= JOBS.N_MAX):   # ★[M-208] R4-19 — 악의 노드의 무계 n(정지) 거부
+                continue
             out = JOBS.compute(j["job"]["kind"], j["job"]["seed"], j["job"]["n"])
             # ★[M-149] SR-1 — H2 결박: sdk.deliver_job 경유(output_sha256를 서명에 결박).
             # 봉투 직접 조립은 운영자 자신의 판매 경로(자동-이행)만 H2 밖에 두던 구멍 —

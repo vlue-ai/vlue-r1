@@ -17,6 +17,7 @@ anchor0-IOU 원자 스왑 · 한도 결박 · WIR형) · 배상 노트 = 불이�
 """
 import argparse
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -69,7 +70,7 @@ _ERR_CODES = (("운영자-전용 연산", "operator_only"), ("nonce 위반", "no
               ("미소유", "not_owner"), ("소유 아님", "not_owner"), ("액면 합", "face_sum"), ("부분 합", "face_sum"),
               ("색-일치", "color_mismatch"), ("동색", "color_mismatch"), ("미지/무색", "unknown_note"),
               ("리스트-인자", "list_cap"), ("REKEY", "rekey"), ("GENESIS_IMPORT", "genesis_import"),
-              ("유량", "rate_limited"), ("상한", "cap"), ("미결 의무", "obligations_open"), ("범위", "scope"),
+              ("REJECT 예산", "reject_budget"), ("선거부", "leg_precheck"), ("유량", "rate_limited"), ("상한", "cap"), ("미결 의무", "obligations_open"), ("범위", "scope"),
               ("취소-창", "cancel_window"), ("미지 상환 청구", "unknown_claim"), ("β", "beta"), ("요율 하한", "prem_floor"))
 
 
@@ -86,6 +87,8 @@ BIG_BODY_CAP = {"/deliver": 2_000_000, "/block": 262144}
 # (DELIVER_CAP 동형). 성공 = nonce 전진 = 슬롯 종료(리셋). 정직 재시도(같은 nonce 교정)는
 # 16 이면 넉넉 · 초과 = 재생.
 DELIVER_CAP = 32                     # ★[M-194] ref당 /deliver 재검증 시도 상한(전 kind)
+REJECT_BUDGET = 16                    # ★[M-208] 주체당 REJECT 기록 예산(창당 · 냉독 4 R4-4: 인증-거부 봉투 남발 = 원장 부풀리기)
+REJECT_WINDOW = 60                    # ★[M-208] 그 창(에포크 · 60초 틱 = 1시간) — 초과분은 **무기록 400**(nonce 미소비 · 창 리셋 후 재개)
 OCOMMIT_CAP = 64                      # ★[M-190] ref당 ocommit(재추첨) 상한 —
 # C-2 변종(냉독 최대판): 유효-서명 앵커가 틀린 산출로 /deliver 를 재생하면 매번
 # ocommit 이 원장에 남는다(nonce 미소비 · deep-verify 실패는 롤백 안 됨). C-2 로
@@ -134,6 +137,8 @@ class Node:
         # ★호가 창 — 자문층(정산 아님): 손상 = 빈 판(대장이 정본 · 게시는 재게시 가능)
         self.relay = {}                 # ★[M-162] to → [msg] (휘발 — TTL 짧음)
         self.ocommits = {}              # ★[M-164] ref → 산출-커밋 수(재추첨 흔적)
+        self.ocommit_heads = {}         # ★[M-208] ref → [커밋 head…] — 표본 **누적**(재추첨은 검사를 더할 뿐 탈출률을 못 올린다 · R4-3)
+        self.reject_hits = {}           # ★[M-208] 주체 → (창, 기록된 REJECT 수) — REJECT_BUDGET/REJECT_WINDOW
         self.deliver_attempts = {}      # ★[M-194] ref → /deliver 재검증 시도 수(전 kind)
         self.challenge_attempts = {}    # ★[M-195] ref → /challenge 재검증 시도 수
         self.note_touch = {}            # ★[M-170] nid → 최근 접촉 에포크(F-9a 원료)
@@ -185,11 +190,13 @@ class Node:
         okp = os.path.join(data_dir, "operator.key")           # ★J-4 — 회전된 현행 서명 키(있으면 덮어씀)
         if os.path.exists(okp):
             self.w.rekey_local("operator", self._load_ed_key(okp))
+        self._op_key_next = okp + ".next"                       # ★[M-208] 회전 중 크래시 잔재 — _replay 뒤 정합 판정
         self._export_anchor_key(data_dir)       # 워커 좌석 키(0600 — 워커가 파일로 로드)
         self.jobs = {}               # ref → {job, anchor, holder, deadline, state, output}
         self._stats_cache = None     # ★D-13 — (log_len, stats)
         self._audit_cache = None     # ★F-B([M-143]) — (log_len, audit 결과)
         self._replay()
+        self._reconcile_operator_key()      # ★[M-208] 서명 키 == 원장 키-일정(불일치 = 기동 거부 · 침묵 브릭 금지)
         if self.persisted == 0 and self._genesis_import_p:   # ★J-11 — 승계 스냅샷(첫 엔트리 · 운영자-서명)
             self._genesis_import(self._genesis_import_p)     #   ⟹ 창세 자기-IOU 는 **건너뛴다**(anchor0 잔고 = 스냅샷 · 이중-지급 없음)
         if self.persisted == 0 and self.genesis_issue > 0:   # ★창세 자기-IOU(1회 · 수입 없는 새 세계만)
@@ -319,7 +326,27 @@ class Node:
                     _e["env"]["args"].get("kind") == "fl21.ocommit":
                 _r = _e["env"]["args"].get("ref")
                 self.ocommits[_r] = self.ocommits.get(_r, 0) + 1
+                self.ocommit_heads.setdefault(_r, []).append(_e["head"])   # ★[M-208] 누적 표본 재구성
         self._backfill_cosigs()      # ★내구성 자기치유(아래) — 크래시 반쪽-영속 봉합
+
+    def _reconcile_operator_key(self):
+        """★[M-208] R4-10 — 운영자 서명 키와 원장 키-일정의 정합을 **기동 시** 단언한다(구판은 다음 운영자 봉투에서야
+        InvalidSignature 로 드러나 TICK·JOIN·복구 REKEY 까지 전부 막히는 하드 브릭). 회전 중 크래시 잔재(operator.key.next)는
+        원장이 그 pk 를 채택했으면 승격, 아니면 폐기."""
+        reg_pk = self.w.reg.pk("operator")
+        okp = os.path.join(self.dir, "operator.key")
+        nxt = getattr(self, "_op_key_next", okp + ".next")
+        if os.path.exists(nxt):
+            cand = self._load_ed_key(nxt)
+            if cand.public_key().public_bytes_raw() == reg_pk:
+                os.replace(nxt, okp)
+                self.w.rekey_local("operator", cand)
+            else:
+                os.remove(nxt)                            # 원장에 없는 회전 = 일어나지 않은 회전
+        cur = self.w._keys["operator"].public_key().public_bytes_raw()
+        if cur != reg_pk:
+            raise RuntimeError("operator 서명 키 ≠ 원장 키-일정(REKEY 항은 있는데 operator.key 가 구-키거나 유실) — "
+                               "기동 거부: 회전 백업 키로 operator.key 를 복구하라(침묵 브릭 대신 명시 실패)")
 
     def _backfill_cosigs(self):
         """★공동-서명 구멍 자기치유(직접 리뷰 RD-1): 대장(entries.jsonl) 뒤에 공동-서명
@@ -392,19 +419,37 @@ class Node:
         # REJECT 엔트리(nonce 소비)로 구성 자체에서 없앴고, 캡은 정직 신원의 영구 자기-잠금을 낳았다
         # (FL23_SCOPE §2-④ 재현). 비-operator 인증-거부가 원장에 REJECT 를 남기면 **원장만 즉시 영속**한다
         # (jobs.json 재기록 없음 — [M-194 D] 거부-당-전체-재기록 DoS 재발 금지).
+        # ★[M-208] R4-4(냉독 4 · HIGH 가용성) — REJECT **기록** 예산: 인증-거부 봉투(유효 서명·nonce)는 J-7 로 원장 1행이 되는데
+        #   상한·가격·GC 가 없어 정당 신원 하나가 원장·공동서명·리플레이 비용을 무한 선형으로 키울 수 있었다(재현 ~600행/s ·
+        #   행당 ≤ 15KB). 예산(주체당 REJECT_BUDGET/REJECT_WINDOW 에포크)을 넘긴 주체의 봉투는 **세이브포인트 안에서** 커널에 넣어
+        #   실패하면 REJECT 행·nonce 소비를 되감고 무기록 400 으로 답한다 — 정직 op 는 그대로 통과(M-198 「정직 신원 자기-잠금」 재발 없음).
+        _p = (env or {}).get("p") if isinstance(env, dict) else None
+        _win = self.w.epoch // REJECT_WINDOW
+        _h = self.reject_hits.get(_p) if isinstance(_p, str) else None
+        _over = bool(_h and _h[0] == _win and _h[1] >= REJECT_BUDGET and _p != "operator")
+        _own_txn = _over and self.w._txn is None
         bi = set(self.w.notes)
         rp_b = ({k: dict(v) for k, v in self.w.redeem_pending.items()}
                 if (env or {}).get("typ") == "TICK" else None)   # 비-객체 봉투는 커널 형태 검사가 거부
+        if _own_txn:
+            self.w.begin_txn()
         try:
             entry = self.w.submit(env)
         except Fl21Error as e:
+            if _own_txn:                                 # 예산 초과 주체의 실패 = 되감기(행·nonce 무소비) + 무기록 400
+                self.w.rollback_txn()
+                raise Fl21Error(f"REJECT 예산 소진(주체당 {REJECT_BUDGET}건/{REJECT_WINDOW}에포크 · 창 {(_win + 1) * REJECT_WINDOW} 에포크 리셋)"
+                                f" — 이 거부는 기록되지 않았다: {e}") from None
             if len(self.w.log) > self.persisted:
                 last = self.w.log[-1]
                 if last.get("kind") == "REJECT" and last["env"] is env:
                     e.reject_seq = last["seq"]           # 400 본문에 실린다(에이전트가 재현-가능한 거부 기록)
+                    self.reject_hits[_p] = (_win, (_h[1] + 1) if (_h and _h[0] == _win) else 1)   # 기록된 REJECT 만 계수
                 if self.w._txn is None:                  # 원자 구간 안에서는 영속을 미룬다(롤백 시 로그 절단과 정합)
                     self._persist_ledger()
             raise
+        if _own_txn:
+            self.w.commit_txn()
         self._color_step(entry, bi, rp_b)
         return entry
 
@@ -613,6 +658,7 @@ class Node:
             # 발행자가 자기-IOU를 전량 넘긴 뒤 EXIT하면 그 색 노트가 영구 상환-불능
             # (「앵커 무효」)이 되는데 노트는 계속 유통(자유은행 「깨진 은행권」·무음 방기).
             # 색은 서비스층 개념이라 방어도 서비스층 몫 — 유통 색부채가 남으면 EXIT 거부.
+            self.w._verify_env(env)        # ★[M-208] R4-9 — 서명·nonce(O(1)) 먼저: 무인증 봉투가 O(노트) 색-스캔을 못 시키게
             out = self.outstanding(env.get("p"))
             if out > 0:
                 raise Fl21Error(
@@ -763,6 +809,7 @@ class Node:
                             "face": j["exposure"], "anchor": a})
                 del lst[:-32]         # kind당 최근 32건
 
+        canceled_refs = set()                    # ★[M-208] R4-24 — 커버+즉시-취소로 covered·prem_verified 를 무-원가 부양하던 변종
         for e in self.w.log:
             env = e["env"]
             legs = (env["args"]["legs"] if env["typ"] == "BLOCK"
@@ -778,6 +825,8 @@ class Node:
                     b = uw_book.setdefault(u_, {"covered": 0, "prem": 0,
                                                 "paid": 0})
                     b["covered"] += 1
+                elif lg["typ"] == "REDEEM_CANCEL":    # ★[M-208] R4-24(냉독 4 · F10-2) — 취소된 청구의 커버는 실적이 아니다
+                    canceled_refs.add(lg["args"].get("ref"))
                     b["prem"] += lg["args"].get("prem", 0)
                 elif lg["typ"] == "TICKMARK" and \
                         isinstance(lg.get("args"), dict) and \
@@ -855,6 +904,11 @@ class Node:
         for ref2, j2 in self.jobs.items():
             u2 = (j2.get("cover") or {}).get("uw") or ref_uw.get(ref2)
             f2 = j2.get("prem_verified")
+            if ref2 in canceled_refs:                # ★[M-208] R4-24 — 취소 커버 제외(covered 도 되감는다)
+                if u2 and u2 in uw_book:
+                    uw_book[u2]["covered"] -= 1
+                    uw_book[u2]["covered_canceled"] = uw_book[u2].get("covered_canceled", 0) + 1
+                continue
             if u2 and f2:
                 pvsum[u2] = pvsum.get(u2, 0) + f2
         for u_, b in uw_book.items():
@@ -944,7 +998,7 @@ class Node:
                              "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
                              "open_prem": prem_in},
                 "loss_layers": loss,
-                "composition": self._composition(),          # ★W-4b([M-201]) 구성-링크 v0 계기(record-only)
+                "composition": self._composition(canceled_refs),          # ★W-4b([M-201]) 구성-링크 v0 계기(record-only)
                 "note": ("★대칭-시차 계수·버전-분절 — 잡-경로 한정"
                          "(원시 REDEEM은 t0 미상 = 즉시 계수) · "
                          "underwriters.prem = 자기-선언(비결박 — UW-1 한정어)")}
@@ -976,8 +1030,10 @@ class Node:
             raise Fl21Error(f"pk 는 32바이트(받음 {len(pkb)})")
         if self.w.reg.pk(principal) is not None:      # ★[M-198] 중복 등록
             raise Fl21Error(f"이미 등록된 주체: {principal}")
-        if self.w.reg.size() - len(self.w.SEATS) >= self.w.GEN["identity_budget"]:
-            raise Fl21Error("JOIN: identity_budget 소진")   # ★[M-199] kernel _apply:603 동형
+        # ★[M-208] FL2.3 J-3 생존-상한 동형: 퇴장(exited) 슬롯은 되돌아온다 — 구판(누적-상한)은 법보다 엄격해
+        #   128 누적 JOIN 뒤 EXIT 가 나도 노드가 온보딩을 영구 봉쇄했다(냉독 4 R4-1 재현·수리).
+        if self.w.reg.size() - len(self.w.SEATS) - len(self.w.exited) >= self.w.GEN["identity_budget"]:
+            raise Fl21Error("JOIN: identity_budget 소진")   # kernel23 _apply JOIN 동형(size − seats − exited)
         self._ksubmit(self.w.sign_env("operator", "JOIN",
                                       {"principal": principal, "pk": pk_hex}))
         if self.join_issue > 0:      # ★[M-103] 자기-IOU 발행(구매력 아님 — 자기-약속 자본)
@@ -999,15 +1055,20 @@ class Node:
             env = self.w.sign_env("operator", "REKEY", {
                 "principal": "operator", "new_pk": new_pk.hex(),
                 "new_sig": new.sign(self.w.rekey_msg("operator", new_pk)).hex()})
-            self._ksubmit(env)
-            self.w.rekey_local("operator", new)
             okp = os.path.join(self.dir, "operator.key")
-            tmp = okp + ".tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            nxt = okp + ".next"
+            # ★[M-208] R4-10(냉독 4 · F06-F2) — 순서가 정합을 정한다: ① 새 키를 .next 로 fsync(로그 전) ② REKEY 커밋+영속
+            #   ③ .next → operator.key 승격. 어느 지점에서 죽어도 기동 시 「.next 의 pk == 원장 키-일정」이면 승격, 아니면 폐기
+            #   (구판은 키 파일을 로그보다 먼저 써서 그 사이 크래시 = 자기 봉투 자기-거부 하드 브릭).
+            fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as fh:
                 fh.write(new.private_bytes_raw().hex())
-            os.replace(tmp, okp)
+                fh.flush()
+                os.fsync(fh.fileno())
+            self._ksubmit(env)
+            self.w.rekey_local("operator", new)
             self._persist_new()
+            os.replace(nxt, okp)
             return {"rekeyed": "operator", "operator_pk": new_pk.hex(),
                     "operator_pk0": self.operator_pk0, "seq": self.w.log[-1]["seq"]}
 
@@ -1024,7 +1085,7 @@ class Node:
         self._persist_new()
         return entry
 
-    def _composition(self):
+    def _composition(self, canceled=()):
         """★W-4b 구성-링크 계기(record-only · 정산 무접촉): 잡 명세 `deps`(H2 결박)로 상류→하류 간선을 파생하고,
         상류 앵커별 하류 결과(시한-사고/수락-거절)를 센다 — Φ 폐루프의 첫 실환경 입력([M-187] H-4 v0)."""
         edges, by_up = 0, {}
@@ -1040,7 +1101,7 @@ class Node:
                 key = uj.get("anchor") or "?"
                 row = by_up.setdefault(key, {"downstream": 0, "downstream_accident": 0, "downstream_rejected": 0})
                 row["downstream"] += 1
-                if j.get("state") == "settled_or_returned":
+                if j.get("state") == "settled_or_returned" and ref not in canceled:   # ★[M-208] R4-25 — 취소 ≠ 사고(원장 REDEEM_CANCEL 파생)
                     row["downstream_accident"] += 1
         for rec in (self.accepts or {}).values():
             r = (rec or {}).get("rec") or {}
@@ -1243,14 +1304,23 @@ class Node:
         # (근치 = 값싼 증분-영속 · FL2.3 축)
         want = -(-spec["n"] // JOBS.CKPT)
         k_eff = min(spec.get("k", JOBS.SAMPLE_K), want)
-        seed = bytes.fromhex(entry["head"]) + ref.encode()
-        idxs, ctr = [], 0
-        while len(idxs) < k_eff:
-            v = int.from_bytes(hashlib.sha256(
-                seed + ctr.to_bytes(4, "big")).digest(), "big") % want
-            ctr += 1
-            if v not in idxs:
-                idxs.append(v)
+        heads = self.ocommit_heads.setdefault(ref, [])
+        heads.append(entry["head"])
+        # ★[M-208] R4-3(냉독 4 · HIGH) — 표본 **누적**: 재추첨(새 ocommit)은 새 인덱스를 **더하기만** 한다.
+        #   구판은 최신 커밋의 표본만 검사해 실패-이행(nonce 미소비)이 DELIVER_CAP 32 회까지 독립 재추첨을 얻었다
+        #   ⟹ 단일-추첨 탈출률 q 가 1−(1−q)^32 로 증폭(50% 위조 산출 0.22 → 0.997). 누적이면 어느 시도든 통과 확률 ≤ q
+        #   (한 번 뽑힌 위조 구간은 영구히 검사된다) · 비용 ≤ OCOMMIT_CAP × k · H7 재실행자는 모든 커밋 head 에서 같은 합집합을 재유도.
+        idxs = set()
+        for h in heads:
+            seed = bytes.fromhex(h) + ref.encode()
+            picked, ctr = [], 0
+            while len(picked) < k_eff:
+                v = int.from_bytes(hashlib.sha256(
+                    seed + ctr.to_bytes(4, "big")).digest(), "big") % want
+                ctr += 1
+                if v not in picked:
+                    picked.append(v)
+            idxs.update(picked)
         return sorted(idxs), entry["seq"]
 
     def deliver_commit(self, env, output, detail):
@@ -1292,6 +1362,12 @@ class Node:
             # 밀어넣고 실패시켜 재생-DoS(+ operator 슬롯 오염)를 냈다. 커널과 동형(_verify_env) —
             # 위조/nonce/창 다리를 _snap 이전에 값싸게 거부하고, 통과 다리의 서명자를 인증한다.
             self.w._verify_env(lg)
+            # ★[M-208] R4-5(냉독 4) — 다리의 **의미-실패**를 값싼 O(1) 커널-동형 선체크로 거부: 노드 선검증을 통과하고
+            #   커널 _apply 에서 실패하는 다리(예: 미소유 노트 XFER)는 operator 제출이라 REJECT·nonce 소비가 없어 무계 재생되며,
+            #   매 재생이 _ksubmit 의 O(노트) 색-스냅숏을 전역 락 안에서 강제했다(재현 1.08→1.98ms @55k 노트). 소유권은 _own 동형.
+            _la, _lp, _lt = (lg.get("args") or {}), lg.get("p"), lg.get("typ")
+            if _lt == "XFER" and not self.w._own(str(_la.get("note")), _lp):
+                raise Fl21Error(f"BLOCK 다리 XFER 선거부: {_lp} 의 미소유 노트")
             # ⚠️[M-198] 다리-주체 실패-슬롯 계수는 **두지 않는다**(냉독 라운드8 자체-재현으로
             # grief 확인): BLOCK 은 한 다리라도 실패하면 전체가 롤백되므로, 공격자가
             # [피해자 유효-다리 + 자기 실패-다리] 블록을 반복하면 피해자의 (p,nonce) 슬롯이
@@ -1675,7 +1751,8 @@ class Handler(BaseHTTPRequestHandler):
     join_per_ip = 0                   # ★REACH-3 — join 상한/IP(0 = 끔 · 시빌 속도 제어)
     # ── ★H-1([M-188] RISK-1 경화) — 락-밖 재실행의 자원 유계화 ──────────────
     # 무거운 경로 둘(/challenge 재검증 · /deliver 산출 검증)은 **락 밖**에서 요청자
-    # 코드를 서브프로세스로 재실행한다(`jobs.py` PY_TIMEOUT 10 CPU초·RLIMIT_AS 512MB).
+    # 코드를 서브프로세스로 재실행한다(`jobs.py` PY_TIMEOUT 10 CPU초·RLIMIT_AS 512MB — ★Linux 한정:
+    # macOS 는 RLIMIT_AS 를 못 걸어 메모리 상한은 컨테이너 몫[D-12] · 냉독 4 R4-7).
     # ⚠️구멍의 실체: `join_per_ip` 는 **가입**을 제한하지 **챌린지**를 제한하지 않고,
     # 동시 재실행 수에는 상한이 아예 없었다 — 가입 주체 하나가 rate_limit 까지 난타하면
     # 서브프로세스가 무계로 쌓인다(단일 시퀀서라 노드 소진 = 시스템 전체 정지).
@@ -1852,15 +1929,20 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     return self._send(200, {"nonce": nd.w.nonces.get(m.group(1), 0),
                                             "epoch": nd.w.epoch})
-                m = re.match(r"^/notes/([a-z0-9_-]+)$", p)
+                m = re.match(r"^/notes/([@a-z0-9_:-]+)(?:\?since=(\d+))?$", p)
                 if m:
                     who = m.group(1)
-                    ns = sorted(((nid, n["face"]) for nid, n in nd.w.notes.items()
-                                 if n["owner"] == who), key=lambda x: int(x[0]))
+                    since_n = int(m.group(2) or 0)
+                    # ★[M-208] R4-8(냉독 4) — 전-원장 스캔(O(노트) · 전역 락 안 · 무페이지)이 아니라 커널 소유자 색인
+                    #   (_by_owner · O(소유 노트))으로 · 4096 상한 + ?since=<nid> 페이지 · 에스크로 소유자(@uw:ref 등)도 조회 가능(담보 색 감사).
+                    own = nd.w._by_owner.get(who, ())
+                    ids = sorted((int(x) for x in own if int(x) >= since_n))
+                    more = len(ids) > 4096
+                    ids = ids[:4096]
                     return self._send(200, {"notes": [
-                        {"nid": a, "face": b,
-                         "color": nd.colors.get(a)}    # ★[M-103] 발행자(색)
-                        for a, b in ns]})
+                        {"nid": str(a), "face": nd.w.notes[str(a)]["face"],
+                         "color": nd.colors.get(str(a))}    # ★[M-103] 발행자(색)
+                        for a in ids], **({"truncated": True, "next_since": ids[-1] + 1} if more else {})})
                 m = re.match(r"^/log\?since=(\d+)$", p)
                 if m:
                     s = int(m.group(1))
@@ -1870,7 +1952,7 @@ class Handler(BaseHTTPRequestHandler):
                     s = int(m.group(1))
                     # ★N-3 — 병합-맵을 seq-정렬 서빙(행-단위 파일 절단의 페이지-경계
                     # seq 서명 누락 봉합 · SDK 커서[seq+1]가 이제 정확)
-                    ks = sorted(k for k in list(nd.cosig_map) if k >= s)[:500]
+                    ks = heapq.nsmallest(500, (k for k in list(nd.cosig_map) if k >= s))   # ★[M-208] O(M) (전체 정렬 O(M log M) 대체)
                     rows = [nd.cosig_map.get(k) for k in ks]
                     return self._send(200, {"cosigs": [r for r in rows if r]})
                 m = re.match(r"^/jobs\?anchor=([a-z0-9_-]+)$", p)
@@ -1936,9 +2018,9 @@ class Handler(BaseHTTPRequestHandler):
                                                                detail))
             with nd.lock:
                 if p == "/join":
-                    # ★시빌-소진 방어([M-114] REACH-3): identity_budget(128)은 전역·
-                    # 단조(EXIT도 슬롯 반환 안 함)라 한 행위자가 수 초에 전량 소진하면
-                    # 그 세계의 join이 영구 봉쇄된다 — per-IP 하위 상한으로 속도 제어
+                    # ★시빌-소진 방어([M-114] REACH-3): identity_budget(128)은 전역이라 한 행위자가
+                    # 수 초에 전량 소진하면 그 세계의 join 이 봉쇄된다(★FL2.3 J-3: EXIT 가 슬롯을
+                    # 되돌리지만 점유자가 퇴장하지 않으면 그대로) — per-IP 하위 상한으로 속도 제어
                     # (0 = 끔 · 초기 수요-탐침 창에서만 의미 · 운영 다이얼).
                     if self.join_per_ip > 0:
                         ip = self._peer()

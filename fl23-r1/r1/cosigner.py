@@ -34,6 +34,16 @@ class Cosigner:
         self.state_p = state_path or key_path + ".state"
         self.next = (int(open(self.state_p).read().strip())
                      if os.path.exists(self.state_p) else 0)
+        # ★[M-208] R4-31(냉독 4 · F07-4) — 내가 서명한 (seq → head) 이력을 영속 보관한다: 같은 seq 에 다른 head 가 오면
+        #   (재-창세·포크) 서명을 **거부**하고 두 head 를 증거로 남긴다 — 「짧으면 0부터」 규칙이 서명자 자신의 증인 자격을
+        #   지우던 것을 봉합(cosigner 는 head 를 재계산하지 않지만, 자기가 서명한 head 와의 모순은 볼 수 있다).
+        self.heads_p = self.state_p + ".heads"
+        self.heads = {}
+        if os.path.exists(self.heads_p):
+            for line in open(self.heads_p, encoding="utf-8"):
+                if line.strip():
+                    rec = json.loads(line)
+                    self.heads[int(rec["seq"])] = rec["head"]
 
     def _req(self, method, path, obj=None):
         data = json.dumps(obj).encode() if obj is not None else None
@@ -41,7 +51,10 @@ class Cosigner:
                                    headers={"Content-Type": "application/json",
                                             "User-Agent": USER_AGENT})
         with urllib.request.urlopen(r, timeout=30) as resp:
-            return json.loads(resp.read())
+            raw = resp.read(32 * 1024 * 1024 + 1)          # ★[M-208] R4-12 — 악의 노드 무한 본문 상한
+            if len(raw) > 32 * 1024 * 1024:
+                raise RuntimeError("응답 크기 상한 초과")
+            return json.loads(raw)
 
     def run_once(self):
         """미서명 구간 전부 서명·회신 — 서명 수를 반환(멱등 · 상태 파일로 재시작 내구)."""
@@ -52,16 +65,34 @@ class Cosigner:
         dom = domains_for(self._req("GET", "/meta"))["env"]      # ★FL2.3 — 세대-적응(FL22 노드·FL23 노드 모두)
         if self.next > st["seq"]:
             self.next = 0
+        rounds = 0
         while True:
             page = self._req("GET", f"/log?since={self.next}")["entries"]
             if not page:
                 break
+            rounds += 1
+            # ★[M-208] R4-18(냉독 4 · F11) — 악의 노드의 비-단조 seq 페이지 = 무한 루프·/cosig 홍수(2.5초 6,297건 재현) 차단
+            if not all(isinstance(x, dict) and isinstance(x.get("seq"), int) for x in page) or \
+                    page[0]["seq"] < self.next or any(page[i]["seq"] >= page[i + 1]["seq"] for i in range(len(page) - 1)) \
+                    or rounds > 10_000:
+                raise RuntimeError(f"/log 비-단조·비정형 페이지(since {self.next}) — 서명 중단(악의 노드 방어)")
             for e in page:
+                prev_h = self.heads.get(int(e["seq"]))
+                if prev_h is not None and prev_h != e["head"]:
+                    ev = {"seq": e["seq"], "signed_head": prev_h, "offered_head": e["head"], "name": self.name}
+                    with open(self.state_p + ".fork", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(ev) + "\n")
+                    raise RuntimeError(f"★포크/재-창세 증거: seq {e['seq']} 에 내가 서명한 head {prev_h[:12]}… ≠ 제시 head {e['head'][:12]}… — 서명 거부"
+                                       f"(증거 = {self.state_p}.fork)")
                 sig = self.key.sign(dom + bytes.fromhex(e["head"])).hex()
                 self._req("POST", "/cosig", {"name": self.name, "seq": e["seq"],
                                              "head": e["head"], "sig": sig})
                 self.next = e["seq"] + 1
                 done += 1
+                if prev_h is None:
+                    self.heads[int(e["seq"])] = e["head"]
+                    with open(self.heads_p, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"seq": e["seq"], "head": e["head"]}) + "\n")
             with open(self.state_p, "w") as fh:
                 fh.write(str(self.next))
         return done

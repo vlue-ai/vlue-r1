@@ -146,7 +146,7 @@ being free · default 0).
 ## §5 Honest limits (v0)
 
 - ★**Board `detail` is routing metadata, not evidence**: claims inside free text (awards, certifications, ratings) have **no standing** — the only pricing inputs are ledger-derived `/stats` and `/attest` (the "authority-claims-in-descriptions" channel that manipulation studies measure is structurally closed here — the discipline is yours to keep).
-- **Severity today**: the peril is binary (full face). For partial-loss shape, discretize by **splitting the face into multiple claims** (SPLIT → REDEEM×n) — already legal; a partial-delivery peril is deferred to FL2.3.
+- **Severity today**: the peril is binary (full face). For partial-loss shape, discretize by **splitting the face into multiple claims** (SPLIT → REDEEM×n) — already legal; a partial-delivery peril is deferred to the next generation (FL2.4).
 - ★**Leg exchange = `/relay`** (signed mailbox · [M-162] — the old "out-of-band"
   limit, resolved): the buyer relays a premium XFER leg; `watch`'s auto_fill
   verifies (re-quoted premium, deadline, policy caps) and closes the **atomic
@@ -166,7 +166,7 @@ being free · default 0).
   can be zero** (redeemable only against the absconded issuer) — victims and buyers
   should price notes with `/stats.color_health` (per-color supply, issuer EXIT flag,
   balance, last delivery). Redesigning compensation color (defaulting anchor vs underwriter —
-  color-preserving compensation — FL23_DESIGN §2) is **referred to FL2.3**. ★The
+  color-preserving compensation — FL23_DESIGN §2) is **referred to the next generation (FL2.4)** — it is not among the eight FL2.3 deltas (cold-read 4 correction). ★The
   bridge before then = **circulation** ([M-170] F-1): compensation notes can be sold
   at a discount via board kind="swap" + atomic BLOCK swaps (`color_health` prices the
   discount · ★the issuer itself is the natural best buyer — buying back and burning
@@ -174,7 +174,7 @@ being free · default 0).
   has a natural floor price).
 - **Quota-share convention** ([M-170] F-5): split large exposures into SPLIT→REDEEM×n
   tranches, one underwriter each — already legal (excess-of-loss layering is an
-  FL2.3+ item).
+  FL2.4+ item).
 - **Short-T rolling = automatic covenants** ([M-170] F-6): with no counterparty-state
   hooks, rolling short deadlines re-audits every instrument at each renewal — safer
   than long cover (and consistent with version_period).
@@ -454,3 +454,19 @@ is that **no document records which side was sacrificed**.
 
 Canonical source = `core/CONSTANTS_RESEARCH_2026-08-30.md` ([M-186] — full audit;
 this section is its summary).
+
+## §Honesty — the "color" of collateral and premiums, and the performance instruments (2026-09-02 · [M-208] cold-read 4)
+
+- **The kernel preserves face, not value.** Collateral (β·E), recourse and the fund can be filled with any color; the kernel is color-blind.
+  An underwriter who posts **its own IOUs** as collateral pays compensation in its own promise, and the burned IOUs are re-issuable within the revolving limit —
+  a "second-loss position" is **not enforced by law**. Buyers should inspect the collateral color before closing a cover (`/notes/@uw:<ref>` now returns the escrow's color · [M-208]);
+  the value of collateral is the trust exchange-rate of its color (A-2).
+- **Premiums have a color too.** A premium paid in the claim anchor's own color is worth 0 if that anchor absconds — `auto_fill` can reject that color via the policy `prem_reject_anchor_color` (off by default — the dominant issuer's color is the ordinary premium path; `prem_colors` allow-list optional)
+  and prices with the same ctx (δ·carry) as `scan` ([M-208] R4-22·23).
+- **Settlement change is re-issued in the owner's own color** (collateral remainder · seized change — the A-2 rule). An underwriter who posted foreign-color assets bears the cost of that
+  change turning into its own liability — documented, but rate v2 does not price it (registered · color-preserving change is a generation item).
+- **`covered` and `prem_verified` exclude canceled covers** ([M-208] R4-24). Circular premiums between colluding parties (the same note round-tripping) still count —
+  `prem_verified` is **bound face**, not "payment by an independent counterparty". Read underwriter history together with counterparty diversity (`family_concentration`).
+- **`trust_lambda` stays off by default (§8-C) — but turn on `--trust-lambda 1.0` in the wild** ([M-208] R4-21): with it off, self-delivery volume farming (0.32 s) discounts p̂ 21×.
+  The price: zero-volume (cold-start) anchors fall out of the candidate list under the λ cap — which is also why `--family-prior` is unreachable together with λ (it only matters with λ off; doc correction).
+- **`--max-concurrent` caps the number of covers**, not the same-tick maturing exposure — read exposure from `/stats.underwriters[u].maturity_peak`.

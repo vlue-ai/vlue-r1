@@ -13,6 +13,7 @@ tests/test_sig_golden.py), 키는 클라이언트가 생성·보관한다(노드
 import base64
 import hashlib
 import json
+import re
 import os
 import urllib.request
 
@@ -30,6 +31,7 @@ ACCEPT_DOMAIN = b"FL23-ACPT"                 # ★[M-178] 수락-채널(record-o
 # 읽힌다) ⓑ★실전 필수 — 기본값 `Python-urllib/*`는 CDN·WAF의 봇 차단에 걸린다(실측:
 # node.vlue.ai 이관 직후 SDK만 403 error 1010 · curl·브라우저는 200). 에이전트 경제의
 # 정문이 「기계라서」 닫히면 K5′는 수요 0을 거짓 기록한다.
+MAX_RESP = 32 * 1024 * 1024                  # ★[M-208] 응답 본문 상한(32MB — /log 500항 × 16KB 봉투 상한 = 8MB 여유)
 USER_AGENT = "vlue-sdk/0.1 (+https://vlue.ai)"
 
 
@@ -116,7 +118,7 @@ def escape_rate(n, k, m=1, ckpt=50_000):
 
 
 def suggest_k(n, damage, tol=1, ckpt=50_000):
-    """★[M-172] E-4 — 매수자의 검증-깊이 폐형: 잔여 기대-피해 q₁(k)·D ≤ tol 이
+    """★[M-208] 이 모델은 **첫 추첨**의 탈출률이다 — 재추첨(새 ocommit)은 표본을 누적하므로 이행자가 재시도로 얻는 추가 탈출 확률은 0 이다(냉독 4 R4-3 · 단일-추첨 값이 곧 총 탈출률). ★[M-172] E-4 — 매수자의 검증-깊이 폐형: 잔여 기대-피해 q₁(k)·D ≤ tol 이
     되는 최소 k. m=1에서 q₁ = 1 − k/S 이므로 **k* = ⌈S·(1 − tol/D)⌉**(D ≤ tol 이면
     k=기본 2 · D ≥ S·tol 이면 k=S = 전-구간 = 탈출 0). ⚠️정직(v0): 깊이의 화폐-가격은
     현재 0이다(검증 비용은 노드-예산이 흡수 · 자연-상한 k ≤ S · 레이트리밋이 남용
@@ -141,6 +143,10 @@ class Fl21Client:
         self.key_path = key_path
         self.key = self._ensure_key()
         self.meta = self._get("/meta")
+        # ★[M-208] R4-13(냉독 4) — 비정형 /meta 는 트레이스백이 아니라 명시 실패(가이드 첫 줄 = 이 생성자)
+        if not (isinstance(self.meta, dict) and isinstance(self.meta.get("log_id"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", self.meta["log_id"])):
+            raise RuntimeError("노드 /meta 비정형(log_id 64-hex 부재) — 이 노드는 검증할 수 없다(fail-closed)")
         self.log_id = bytes.fromhex(self.meta["log_id"])
 
     # ── 키(클라이언트 보관 — 노드에 비밀이 가지 않는다) ──
@@ -234,7 +240,10 @@ class Fl21Client:
                                             "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(r, timeout=30) as resp:
-                return json.loads(resp.read())
+                raw = resp.read(MAX_RESP + 1)          # ★[M-208] R4-12 — 악의 노드의 무한 본문(OOM 레버) 상한
+                if len(raw) > MAX_RESP:
+                    raise RuntimeError(f"응답 크기 상한 {MAX_RESP} 초과 — 노드 응답 거부(fail-closed)")
+                return json.loads(raw)
         except urllib.error.HTTPError as e:
             err = e.read().decode()[:300]
             raise RuntimeError(f"HTTP {e.code}: {err}") from None
@@ -639,6 +648,8 @@ class Fl21Client:
                 if r["head"] == m["head"]:
                     for cnm, sg in r["sigs"].items():
                         m["sigs"].setdefault(cnm, sg)
+            if not isinstance(batch[-1].get("seq"), int) or batch[-1]["seq"] + 1 <= s:
+                return {"ok": False, "why": "/cosigs 페이지 비-전진(악의 노드 — 왕복 증폭 차단)"}   # ★[M-208] R4-14
             s = batch[-1]["seq"] + 1
         entries = []
         s = since
@@ -649,6 +660,8 @@ class Fl21Client:
                 log_complete = True
                 break
             entries += page
+            if not isinstance(page[-1].get("seq"), int) or page[-1]["seq"] + 1 <= s:
+                return {"ok": False, "why": "/log 페이지 비-전진(악의 노드 — 왕복 증폭 차단)"}       # ★[M-208] R4-14
             s = page[-1]["seq"] + 1
         # ★F-A([M-143]) — 침묵-절단 금지: limit_batches가 소진돼 전량을 못 가져왔으면
         # 부분-검증을 ok로 보고하지 않는다(「전량-아니면-무」 — attest와 같은 규범).
@@ -658,6 +671,18 @@ class Fl21Client:
                     "fetched": len(entries),
                     "why": f"절단: limit_batches({limit_batches}) 소진 — 전량 미조회"
                            "(부분 검증은 판정이 아니다 · 인자를 올려 재실행)"}
+        # ★[M-208] R4-15(냉독 4 · F05) — 「원천-철회」와 「전위-절단」은 ok 가 아니다: since 0 인데 0항이면 실패 ·
+        #   첫 항은 창세(seq 0 · prev "genesis")에 앵커 · 노드가 /state 로 주장하는 seq 보다 적게 서빙하면 꼬리 생략 = 실패.
+        if since == 0 and not entries:
+            return {"ok": False, "why": "원장 0항 — 라이브 원장의 원천-철회이거나 빈 노드(검증 대상 없음 = ok 아님)"}
+        if since == 0 and entries and not (entries[0].get("seq") == 0 and entries[0].get("prev") == "genesis"):
+            return {"ok": False, "why": f"창세 앵커 부재: 첫 항 seq {entries[0].get('seq')} prev {str(entries[0].get('prev'))[:12]} — 전위-절단"}
+        try:
+            claimed = int(self._get("/state").get("seq"))
+        except Exception:
+            claimed = None
+        if entries and claimed is not None and entries[-1].get("seq") is not None and claimed > int(entries[-1]["seq"]) + 1:
+            return {"ok": False, "why": f"꼬리 생략: 노드 /state.seq {claimed} > 서빙된 마지막 seq {entries[-1]['seq']}"}
         prev = None
         confirmed = 0
         pending = 0

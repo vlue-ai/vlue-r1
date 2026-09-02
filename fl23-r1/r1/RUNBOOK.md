@@ -18,9 +18,12 @@ python3 r1/node.py --data /var/fl21 --port 8788 \
 
 ```bash
 # 창세 의식 후: cosign2.key·cosign3.key를 별도 호스트로 **이동**(원본 삭제) → 노드 재기동
+# ★공개 노드 = rate-limit 필수(D-6) · ★[M-188] H-1 재검증 유계화(verify-slots·challenge-budget) —
+#   ⚠️한 명령이다(줄-연결 백슬래시 · 냉독 4 R4-6: 주석이 줄 끝에 있으면 복붙 시 아래 플래그가 떨어져 H-1 이 꺼진 채 뜬다)
 python3 r1/node.py --data /var/fl21 --port 8788 --cosign-local cosign1 \
-  --auto-tick 60 --rate-limit 50 --trust-forwarded   # ★공개 노드 = rate-limit 필수(D-6)
-  --verify-slots 2 --verify-wait 1 --challenge-budget 20   # ★[M-188] H-1 재검증 유계화
+  --auto-tick 60 --rate-limit 50 --trust-forwarded \
+  --verify-slots 2 --verify-wait 1 --challenge-budget 20 --challenge-window 60 \
+  --notes-per-owner-max 512
 
 ⚠️★**플래그 둘은 「있으면 좋은 것」이 아니라 가드의 전제다**(⚙️[M-188] 적대 배터리 A-4·A-6이 실측으로 노출):
 - **`--auto-tick`이 없으면 외부 `/tick`이 열린다**(SEC-1 가드는 `own_clock = auto_tick > 0`
