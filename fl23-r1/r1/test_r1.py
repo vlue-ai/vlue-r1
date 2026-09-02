@@ -338,6 +338,14 @@ def gate_TDURABLE(port=8801, port2=8802):
     nd, srv, data = _serve(port)
     c = _client(port, "dur", data)
     c.join()
+    # ★[M-212] R5-F01-2 — 예산 카운터(REJECT·쓰기)는 재기동 뒤 원장에서 재구성된다(메모리 전용 = 재부팅 리셋 우회)
+    _vn = next(nid for nid, n in nd.w.notes.items() if n["owner"] == "anchor0")
+    for _ in range(2):
+        try:
+            c._post("/submit", {"env": c.sign_env("SPLIT", {"owner": "dur", "note": _vn, "parts": [1, 1]})})
+        except RuntimeError:
+            pass
+    _rh0 = (nd.reject_hits.get("dur") or (0, 0))[1]
     c.split(c.notes()[0]["nid"], [10, 10])
     c._post("/tick", {})
     c.split(c.notes()[0]["nid"], [5, 5])
@@ -353,6 +361,8 @@ def gate_TDURABLE(port=8801, port2=8802):
     open(nd.cosig_p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     # 재기동(재-리플레이 → 자기치유) 후 검증 정상 복귀
     nd2, srv2, _ = _serve(port2, data=data)
+    out["★재기동 뒤 REJECT 예산 카운터 재구성"] = _rh0 == 2 and (nd2.reject_hits.get("dur") or (0, 0))[1] == 2
+    out["★재기동 뒤 쓰기 예산 카운터 재구성"] = (nd2.write_bytes.get("dur") or [0, 0])[1] > 0
     c2 = _client(port2, "dur", data)
     v1 = c2.verify_chain()
     out["구멍 치유"] = v1["ok"] is True and \
@@ -944,6 +954,19 @@ def gate_TSAMPLED(port=8797):
     _t0 = _tm2.time()
     _su = _RF2._sample_union(_ents, "rr", 10 ** 9, 10 ** 7)
     out["★sample_union 유계(<1s · ≤16)"] = (_tm2.time() - _t0) < 1.0 and len(_su) <= 16
+    # ★[M-213] Q-1(R5-F04-3) — 서빙 스펙은 원장 REDEEM spec_sha256 에 결박: 노드가 스펙(n)을 바꿔 서빙하면 replay_full 은 H7 false
+    _orig_n = nd.jobs[j3["ref"]]["job"]["n"]
+    with nd.lock:
+        nd.jobs[j3["ref"]]["job"]["n"] = _orig_n + 1
+    _rps = _sp.run([_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_full.py"),
+                    "--url", f"http://127.0.0.1:{port}"], capture_output=True, text=True, timeout=120)
+    try:
+        _ds = json.loads(_rps.stdout) if _rps.stdout.strip().startswith("{") else json.loads(_rps.stdout.strip().splitlines()[-1])
+    except Exception:
+        _ds = {}
+    out["★서빙 스펙 ≠ 원장 H2 → replay_full H7 false"] = _ds.get("H7_FULL_REPLAY") is False and any("H2" in str(m.get("why", "")) for m in (_ds.get("balance_mismatch") or []) if isinstance(m, dict))
+    with nd.lock:
+        nd.jobs[j3["ref"]]["job"]["n"] = _orig_n
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -1739,6 +1762,17 @@ def gate_TCHALLENGE(port=8816):
         out["★챌린지 서명 재생 거부"] = False
     except RuntimeError as ex:
         out["★챌린지 서명 재생 거부"] = _ok1 and "재생" in str(ex)
+    # ★[M-212] R5-F09-A — 요청자 A 가 (ref, A) 상한을 소진해도 요청자 B 의 재검증 채널은 열려 있다(ref-전역 누적 상한 = 표적 검열이던 것)
+    _hit_cap = False
+    for _ in range(40):
+        try:
+            c.challenge(j["ref"])
+        except RuntimeError as ex:
+            if "상한" in str(ex):
+                _hit_cap = True; break
+    out["★요청자별 상한 도달"] = _hit_cap
+    cB = _client(port, "chal_b", data); cB.join()
+    out["★다른 요청자는 여전히 챌린지 가능"] = isinstance(cB.challenge(j["ref"]), dict)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2515,7 +2549,7 @@ def gate_TACCEPT(port=8857):
     except Exception as ex:
         out["★만료 뒤 옛 판정 부활 거부"] = "워터마크" in str(ex) or "부활" in str(ex)
     out["★만료 뒤 더 높은 v 는 통과"] = bool(by.accept_job(j2r, "rework", "again")["id"])
-    # ★[M-210] R3-F09-2 — 릴레이 fetch 는 신선-서명(epoch ±3 · 서명 1회): 같은 서명 재사용 → 거부 · epoch 없는 본문 → 거부
+    # ★[M-210] R3-F09-2 — 릴레이 fetch 는 신선-서명(epoch ±8 · 서명 1회): 같은 서명 재사용 → 거부 · epoch 없는 본문 → 거부
     from sdk import canon as _cn2
     fb = {"p": "acby", "fetch": True, "epoch": by._get("/state")["epoch"]}
     fs = by.key.sign(by._d["relay"] + by.log_id + _cn2(fb)).hex()
@@ -2539,6 +2573,30 @@ def gate_TACCEPT(port=8857):
     _agg_a = UWT.acceptance(by)
     out["★매수자 회전 뒤 수락 이력 유지(sig_rejected 0)"] = _agg_a.get("sig_rejected", 0) == 0 and \
         _agg_a["anchors"]["acan"]["rated"] == _agg_b["anchors"]["acan"]["rated"]
+    # ★[M-213] Q-7(R5-F10-1) — 잡 취소 뒤 같은 에포크의 **원시** 재-REDEEM(같은 ref) 은 거부(죽은 잡-껍데기 상속 차단) · /job 재청구는 정상
+    _nb2 = max(an.notes_of("acan"), key=lambda x: x["face"])
+    an.split(_nb2["nid"], [1, _nb2["face"] - 1])
+    n4 = [n["nid"] for n in an.notes_of("acan") if n["face"] == 1][0]
+    an.xfer("acby", n4)
+    j4 = by.redeem_job("acan", n4, seed="dd" * 4, n=500)                 # 신선한 잡(취소-창 안)
+    by._post("/submit", {"env": by.sign_env("REDEEM_CANCEL", {"ref": j4["ref"]})})
+    try:
+        by._post("/submit", {"env": by.sign_env("REDEEM", {"holder": "acby", "note": n4, "anchor": "acan"})})
+        out["★취소 뒤 원시 재-REDEEM(같은 ref) 거부"] = False
+    except RuntimeError as ex:
+        out["★취소 뒤 원시 재-REDEEM(같은 ref) 거부"] = "충돌" in str(ex)
+    j4b = by.redeem_job("acan", n4, seed="dd" * 4, n=500)
+    out["★/job 경로 재청구는 정상(새 기록 open)"] = nd.jobs[j4b["ref"]]["state"] == "open"
+    # ★[M-213] Q-4(R5-F02-4) — 커널 커밋 뒤 단계 실패는 400(=미커밋 암시)이 아니라 500
+    _pn = nd._persist_new
+    nd._persist_new = lambda: (_ for _ in ()).throw(OSError("disk"))
+    _seq0 = len(nd.w.log)
+    try:
+        by._post("/submit", {"env": by.sign_env("TICKMARK", {"kind": "fl21.version", "v": "v1"})})
+        out["★커밋-후 실패 = 500"] = False
+    except RuntimeError as ex:
+        out["★커밋-후 실패 = 500"] = "HTTP 500" in str(ex) and len(nd.w.log) == _seq0 + 1
+    nd._persist_new = _pn
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2828,6 +2886,17 @@ def gate_TBLOCKGUARD(port=8833):
         out["★TICKMARK 크기 상한"] = False
     except RuntimeError as ex:
         out["★TICKMARK 크기 상한"] = "크기" in str(ex)
+    # ★[M-212] R5-F03-1 — 피해자 다리 1장 + 공격자 위조 다리로 실패 블록을 반복해도 피해자 쓰기 예산은 과금되지 않는다(과금 = 기록 뒤)
+    vleg = aa.sign_env("XFER", {"frm": "aa", "to": "bb", "note": [n["nid"] for n in aa.notes_of("aa")][0]})
+    forged = {"typ": "XFER", "args": {"frm": "zz", "to": "bb", "note": "1"}, "p": "zz", "epoch": 0, "nonce": 0, "sig": "00"}
+    _wb0 = list(nd.write_bytes.get("aa") or [0, 0])
+    for _ in range(5):
+        try:
+            subm.submit_block([vleg, forged])
+        except RuntimeError:
+            pass
+    out["★실패 블록 반복 = 피해자 쓰기 예산 불변"] = list(nd.write_bytes.get("aa") or [0, 0]) == _wb0
+    out["★실패 블록 반복 = 피해자 nonce 불변"] = aa._get("/nonce/aa")["nonce"] == vleg["nonce"]
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3316,7 +3385,7 @@ def gate_TREPLAYCAP(port=8842):
         out["★봉투 크기 가드"] = False
     except Exception as ex:
         out["★봉투 크기 가드"] = "봉투 크기" in str(ex)
-    nd._write_budget("zz_budget", {"a": "x" * 1_500_000})
+    nd._write_budget("zz_budget", {"a": "x" * 1_500_000}, charge=True)      # ★[M-212] 과금은 기록 뒤(charge=True) · 검사는 charge=False
     try:
         nd._write_budget("zz_budget", {"a": "x" * 1_500_000})
         out["★쓰기 예산 소진 거부"] = False
@@ -3655,7 +3724,20 @@ def gate_TREKEY23(port=8845):
     _doc = dict(att0["doc"]); import kernel23 as _K23
     _forged = {"doc": _doc, "operator_sig": _atk.sign(ca.domain + _K23._canon(_doc)).hex()}
     out["★미러(/meta.operator_pk 만 교체)의 위조 어테스트 거부"] = ca.verify_attest(_forged).get("ok") is False
-    ca._get = _real_get
+    # ★[M-212] R5-F06-1 — 미러가 /log 에 **위조 REKEY 항**을 접붙여 공격자 키를 일정에 넣는 경로도 거부(일정 = 검증된 사슬의 부산물)
+    _fake = {"seq": None, "env": {"typ": "REKEY", "args": {"principal": "operator", "new_pk": _fm["operator_pk"], "new_sig": "00"}, "p": "operator", "epoch": 0, "nonce": 0, "sig": "00"},
+             "fp": "00" * 32, "w_epoch": 0, "state_root": "00" * 32, "prev": "00" * 32, "head": "11" * 32, "head_sig": "00", "kind": "OK"}
+    def _log_get(path, _rg=_real_get, _fm=_fm):
+        if path == "/meta":
+            return dict(_fm)
+        r_ = _rg(path)
+        if path.startswith("/log?since=") and isinstance(r_, dict) and isinstance(r_.get("entries"), list) and r_["entries"] and len(r_["entries"]) < 500:
+            last = r_["entries"][-1]; fk = dict(_fake); fk["seq"] = int(last["seq"]) + 1; fk["prev"] = last["head"]
+            r_ = dict(r_); r_["entries"] = r_["entries"] + [fk]
+        return r_
+    ca._get = _log_get; ca._opk_cache = None
+    out["★미러(/log 위조 REKEY 접붙임)의 위조 어테스트 거부"] = ca.verify_attest(_forged).get("ok") is False
+    ca._get = _real_get; ca._opk_cache = None
     # ★[M-211] R4-F02-1/2·F06-1/2 — SDK 회전 매트릭스: 응답 유실·재시도·/pk 장애·거짓 /pk 어디서도 키 재료를 지우지 않는다
     c3 = _client(port, "rk3", data); c3.join(); kp = c3.key_path
     _rp3 = c3._post
@@ -3683,7 +3765,8 @@ def gate_TREKEY23(port=8845):
     c3._get = _rg3
     c3.sign_env("TICKMARK", {"kind": "fl21.version", "v": "v9"})   # 서명 전 자기치유(재조정 → 승격)
     out["★복귀 뒤 자기치유(승격·/pk 일치)"] = (not os.path.exists(kp + ".next")) and c3._get("/pk/rk3")["pk"] == c3.pk_hex()
-    out["★구 키 .prev 보관"] = os.path.exists(kp + ".prev")
+    import glob as _glp
+    out["★구 키 .prev 보관"] = bool(_glp.glob(kp + ".prev-*"))            # ★[M-213] append-only 이름(.prev-<ns>-<pk8>)
     c3._post = _lost
     try:
         c3.rekey()
@@ -3696,6 +3779,28 @@ def gate_TREKEY23(port=8845):
     c3._get = _rg3
     import glob as _gl
     out["★거짓 /pk(구 키): 삭제 아닌 .stale 보관"] = (not os.path.exists(kp + ".next")) and bool(_gl.glob(kp + ".next.stale-*"))
+    # ★[M-213] Q-3(R5-F02-1/2) — 보관 파일은 append-only(같은 초 두 번 거부돼도 둘 다 남는다) · 200 뒤 /pk 재확인 전엔 키 파일을 바꾸지 않는다
+    c4 = _client(port, "rk4", data); c4.join(); kp4 = c4.key_path
+    _rp4 = c4._post
+    def _reject(path, body):
+        raise RuntimeError("HTTP 400: {\"error\": \"simulated\", \"code\": \"rejected\"}")
+    c4._post = _reject
+    for _ in range(2):
+        try:
+            c4.rekey()
+        except RuntimeError:
+            pass
+    c4._post = _rp4
+    import glob as _gl4
+    out["★4xx 두 번 = .stale 보관 2개(덮어쓰기 없음)"] = len(_gl4.glob(kp4 + ".next.stale-*")) == 2 and not os.path.exists(kp4 + ".next")
+    _pk_before = c4.pk_hex(); _rg4 = c4._get
+    c4._get = lambda path, _g=_rg4, _o=_pk_before: {"p": "rk4", "pk": _o} if path.startswith("/pk/") else _g(path)   # 노드가 새 키를 확인해 주지 않는 상황
+    r4 = c4.rekey()
+    c4._get = _rg4
+    out["★/pk 미확인 200 = 키 파일 교체 보류(.next 유지·미해결)"] = "note" in r4 and os.path.exists(kp4 + ".next") and c4.pk_hex() == _pk_before and c4.key_next_unresolved is True
+    c4.sign_env("TICKMARK", {"kind": "fl21.version", "v": "v10"})       # 서명 전 재조정 → 진짜 /pk 로 승격
+    out["★복귀 뒤 승격 = 원장 키와 일치"] = (not os.path.exists(kp4 + ".next")) and c4._get("/pk/rk4")["pk"] == c4.pk_hex()
+    out["★.prev 도 append-only"] = len(_gl4.glob(kp4 + ".prev-*")) >= 1 and not os.path.exists(kp4 + ".prev")
     srv.shutdown()
     # ★[M-208] R4-10(냉독 4 · F06-F2) — 회전 뒤 재기동: 정상 = 통과 · operator.key 유실 = **명시 기동 거부**(침묵 브릭 아님) ·
     #   회전-중 크래시 잔재(.next · 원장에 없는 키) = 폐기 후 정상 기동.
@@ -3791,6 +3896,25 @@ def gate_TIMPORT23(port=8846):
     _cv4 = c.verify_chain()
     out["★공동서명자 집합 불일치 = 거부"] = _cv4.get("ok") is False and "공동서명" in str(_cv4.get("why"))
     _SDK.release_pins = _orig_rp
+    # ★[M-213] Q-5(R5-F05-1) — RELEASE 핀 충돌 + 명시 핀이어도 공동서명 핀은 내장 사본 기준으로 유지(로컬 노드 서명자 ≠ 내장 → 거부)
+    _SDK.release_pins = lambda path=None: {"source": "conflict", "conflict": "log_id"}
+    _cv5 = c.verify_chain(expect_genesis_head=nd.w.log[0]["head"])
+    out["★핀 충돌+플래그 = 공동서명 핀 유지(거부)"] = _cv5.get("ok") is False and "공동서명" in str(_cv5.get("why"))
+    _SDK.release_pins = _orig_rp
+    # ★[M-213] Q-6(R5-F05-5) — since>0 에서 0항 서빙 = 「전량 확정」 아님
+    _rg6 = c._get
+    c._get = lambda path, _g=_rg6: {"entries": []} if path.startswith("/log?since=") and not path.endswith("since=0") else _g(path)
+    _cv6 = c.verify_chain(since=2)
+    c._get = _rg6
+    out["★since>0 빈 응답 = 꼬리 생략 실패"] = _cv6.get("ok") is False and "꼬리" in str(_cv6.get("why"))
+    # ★[M-213] Q-9(R5-F10-5) — 미등록 주체 어테스트 = 404
+    try:
+        c._get("/attest/ghost_never_joined")
+        out["★미등록 attest 404"] = False
+    except RuntimeError as ex:
+        out["★미등록 attest 404"] = "404" in str(ex)
+    _att_ok = c.fetch_attest("anchor0")
+    out["★등록 attest 에 registered 필드"] = _att_ok["doc"].get("registered") is True
     srv.shutdown(); srv.server_close()
     nd2, srv2, _ = _serve(port + 50, data=data, genesis_import=ip)   # 재기동 = 리플레이(수입은 재실행되지 않는다)
     out["★재기동 리플레이 동일"] = nd2.w.log[-1]["head"] == head and nd2.audit()["ok"] is True and nd2.colors.get(imp[0]) == "z1"
@@ -3825,6 +3949,25 @@ def gate_TCOMPOSE(port=8847):
     except RuntimeError as e:
         out["비-hex deps 거부"] = "deps" in str(e)
     out["audit"] = nd.audit()["ok"] is True
+    # ★[M-213] Q-8(R5-F10-2) — 상류 ref 는 실재·같은 holder 만: 비존재 ref · 타 holder 잡 ref 는 거부
+    try:
+        c.redeem_job("anchor0", nids[0], seed="dd" * 8, n=1000, deps=["0123456789abcdef"])
+        out["★비존재 deps 거부"] = False
+    except Exception as e:
+        out["★비존재 deps 거부"] = "deps" in str(e)
+    oth = _client(port, "otherh", data); oth.join()
+    _on = max(oth.notes(), key=lambda x: x["face"])
+    oth.split(_on["nid"], [1, _on["face"] - 1])
+    _o1 = [n["nid"] for n in oth.notes() if n["face"] == 1][0]
+    oth.xfer("anchor0", _o1)
+    _oa = [n["nid"] for n in oth.notes_of("anchor0")][0] if oth.notes_of("anchor0") else None
+    jo = oth.redeem_job("anchor0", _oa, seed="ee" * 8, n=1000) if _oa else None
+    if jo:
+        try:
+            c.redeem_job("anchor0", nids[0], seed="ff" * 8, n=1000, deps=[jo["ref"]])
+            out["★타 holder 상류 deps 거부"] = False
+        except Exception as e:
+            out["★타 holder 상류 deps 거부"] = "deps" in str(e)
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out

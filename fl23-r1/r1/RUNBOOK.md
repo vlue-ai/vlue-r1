@@ -3,16 +3,21 @@
 ## ★프로덕션 창세 의식 (D-3 — 한 번뿐 · GEN은 영구 불변)
 
 ```bash
+# ★[M-213] 라이브 형상(FL2.3 · 2026-09-02) — 주석은 블록 밖에(줄-연결 `\` 뒤에 주석이 오면 다음 줄이 별도 명령이 된다)
 python3 r1/node.py --data /var/fl21 --port 8788 \
-  --bridge-ref 3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd  # ★[M-209] 정본 = RELEASE bridge_ref(전임 세대 최종 head) — 예시는 FL2.2→FL2.3 값 \
-  --auto-tick 60 --rate-limit 50
+  --bridge-ref 3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd \
+  --genesis-import /var/fl21/genesis_import_fl23.json \
+  --unit-scale 1000 --join-issue 20000 --genesis-issue 40000 --bootstrap-cap 8000 \
+  --notes-per-owner-max 512 --challenge-budget 20 --challenge-window 60 \
+  --auto-tick 60 --rate-limit 50 --trust-forwarded
 ```
+`--bridge-ref` = RELEASE 의 bridge_ref(**전임 세대**의 최종 head — FL2.3 은 FL2.2 최종 head) · `--genesis-import` 스냅샷은 아래 「세대 전환 체크리스트」 ⑤ 로 만든다.
 
-- `--bridge-ref` = FL2.1 파일럿 원장 최종 head(U-0 세대-계보 — RELEASE.md 정본).
 - GEN(소스 상수 — [M-105] D-3): identity_budget **128** · fq_mult **1**(실측 n≤128→1) ·
   redeem_T 4. ⚠️창세 후 불변 — 규모-전이는 세대-전이.
-- 첫 기동이 전 키 생성(운영자·앵커·공동서명 3 + cosign_pubs.json 고정) — 직후
-  `/meta`의 log_id·fp0·공개키를 **RELEASE.md에 기입**(검증자 대역-외 대조점 = RV-4 닫기).
+- 첫 기동이 전 키 생성(운영자·앵커·공동서명 3 + cosign_pubs.json 고정) — 직후 `/meta` 의 **log_id · fp0 · operator_pk0 ·
+  cosigners(2-of-3) · genesis_head · snapshot_hash · bridge_ref** 를 RELEASE(한·영) 정체성 표에 기입(검증 도구가 실제로 핀 하는 값 —
+  아래 체크리스트 ⑥).
 
 ## ★공동-서명 분리 (D-2 — 공개 전 필수 · 동거 = 연극)
 
@@ -104,8 +109,10 @@ python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key
   동결). D-2 분리의 SPOF다.
 
 복구 = 각 호스트에서 사본 복원 후 기동(노드 자동 리플레이·audit · 서명자 데몬은 커서로
-소급). ⚠️**재-창세/부분 복원 시 데몬 커서(.state)가 로그보다 앞서면** 신규 항목을 영구
-건너뛴다 — 로그가 커서보다 짧으면 `.state`를 삭제(0부터 재-서명)하라.
+소급). ⚠️**공동서명자 상태 = 증거다**([M-213]): `.state`(커서) 외에 `.state.heads`(내가 서명한 seq→head) · `.state.domain`(도메인 핀) ·
+`.state.fork`(포크 증거)가 있다. 정당한 **재-창세·세대 전환은 `--state <새 경로>` 로 새 상태를 시작**한다 — 옛 `.heads/.fork` 는 지우지 말고
+보관(지우면 「같은 노드가 다른 창세를 보인 증거」가 사라진다). 부분 복원으로 로그가 커서보다 짧아진 **같은 창세**라면 `.state` 만 지워 0부터
+재-서명(멱등 · `.heads` 가 같은 head 를 재확인).
 
 ## 장애 대응
 
@@ -125,3 +132,23 @@ pycheck는 협조적-이행자 한정) · ✅D-9 패키징(`package.py` — 번�
 ⛔공개 실행 = 사용자 재가: 창세 의식 → RELEASE.md 확정값 기입 → 번들 게시 → K5′ 개시
 (3개월 AND-0 시계 — D-11). 운영 잔여 = D-5(TLS 프록시·도메인) · D-12(컨테이너 — pyjudge
 후에도 침입-방어 몫).
+
+## ★세대 전환 체크리스트 (FL2.3 → FL2.4 · [M-213] · R5-F07 에서 12 지점 추적)
+
+세대 전환 = 새 창세. 아래 지점을 **한 커밋·한 게시**로 함께 갱신하지 않으면 검증기가 「파일↔내장 핀 충돌」(fail-closed) 또는 「RELEASE 의 원장이 아니다」로
+새 원장을 거부/오독한다.
+
+| # | 지점 | 갱신 내용 |
+|---|---|---|
+| ① | 커널·세대 상수 | `fin_lean/lang24/kernel24.py` 신설 · `node.py`/`sdk.py`/`replay_full.py`(`_GENERATIONS` 사전)/`underwriter.py`/`worker.py`/`showcase.py` 의 세대 도메인·라벨 |
+| ② | 아카이브 | `archive/fl23/` = FL2.3 `entries.jsonl`·`cosigs.jsonl`·`meta-genesis.json`·`kernel23.py`·README(★정직 정족 문장: 마지막 2-of-3 seq · 꼬리 TICK 수 — 도구가 산출) |
+| ③ | 스냅샷 | 전임 최종 상태 → `snapshot.json`(J-11 규칙: `notes` nid 오름차순 · `principals` p 사전순 · issuer = 색 · pk = 현행 키 · 소유자별 노트 ≤ 512 이면 사전 MERGE) — **아카이브에 동봉**(검증자가 해시 재유도) |
+| ④ | 창세 | 위 창세 의식 명령(`--bridge-ref` = FL2.3 최종 head · `--genesis-import snapshot.json`) |
+| ⑤ | RELEASE 한·영 | 정체성 표 7값 + GEN 행 전 키(16) + 서명자 행 |
+| ⑥ | `sdk.py` `RELEASE_PINS` | 5값(log_id · genesis_head · operator_pk0 · cosigners · cosign_k) — 게이트 T-IMPORT23 이 파일과 대조 |
+| ⑦ | manifest | `manifest.json` 재생성 + `manifest.sig` **새 operator_pk0** 서명(`FL24-MANIFEST` 도메인) · `gates.yml` 경로·도메인 |
+| ⑧ | ERC-8004 | `ERC8004_BINDING.json` 재서명(+ setAgentURI) |
+| ⑨ | 사이트 | index JSON-LD(log_id·operator_pk·genesis_head) · trust · llms.txt · data.json 생성기(`generation` 문구) · NOTICE 「정체성이 바뀌었습니다」 |
+| ⑩ | cosigner | `--state <새 경로>`(옛 `.heads/.fork` 보관) · ops 워크플로 state 경로 |
+| ⑪ | 검증 | `verify_chain()` → `genesis_pin: release · release_identity: match` · `replay_full --url` → `genesis_pin: release` · 아카이브 `archive_verify` 재유도 |
+| ⑫ | 결정 원장 | DECISIONS/NOW/docs 갱신 · 게이트 48 전량 · 배터리 · dry |

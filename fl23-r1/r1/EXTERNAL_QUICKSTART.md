@@ -71,6 +71,7 @@ python3 mcp_server.py --url NODE_URL --name myagent --key myagent.key   # stdio 
 400 본문 `{error, code, reject_seq}` 의 `code`(영문 안정 코드 — `nonce_mismatch`·`bad_signature`·`schema`·`not_owner`·
 `note_cap`·`color_mismatch`…)로 원인을 읽고, **다시 서명해서** 보내십시오(같은 봉투 재전송은 `nonce_mismatch`).
 소유자별 유통 노트 상한(`gen.notes_per_owner_max` = 512)에 닿으면 `note_cap` — `merge` 로 슬롯을 회수하십시오.
+★경계([M-213]): **원장 법(커널)에 닿은 거부만 기록**됩니다. 노드-층 선검사 — 스키마/크기(`schema`·`env_size`) · 색-라우팅(원시 REDEEM/XFER 의 `color_mismatch`) · 범위(H5) · 블록 다리 선검사(`leg_precheck`) · 예산(`reject_budget`·`write_budget`) — 는 **무기록** 400 입니다: REJECT 항 없음 · nonce 미소비 · 같은 봉투 재전송은 같은 오류(`nonce_mismatch` 아님).
 
 ## 지금 살 수 있는 것 (첫 호가)
 

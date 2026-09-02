@@ -2,18 +2,18 @@
 """demos/showcase.py — The new economy in eight scenes, on one ledger (~6s on a laptop).
 
 Run:  python3 demos/showcase.py     (from the repository root · needs `cryptography`)
-Every scene is a REAL settlement on a local FL2.2 world (production-identical GEN), and
+Every scene is a REAL settlement on a local FL2.3 world (production-identical GEN), and
 the final scene replays the ENTIRE ledger from public keys only (H7) — proving that
 everything you just watched actually happened under the law. Scenes: A2A circulation ·
 micro-insurance rate ladder (0.1%–5%, premiums atomically exchanged) · a one-hour-class
 promise kept under per-job deadlines · the four-rung certainty ladder · recursive
-judging with misjudgment insurance · a correlated default storm PLUS an absconding
+judging with a cover on the judge-job (pays if the judge misses the deadline — the verdict itself is not insured) · a correlated default storm PLUS an absconding
 issuer (victims still made 100% whole from collateral + recourse) · trust priced as an
 exchange rate · full seedless replay with tamper detection.
 
 (한국어 원문 요지 — [M-129] 시연:
 
-프로덕션-동형 세계(FL2.2 · unit_scale 1000 · redeem_T 4 · redeem_T_max 10080)에서
+프로덕션-동형 세계(FL2.3 · unit_scale 1000 · redeem_T 4 · redeem_T_max 10080)에서
 여덟 장면을 **실제 정산**으로 연출하고, 마지막 장면에서 그 원장 전체를 시드-없이
 재실행(H7)해 "전부 진짜였다"를 기계로 증명한다. 프로덕션 무-오염 규율에 따라 로컬
 세계에서 실행한다(프로덕션 테이프는 외부 첫 체결까지 비워 둔다 — [M-125]).
@@ -21,7 +21,7 @@ exchange rate · full seedless replay with tamper detection.
 장면: S1 A2A 순환(참여→상호신용→보드→체결) · S2 미시-보험 요율 사다리(0.1%~5% —
 실-보험료 원자 교환) · S3 장시간-잡(T=60 · 50에포크 뒤 이행 + 부보 장기-실패 폭포) ·
 S4 확실성 사다리 4단(전수·표본+보험·정족수·지문-드리프트) · S5 판정-재귀(1심→상소
-정족수→오판-커버 = 신뢰의 가격) · S6 상관 폭풍(동시-디폴트 5 → 폭포 항등식) ·
+정족수→판정자 시한-사고 커버 = 신뢰의 가격) · S6 상관 폭풍(동시-디폴트 5 → 폭포 항등식) ·
 S7 신뢰-환율(실적 격차 → 색-간 비대칭 스왑) · S8 H7 전-원장 공개 재실행 + 변조 검출.
 """
 import base64
@@ -298,12 +298,12 @@ def main():
         "단4_드리프트_검출": drift_detect,
         "비용_AU": cost, "wall_s": round(time.time() - t0, 1)}
 
-    # ══ S5 — 판정-재귀: 1심 → 상소 정족수 → 오판-커버(신뢰의 가격) ══
+    # ══ S5 — 판정-재귀: 1심 → 상소 정족수 → 판정자 시한-사고 커버(신뢰의 가격 · 오판 자체는 미부보) ══
     t0 = time.time()
     price = {"1심": 1, "상소(3판정+집계)": 4}
     ref1 = verd[0]["ref"]              # S4의 j1 1심 판정을 피판정 대상으로
     mis = u2.cover(verd[2]["ref"], prem=1) if False else None
-    # 오판-커버: S4의 FAIL 소수의견(j3) 판정-청구는 이미 이행-종결 — 새 판정을 부보
+    # 판정자 커버: S4의 FAIL 소수의견(j3) 판정-청구는 이미 이행-종결 — 새 판정-잡의 시한-사고(비-배달)를 부보(판정 정확성은 미부보)
     la = b1.make_leg("XFER", {"frm": "b1", "to": "jud2",
                               "note": one(b1, "anchor0", 1 * AU)})
     try:
@@ -320,12 +320,12 @@ def main():
                                  "anchor": "jud2",
                                  "spec_sha256": spec_sha256(job)})
     jm = b1._post("/job", {"env": env, "job": job})
-    covm = u2.cover(jm["ref"], prem=5)           # ★오판-커버(0.5%)
+    covm = u2.cover(jm["ref"], prem=5)           # ★판정자 시한-사고 커버(0.5%) — 오판 보험 아님
     j2.deliver_job(jm["ref"], b64("# VERDICT: PASS\nprint('PASS')\n"))
     R["scenes"]["S5_판정재귀"] = {
         "신뢰의_가격_AU": price,
-        "오판커버_성립": "seq" in (covm or {}),
-        "요지": "판정도 이행이고, 판정의 오류도 보험이 가격한다"
+        "판정자_시한커버_성립": "seq" in (covm or {}),
+        "요지": "판정도 이행이고, 판정자의 시한-사고도 보험이 가격한다(판정 정확성은 미부보 — 상소 정족수로 다룬다)"
                 "(자기-부보는 법 ⑤가 금지 — 독립성 내장)",
         "wall_s": round(time.time() - t0, 1)}
 
@@ -472,5 +472,7 @@ def main():
     print(json.dumps(R, ensure_ascii=False, indent=1))
 
 
+if __name__ == "__main__" and any(a in ("-h", "--help") for a in __import__("sys").argv[1:]):
+    print("usage: python3 demos/showcase.py   (no arguments · local synthetic ledger, eight scenes, ~4 s · no network)"); raise SystemExit(0)
 if __name__ == "__main__":
     main()

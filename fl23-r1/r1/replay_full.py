@@ -12,18 +12,30 @@ zero」 잔여 해소).
 """
 import argparse
 import json
+import hashlib
 import os
 import sys
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+def _canon_spec(spec):
+    from sdk import canon as _c
+    return _c(spec)
+
+
+_GENERATIONS = {"FL22": ("lang22", "kernel22"), "FL23": ("lang23", "kernel23")}   # ★[M-213] 세대 사전 — 미지 접두는 기본 커널로 오귀속하지 않는다
+
+
 def _kernel_for(domain):
-    """★FL2.3 — 세대 선택: /meta.domain 접두로 커널을 고른다(FL22-* = 아카이브 원장도 같은 도구로 재검증)."""
+    """★FL2.3 — 세대 선택: /meta.domain 접두로 커널을 고른다(FL22-* = 아카이브 원장도 같은 도구로 재검증). 미지 세대 = fail-closed."""
     import importlib
-    lang = "lang22" if str(domain).startswith("FL22") else "lang23"
+    pre = str(domain)[:4]
+    if pre not in _GENERATIONS:
+        raise SystemExit(json.dumps({"H7_FULL_REPLAY": False, "why": f"미지 세대 도메인 {domain!r} — 이 도구가 아는 세대: {sorted(_GENERATIONS)}"}, ensure_ascii=False))
+    lang, mod = _GENERATIONS[pre]
     sys.path.insert(0, os.path.join(_HERE, "..", "fin_lean", lang))
-    return importlib.import_module("kernel22" if lang == "lang22" else "kernel23").World
+    return importlib.import_module(mod).World
 
 
 UA = "vlue-replay/0.1 (+https://vlue.ai)"   # ★[M-144] 기본 urllib UA는 WAF 봇 차단 대상
@@ -107,8 +119,9 @@ def _main_inner():
         # 크래시하지 못하게(냉독 라운드4 · 검증-도구 견고성 부류). 진전 없으면 중단.
         last = page[-1]
         nxt = last.get("seq") if isinstance(last, dict) else None
-        if not isinstance(nxt, int) or nxt + 1 <= s:
-            break
+        if not isinstance(nxt, int) or nxt + 1 <= s:                    # ★[M-213] Q-6(R5-F05-3) — 비-전진·비정형 seq 는 절단 성공이 아니라 실패
+            print(json.dumps({"H7_FULL_REPLAY": False, "why": f"/log 페이지 비-전진/비정형 seq(since {s})"}, ensure_ascii=False))
+            return 1
         s = nxt + 1
     # ★[M-189] C-1 — 커널 호출 **전에** head_sig 부재를 선-거부한다(벨트: 커널
     # replay_verify 도 부재-거부로 고쳤지만, 이 층이 도구의 계약을 명시적으로 문다).
@@ -123,14 +136,24 @@ def _main_inner():
         return 1
     # ★[M-210] R3-F07-1/F12-1 — 기본 핀: 번들 RELEASE 의 log_id 를 주장하는 노드면 RELEASE 의 genesis_head 를 자동 대조(핀 없는 검증 = 동일-정체성·다른-창세 임포스터 통과)
     pin_src = "flag" if a.genesis_head else None
-    if not a.genesis_head:
-        try:
-            from sdk import release_pins as _rp
-            _pins = _rp()
-            if _pins.get("log_id") and str(meta.get("log_id")) == _pins["log_id"] and _pins.get("genesis_head"):
-                a.genesis_head = _pins["genesis_head"]; pin_src = "release"
-        except Exception:
-            pass
+    rel_identity, pin_note = "unknown", None
+    try:
+        from sdk import release_pins as _rp
+        _pins = _rp()
+    except Exception:
+        _pins = {}
+    if _pins.get("source") == "conflict":                                 # ★[M-213] Q-6(R5-F05-2) — 핀 충돌은 조용한 무핀이 아니라 실패
+        rel_identity = "conflict"
+        if not a.genesis_head:
+            print(json.dumps({"H7_FULL_REPLAY": False, "why": f"RELEASE 핀 충돌({_pins.get('conflict')}) — --genesis-head 를 명시하라", "release_identity": rel_identity}, ensure_ascii=False)); return 1
+    elif _pins.get("log_id"):
+        rel_identity = "match" if str(meta.get("log_id")) == _pins["log_id"] else "mismatch"
+        if not a.genesis_head and rel_identity == "match" and _pins.get("genesis_head"):
+            a.genesis_head = _pins["genesis_head"]; pin_src = "release"
+    if pin_src is None:
+        pin_note = "이 노드는 RELEASE 의 원장이 아니다(log_id 불일치) — 다른 배포면 정상" if rel_identity == "mismatch" else "genesis_head 무핀 — --genesis-head 를 명시하라"
+    if entries and any(not (isinstance(e, dict) and e.get("seq") == i) for i, e in enumerate(entries)):   # ★[M-213] Q-6 — since=0 전량 스캔은 seq == 위치(재표기 절단 차단)
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": "서빙된 seq 가 위치와 어긋난다(절단·재표기 의심)"}, ensure_ascii=False)); return 1
     # ★[M-211] R4-F05-6 — 꼬리-생략 검사(verify_chain 동형): /state.seq 가 서빙된 마지막 seq 보다 크면 실패 · /state 비정형 = 실패
     try:
         _claimed = int(_get(url, "/state").get("seq"))
@@ -188,7 +211,17 @@ def _main_inner():
         #   레코드 부재·비정형·checked 부재·예외 = 전부 불일치(fail-closed) · 상한 4096 ref(넘으면 truncated = 실패).
         _delivered = {str((e.get("env") or {}).get("args", {}).get("ref")) for e in entries
                       if e.get("kind") != "REJECT" and (e.get("env") or {}).get("typ") == "DELIVER"}
-        _refs = list(samples)
+        # ★[M-213] Q-1(R5-F04-1/3) — 이행된 잡의 스펙은 원장 REDEEM 의 spec_sha256(H2) 에 결박된다(노드-제어 스펙 차단) · 표본-잡은 ocommit ≥ 1 필수
+        _lid = str(meta.get("log_id"))
+        _spec_h = {}
+        for e in entries:
+            env_ = e.get("env") or {}
+            if e.get("kind") != "REJECT" and env_.get("typ") == "REDEEM":
+                _a = env_.get("args") or {}
+                _rr = hashlib.sha256(f"{_lid}|{_a.get('note')}|{e.get('w_epoch')}".encode()).hexdigest()[:16]
+                if _a.get("spec_sha256"):
+                    _spec_h[_rr] = _a["spec_sha256"]
+        _refs = sorted(set(samples) | (_delivered & set(_spec_h)))
         if len(_refs) > 4096:
             mism.append({"samples_truncated": len(_refs)})
         for ref in _refs[:4096]:
@@ -196,6 +229,11 @@ def _main_inner():
                 rec = _get(url, f"/job/{ref}")
                 rec = rec if isinstance(rec, dict) else {}
                 spec = rec.get("job") if isinstance(rec.get("job"), dict) else {}
+                if ref in _delivered and ref in _spec_h:
+                    if hashlib.sha256(_canon_spec(spec)).hexdigest() != _spec_h[ref]:
+                        mism.append({"ref": ref, "why": "서빙된 스펙 ≠ 원장 REDEEM spec_sha256(H2)"}); continue
+                    if spec.get("kind") == "sha256_chain_sampled" and ref not in samples:
+                        mism.append({"ref": ref, "why": "이행된 표본-잡에 ocommit 항이 없다(표본 검증 미실행)"}); continue
                 n_ = spec.get("n"); k_ = spec.get("k", 2)
                 if spec.get("kind") == "sha256_chain_sampled" and isinstance(n_, int) and 1 <= n_ <= _JOBS.N_MAX and isinstance(k_, int) and 1 <= k_ <= 16:
                     want = -(-n_ // _JOBS.CKPT)
@@ -210,7 +248,7 @@ def _main_inner():
     except Exception as ex:
         samples = {"error": str(ex)[:80]}
     out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id and not mism),
-           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "genesis_pin": pin_src, "balance_mismatch": mism,
+           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "genesis_pin": pin_src, "release_identity": rel_identity, "pin_note": pin_note, "balance_mismatch": mism,
            "sample_union": samples, **r}
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if out["H7_FULL_REPLAY"] else 1

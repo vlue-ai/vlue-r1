@@ -466,7 +466,7 @@ this section is its summary).
   and prices with the same ctx (δ·carry) as `scan` ([M-208] R4-22·23).
 - **Settlement change is re-issued in the owner's own color** (collateral remainder · seized change — the A-2 rule). An underwriter who posted foreign-color assets bears the cost of that
   change turning into its own liability — documented, but rate v2 does not price it (registered · color-preserving change is a generation item).
-- **`covered` and `prem_verified` exclude canceled covers** ([M-208] R4-24). Circular premiums between colluding parties (the same note round-tripping) still count —
+- **`covered` and `prem_verified` exclude canceled covers** ([M-208] R4-24). Circular premiums between colluding parties (sybil payers · a reverse XFER in a later block — same-block underwriter→payer XFERs are netted since [M-213]) still count —
   `prem_verified` is **bound face**, not "payment by an independent counterparty". Read underwriter history together with counterparty diversity (`family_concentration`).
 - **`trust_lambda` stays off by default (§8-C) — but turn on `--trust-lambda 1.0` in the wild** ([M-208] R4-21): with it off, self-delivery volume farming (0.32 s) discounts p̂ 21×.
   The price: zero-volume (cold-start) anchors fall out of the candidate list under the λ cap — which is also why `--family-prior` is unreachable together with λ (it only matters with λ off; doc correction).

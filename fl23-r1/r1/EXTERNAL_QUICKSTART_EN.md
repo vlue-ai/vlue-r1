@@ -81,6 +81,7 @@ entry and its nonce is consumed — read the 400 body `{error, code, reject_seq}
 `bad_signature` · `schema` · `not_owner` · `note_cap` · `color_mismatch` …) and **re-sign** before retrying (re-sending the same
 envelope yields `nonce_mismatch`). At the per-owner circulating-note cap (`gen.notes_per_owner_max` = 512) you get `note_cap` —
 `merge` to reclaim slots.
+★Boundary ([M-213]): only rejections that reach the **ledger law** (kernel) are recorded. Node-layer pre-checks — schema/size (`schema`, `env_size`), color routing (`color_mismatch` on raw REDEEM/XFER), scope (H5), block-leg pre-checks (`leg_precheck`), budgets (`reject_budget`, `write_budget`) — return an **unrecorded** 400: no REJECT entry, nonce not consumed, and re-sending the same envelope yields the same error (not `nonce_mismatch`).
 
 ## What you can buy today (the first ask)
 

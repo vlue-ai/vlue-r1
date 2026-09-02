@@ -120,8 +120,9 @@ def main():
     ap.add_argument("--key", required=True)
     ap.add_argument("--poll", type=float, default=5.0)
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--state", default=None, help="★[M-213] 상태 경로(.state/.heads/.domain/.fork 접두) — 세대 전환·재창세는 **새 경로**로(옛 증거 삭제 금지)")
     a = ap.parse_args()
-    co = Cosigner(a.url, a.name, a.key)
+    co = Cosigner(a.url, a.name, a.key, state_path=a.state)
     if a.once:
         print(json.dumps({"signed": co.run_once(), "next": co.next}))
         return 0

@@ -29,6 +29,8 @@ class AnchorWorker(Fl21Client):
     def __init__(self, base_url, key_path, name="anchor0"):
         self.url = base_url.rstrip("/")
         self.p = name
+        self.key_path = key_path                  # ★[M-213] Q-4(R5-F02-10) — rekey/재조정 경로가 쓰는 속성
+        self.key_next_unresolved = False
         self.key = Ed25519PrivateKey.from_private_bytes(
             bytes.fromhex(open(key_path).read().strip()))
         self.meta = self._get("/meta")

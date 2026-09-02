@@ -22,6 +22,8 @@
 from sdk import Fl21Client
 c = Fl21Client(NODE_URL, "verifier", "verifier.key")
 print(c.verify_chain())    # head 사슬 재계산 + 운영자 서명 + 공동-서명 2-of-3
+# ★[M-213] 결과 읽기: `ok` 만 보지 말고 **`confirmed`**(2-of-3 확정 항 수 · 0 이면 `warning`) · `genesis_pin`("release"|"flag"|null) ·
+#   `release_identity`("match" = 발표 원장 · "mismatch" = 다른 배포 · "conflict" = RELEASE 파일↔내장 핀 충돌 → sdk.py 갱신) · `pin_note` 를 읽는다.
 # ★[M-210] 기본 핀: 노드가 이 번들 RELEASE 의 log_id 를 주장하면 genesis_head 를 RELEASE.md 와 자동 대조한다.
 #   다른 배포를 검증하려면 expect_genesis_head=... 를 직접 넘긴다.
 ```
@@ -99,7 +101,10 @@ ERC-8004 지목-검증자 뒤에 앉혀 이행-정산 → 100 · 시한-사고 �
   Σface + F + F_uw` 로 보존식이 선다. 노트의 `issuer` 는 색 시드(커널은 해석하지 않는다).
   ★레시피(J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` — `sort_keys=True` ·
   `separators=(",", ":")` · `ensure_ascii=False`. FL2.3 값 `acf1f24e…` 는 FL2.2 아카이브 최종 상태(anchor0 40,000 · F 0 · F_uw 0 · exited [])에서 재유도된다.
-  사상 규칙(전임 최종 상태 → 스냅샷): 노트는 입도 보존 `{owner, face, issuer}`(`issuer` = 그 노트의 색 = FL2.2 서비스층 EXT_IN 수취인 · 창세 자기-IOU 는 anchor0) · `principals` = 창세 좌석 밖 레지스트리 주체 `{p, pk}` · `F`·`F_uw` = 기금 잔액 · `exited` = 퇴장 명부.
+  ★[M-213] **검증 절차**(다음 세대부터 규범): ① 아카이브에 동봉된 `snapshot.json` 을 해시해 새 원장 seq 0 의 `snapshot_hash` 와 대조 ② 전임 원장을
+  전-상태 리플레이해 **보존식 대조** — 소유자별 Σface · `F` · `F_uw` · `exited` · 레지스트리(창세 좌석 밖 주체 = `principals`, pk = 현행 키)가 스냅샷과
+  같아야 한다 ③ `notes` 는 nid 오름차순 · `principals` 는 p 사전순(정렬이 다르면 다른 해시) · `issuer` = 전임 노드의 색 엔진이 기록한 색(아카이브 README 가
+  색 파일을 동봉) · 소유자별 노트 > 512 이면 전임 세대에서 사전 MERGE(수입 민트는 J-6 상한을 따른다).
 - **아카이브**: FL2.2 원장(`archive/fl22/`)은 `fin_lean/lang22/kernel22.py` 로 전-상태 리플레이 · FL2.1(`archive/fl21/`)은 head-사슬·서명 검증까지(kernel21 은 시드-무관 리플레이 API 가 없다 — 마지막 2-of-3 확정 seq 3,164 · 꼬리 60 TICK) — 세대는 `/meta.domain`(또는
   아카이브 meta)의 접두(`FL22-`/`FL23-`)로 고른다.
 

@@ -26,6 +26,8 @@ announced ledger.
 from sdk import Fl21Client
 c = Fl21Client(NODE_URL, "verifier", "verifier.key")
 print(c.verify_chain())    # recompute head chain + operator signature + 2-of-3 co-signatures
+# ★[M-213] Read the result, not just `ok`: **`confirmed`** (entries confirmed 2-of-3 · 0 → `warning`) · `genesis_pin` ("release"|"flag"|null) ·
+#   `release_identity` ("match" = the announced ledger · "mismatch" = another deployment · "conflict" = RELEASE file vs embedded pins → update sdk.py) · `pin_note`.
 # ★[M-210] pinned by default: if the node claims this bundle's RELEASE log_id, genesis_head is compared against
 #   RELEASE_EN.md automatically (result carries the pin). Another deployment → pass expect_genesis_head=... yourself.
 ```
@@ -116,7 +118,11 @@ pure-stdlib and self-tested · on-chain submission is the operator's).
   ★Recipe (J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` with `sort_keys=True`,
   `separators=(",", ":")`, `ensure_ascii=False` — the FL2.3 value `acf1f24e…` re-derives from the FL2.2 archive's final state
   (anchor0 40,000 · F 0 · F_uw 0 · exited []).
-  Mapping rule (predecessor final state → snapshot): notes keep their granularity as `{owner, face, issuer}` (`issuer` = the note's color = the FL2.2 service-layer EXT_IN recipient; the genesis self-IOU is anchor0) · `principals` = registry principals outside the genesis seats as `{p, pk}` · `F`/`F_uw` = fund balances · `exited` = the exit list.
+  ★[M-213] **Verification procedure** (normative from the next generation on): ① hash the `snapshot.json` shipped in the archive and compare
+  it with `snapshot_hash` in the new ledger's seq 0; ② replay the predecessor ledger in full and check **conservation** — per-owner Σface,
+  `F`, `F_uw`, `exited` and the registry outside the genesis seats (= `principals`, pk = current key) must equal the snapshot; ③ `notes`
+  sorted by nid ascending, `principals` by p (a different order is a different hash) · `issuer` = the color recorded by the retiring node's
+  color engine (the archive README ships the color file) · owners holding > 512 notes MERGE before retirement (imported mints obey J-6).
 - **Archives**: the FL2.2 ledger (`archive/fl22/`) replays in full with `fin_lean/lang22/kernel22.py`; FL2.1 (`archive/fl21/`) re-verifies down to the head chain and signatures only (kernel21 has no seed-free replay API — last 2-of-3 confirmed seq 3,164 · 60-entry TICK tail) — the
   generation is chosen by the `/meta.domain` prefix (`FL22-` / `FL23-`).
 
