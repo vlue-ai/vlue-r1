@@ -1,0 +1,381 @@
+{
+ "contract": {
+  "함수": "정산 = f(claims[c·need·cov·anchor·uw], anchor_free, uw_free, fund) — β는 개설 규칙이지 정산 인자가 아니다",
+  "층 순서": [
+   "1 불이행 앵커(앵커) 자유 잔고 — 앵커별 비례",
+   "2 담보 에스크로 — 청구 전용 · ★미사용분 즉시 인수자 자유 잔고로 반환",
+   "3 인수자 소구 — 인수자별 비례 · ★2의 반환분 포함",
+   "4 기금 — 전역 비례(자기적용)",
+   "5 잔여 = short 기입(배상 ≤ need · 청구 소멸)"
+  ],
+  "비례": "바닥 나눗셈 후 잔여를 청구 정렬 순(c1<c2<…)으로 1씩",
+  "트리거": "timeout·attest_fail은 성숙 시점만 다르고 배분 규칙 동일",
+  "미부보": "배상 없음 · 노트 보유자 반환(expect_returned)",
+  "정합 판정": "lab-측 β 사이드카가 9 벡터 전부에서 expect와 배분-동일이어야 측정 착수 가능(RFRONT_PREREG §6 C1)"
+ },
+ "vectors": {
+  "V1": {
+   "desc": "전 층 폭포(불이행 앵커 우선→담보→소구→기금→지급불능 기입)",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 100,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 60
+     }
+    ],
+    "anchor_free": {
+     "A1": 7
+    },
+    "uw_free": {
+     "U1": 15
+    },
+    "fund": 5
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 7,
+     "cov": 60,
+     "uw": 15,
+     "fund": 5,
+     "comp": 87,
+     "short": 13
+    }
+   ],
+   "expect_returned": []
+  },
+  "V2": {
+   "desc": "인수자-층 비례(공유 자유 잔고 · 잔여 정렬-순)",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     },
+     {
+      "c": "c2",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     }
+    ],
+    "anchor_free": {
+     "A1": 0
+    },
+    "uw_free": {
+     "U1": 10
+    },
+    "fund": 0
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 0,
+     "cov": 20,
+     "uw": 5,
+     "fund": 0,
+     "comp": 25,
+     "short": 15
+    },
+    {
+     "c": "c2",
+     "anchor": 0,
+     "cov": 20,
+     "uw": 5,
+     "fund": 0,
+     "comp": 25,
+     "short": 15
+    }
+   ],
+   "expect_returned": []
+  },
+  "V3": {
+   "desc": "[정리 U] 경계 — 완전 담보 = 기금·소구 무접촉",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 30,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 30
+     }
+    ],
+    "anchor_free": {
+     "A1": 0
+    },
+    "uw_free": {
+     "U1": 9
+    },
+    "fund": 1
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 0,
+     "cov": 30,
+     "uw": 0,
+     "fund": 0,
+     "comp": 30,
+     "short": 0
+    }
+   ],
+   "expect_returned": []
+  },
+  "V4": {
+   "desc": "불이행 앵커 전액 흡수 — 담보·소구·기금 0(초과손해 구조)",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     }
+    ],
+    "anchor_free": {
+     "A1": 100
+    },
+    "uw_free": {
+     "U1": 20
+    },
+    "fund": 0
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 40,
+     "cov": 0,
+     "uw": 0,
+     "fund": 0,
+     "comp": 40,
+     "short": 0
+    }
+   ],
+   "expect_returned": []
+  },
+  "V5": {
+   "desc": "기금-층 전역 비례(G2-7c-ⓒ 자기적용) · 인수자 간 무교차",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     },
+     {
+      "c": "c2",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U2",
+      "cov": 20
+     }
+    ],
+    "anchor_free": {
+     "A1": 0
+    },
+    "uw_free": {
+     "U1": 0,
+     "U2": 0
+    },
+    "fund": 10
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 0,
+     "cov": 20,
+     "uw": 0,
+     "fund": 5,
+     "comp": 25,
+     "short": 15
+    },
+    {
+     "c": "c2",
+     "anchor": 0,
+     "cov": 20,
+     "uw": 0,
+     "fund": 5,
+     "comp": 25,
+     "short": 15
+    }
+   ],
+   "expect_returned": []
+  },
+  "V6": {
+   "desc": "발화-성숙(S-2) — 트리거만 다르고 폭포 동일",
+   "trigger": "attest_fail",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     }
+    ],
+    "anchor_free": {
+     "A1": 0
+    },
+    "uw_free": {
+     "U1": 20
+    },
+    "fund": 0
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 0,
+     "cov": 20,
+     "uw": 20,
+     "fund": 0,
+     "comp": 40,
+     "short": 0
+    }
+   ],
+   "expect_returned": []
+  },
+  "V7": {
+   "desc": "미부보 = 시간초과-반환(FL2.0 잔여의 해소)",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 50,
+      "anchor": "A1",
+      "uw": null,
+      "cov": 0
+     }
+    ],
+    "anchor_free": {
+     "A1": 0
+    },
+    "uw_free": {},
+    "fund": 0
+   },
+   "expect": [],
+   "expect_returned": [
+    "c1"
+   ]
+  },
+  "V8": {
+   "desc": "불이행-층 앵커별 비례 · 인수자-층 무교차(한쪽만 소구 가능)",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 20
+     },
+     {
+      "c": "c2",
+      "need": 40,
+      "anchor": "A1",
+      "uw": "U2",
+      "cov": 20
+     }
+    ],
+    "anchor_free": {
+     "A1": 10
+    },
+    "uw_free": {
+     "U1": 15,
+     "U2": 0
+    },
+    "fund": 0
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 5,
+     "cov": 20,
+     "uw": 15,
+     "fund": 0,
+     "comp": 40,
+     "short": 0
+    },
+    {
+     "c": "c2",
+     "anchor": 5,
+     "cov": 20,
+     "uw": 0,
+     "fund": 0,
+     "comp": 25,
+     "short": 15
+    }
+   ],
+   "expect_returned": []
+  },
+  "V9": {
+   "desc": "앵커별 그룹 정산 · ②층 반환분이 ③층 소구 풀에 포함",
+   "trigger": "timeout",
+   "inputs": {
+    "claims": [
+     {
+      "c": "c1",
+      "need": 30,
+      "anchor": "A1",
+      "uw": "U1",
+      "cov": 15
+     },
+     {
+      "c": "c2",
+      "need": 30,
+      "anchor": "A2",
+      "uw": "U1",
+      "cov": 15
+     }
+    ],
+    "anchor_free": {
+     "A1": 50,
+     "A2": 0
+    },
+    "uw_free": {
+     "U1": 5
+    },
+    "fund": 4
+   },
+   "expect": [
+    {
+     "c": "c1",
+     "anchor": 30,
+     "cov": 0,
+     "uw": 0,
+     "fund": 0,
+     "comp": 30,
+     "short": 0
+    },
+    {
+     "c": "c2",
+     "anchor": 0,
+     "cov": 15,
+     "uw": 15,
+     "fund": 0,
+     "comp": 30,
+     "short": 0
+    }
+   ],
+   "expect_returned": []
+  }
+ }
+}

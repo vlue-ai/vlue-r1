@@ -3,7 +3,10 @@
 실행: python3 frontier_vectors.py && python3 golden_compare.py  → GOLDEN_MULTISET_IDENTICAL true/false"""
 import json, os, sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
-a = json.load(open(os.path.join(_HERE, "..", "lang22", "results", "frontier_vectors.json")))["vectors"]
+_ref = os.path.join(_HERE, "..", "lang22", "golden_fl22_vectors.json")          # 번들 동봉 기준물(results/ 밖)
+if not os.path.exists(_ref):
+    _ref = os.path.join(_HERE, "..", "lang22", "results", "frontier_vectors.json")   # 모노레포 실행
+a = json.load(open(_ref))["vectors"]
 b = json.load(open(os.path.join(_HERE, "results", "frontier_vectors.json")))["vectors"]
 def ms(v): return sorted(json.dumps(x, sort_keys=True) for x in v["expect"])
 ok = set(a) == set(b)
