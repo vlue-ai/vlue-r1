@@ -76,6 +76,28 @@ def ed25519_weak_pk(pk_bytes):
 
 MAX_TOTAL_RESP = 256 * 1024 * 1024           # ★[M-209] R2-F11-2 — verify_chain 이 누적 판독하는 총량 상한(페이지 반복으로 메모리 무계 방지)
 
+def release_pins(path=None):
+    """★[M-210] R3-F07-1 — 번들에 동봉된 RELEASE(_EN).md 에서 대역-외 핀(genesis_head · log_id · operator_pk0)을 읽는다.
+    검증기가 같은 저장소의 RELEASE 를 0단 재료로 이미 신뢰하므로, 핀을 명시 안 하면 이 값을 기본으로 쓴다(핀 없는 검증 = 동일-정체성·다른-창세 임포스터 통과)."""
+    import os as _os, re as _re
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    out = {}
+    for fn in ([path] if path else ["RELEASE_EN.md", "RELEASE.md"]):
+        fp = fn if (path and _os.path.isabs(fn)) else _os.path.join(here, fn)
+        try:
+            txt = open(fp, encoding="utf-8").read()
+        except OSError:
+            continue
+        for key, pat in (("genesis_head", r"genesis_head[^\n]*?`([0-9a-f]{64})`"), ("log_id", r"\| log_id \| `([0-9a-f]{64})`"),
+                         ("operator_pk0", r"\| operator_pk \| `([0-9a-f]{64})`")):
+            m = _re.search(pat, txt)
+            if m and key not in out:
+                out[key] = m.group(1)
+        if out:
+            break
+    return out
+
+
 MAX_RESP = 32 * 1024 * 1024                  # ★[M-208] 응답 본문 상한(32MB — /log 500항 × 16KB 봉투 상한 = 8MB 여유)
 USER_AGENT = "vlue-sdk/0.1 (+https://vlue.ai)"
 
@@ -188,6 +210,7 @@ class Fl21Client:
         self.key_path = key_path
         self.key = self._ensure_key()
         self.meta = self._get("/meta")
+        self._reconcile_key_next()                        # ★[M-210] 회전 중 크래시 잔재(.next) — 노드 레지스트리 pk 로 승격/폐기
         # ★[M-208] R4-13(냉독 4) — 비정형 /meta 는 트레이스백이 아니라 명시 실패(가이드 첫 줄 = 이 생성자)
         if not (isinstance(self.meta, dict) and isinstance(self.meta.get("log_id"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", self.meta["log_id"])):
@@ -226,12 +249,12 @@ class Fl21Client:
         msg = self.domain + self.log_id + b"REKEY" + self.p.encode() + new_pk + old_pk
         env = self.sign_env("REKEY", {"principal": self.p, "new_pk": new_pk.hex(),
                                       "new_sig": new.sign(msg).hex()})
-        r = self._post("/submit", {"env": env})
-        tmp = self.key_path + ".tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        nxt = self.key_path + ".next"                    # ★[M-210] R3-F06-2 — 새 키를 제출 **전에** .next 로 fsync(제출 뒤 크래시 = 새 키 유실·구 키 거부 = 자기-브릭 방지)
+        fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as fh:
-            fh.write(new.private_bytes_raw().hex())
-        os.replace(tmp, self.key_path)
+            fh.write(new.private_bytes_raw().hex()); fh.flush(); os.fsync(fh.fileno())
+        r = self._post("/submit", {"env": env})
+        os.replace(nxt, self.key_path)
         self.key = new
         return {**(r if isinstance(r, dict) else {"r": r}), "new_pk": new_pk.hex()}
 
@@ -277,6 +300,24 @@ class Fl21Client:
     def pk_hex(self):
         return self.key.public_key().public_bytes_raw().hex()
 
+    def _reconcile_key_next(self):
+        """★[M-210] key_path.next 가 있으면(회전 제출 뒤 파일 교체 전 크래시) 노드의 현행 공개키(/pk/<p>)와 대조 — 같으면 승격 · 다르면 폐기."""
+        nxt = self.key_path + ".next"
+        if not os.path.exists(nxt):
+            return
+        try:
+            cand = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(open(nxt).read().strip()))
+            cur = (self._get(f"/pk/{self.p}") or {}).get("pk")
+        except Exception:
+            cand, cur = None, None
+        if cand is not None and cur and cand.public_key().public_bytes_raw().hex() == cur:
+            os.replace(nxt, self.key_path); self.key = cand
+        else:
+            try:
+                os.remove(nxt)
+            except OSError:
+                pass
+
     # ── HTTP ──
     def _req(self, method, path, obj=None):
         data = json.dumps(obj).encode() if obj is not None else None
@@ -290,7 +331,7 @@ class Fl21Client:
                     raise RuntimeError(f"응답 크기 상한 {MAX_RESP} 초과 — 노드 응답 거부(fail-closed)")
                 return json.loads(raw)
         except urllib.error.HTTPError as e:
-            err = e.read().decode()[:300]
+            err = e.read(MAX_RESP + 1)[:MAX_RESP].decode(errors="replace")[:300]   # ★[M-210] R3-F11-1 — 오류-경로도 상한(악의 노드 4xx+거대 본문 OOM)
             raise RuntimeError(f"HTTP {e.code}: {err}") from None
 
     def _get(self, path):
@@ -300,11 +341,13 @@ class Fl21Client:
         return self._req("POST", path, obj)
 
     # ── 봉투 서명(커널과 바이트-동일 — 골든 결박) ──
-    def sign_env(self, typ, args):
+    def sign_env(self, typ, args, nonce=None):
+        """서명 봉투. ★[M-210] nonce 명시 = 같은 주체가 한 /block 에 둘 이상의 다리를 넣을 때(커널은 다리마다 nonce 를 전진: n, n+1, …)."""
         st = self._get(f"/nonce/{self.p}")
+        _n = st["nonce"] if nonce is None else int(nonce)
         body = {"typ": typ, "args": args, "p": self.p, "epoch": st["epoch"]}
-        sig = self.key.sign(sig_msg(self.log_id, body, st["nonce"], self.domain))
-        return {**body, "nonce": st["nonce"], "sig": sig.hex()}
+        sig = self.key.sign(sig_msg(self.log_id, body, _n, self.domain))
+        return {**body, "nonce": _n, "sig": sig.hex()}
 
     # ── 참여 동작 ──
     def join(self):
@@ -488,7 +531,8 @@ class Fl21Client:
 
     def fetch_legs(self):
         """내 사서함 수신(읽고-지움) — [{frm, payload, epoch}]."""
-        body = {"p": self.p, "fetch": True}
+        import secrets as _sec
+        body = {"p": self.p, "fetch": True, "epoch": self._get("/state")["epoch"], "nonce": _sec.token_hex(8)}   # ★[M-210] 신선-서명(epoch ±3) + 1회용 서명(같은 에포크 재-폴링도 새 서명)
         sig = self.key.sign(self._d["relay"] + self.log_id + canon(body)).hex()
         r = self._post("/relay/fetch", {"msg": body, "sig": sig})
         out = []
@@ -525,10 +569,13 @@ class Fl21Client:
         (ref, 나)당 1건 — 재게시 = 교체(번복은 새 의견). ⚠️record-only: 정산·요율
         무접촉 — 내 거절-비율도 같은 채널에 공개된다(양측 대칭)."""
         # ★[M-209] v = (ref, 나) 판정 버전 — 기존 레코드가 있으면 +1(교체는 전진만 · 캡처된 옛 서명의 재생-되돌리기 차단)
-        cur = next((r for r in (self._get("/accept").get("records") or self._get("/accept").get("accepts") or [])
-                    if isinstance(r, dict) and (r.get("rec") or {}).get("ref") == str(ref) and (r.get("rec") or {}).get("p") == self.p), None) \
-            if isinstance(self._get("/accept"), dict) else None
-        v = int(((cur or {}).get("rec") or {}).get("v", 0)) + 1
+        _ac = self._get("/accept")
+        _ac = _ac if isinstance(_ac, dict) else {}
+        cur = next((r for r in (_ac.get("records") or _ac.get("accepts") or [])
+                    if isinstance(r, dict) and (r.get("rec") or {}).get("ref") == str(ref) and (r.get("rec") or {}).get("p") == self.p), None)
+        # ★[M-210] R3-F09-1 — 노드의 (ref, p) 고수위 워터마크(최신 레코드가 만료된 뒤에도 산다)까지 넘어야 게시된다
+        _hw = max((int(h.get("v", 0)) for h in (_ac.get("hwm") or []) if isinstance(h, dict) and h.get("ref") == str(ref) and h.get("p") == self.p), default=0)
+        v = max(int(((cur or {}).get("rec") or {}).get("v", 0)), _hw) + 1
         body = {"ref": str(ref), "p": self.p, "verdict": str(verdict),
                 "note": str(note),
                 "expires": self._get("/state")["epoch"] + int(ttl), "v": v}
@@ -627,6 +674,7 @@ class Fl21Client:
         doc = att["doc"]
         if doc.get("complete") is not True:
             return {"ok": False, "why": "부분 발췌 = 무효(전량-아니면-무)"}
+        self.meta = self._get("/meta")                     # ★[M-210] R3-F06-5 — 운영자 회전 뒤 캐시된 키로 오탐 거부하지 않게 매번 현행 /meta
         pk = _PK.from_public_bytes(bytes.fromhex(self.meta["operator_pk"]))
         try:
             pk.verify(bytes.fromhex(att["operator_sig"]),
@@ -638,6 +686,10 @@ class Fl21Client:
 
     # ── 라이트 검증(A-6 · R-6 봉합): 확정 높이까지 엄격 검증 + 미서명 최신 꼬리는 pending ──
     def verify_chain(self, since=0, limit_batches=200, expect_genesis_head=None):
+        if expect_genesis_head is None:                      # ★[M-210] 기본 핀 = 동봉 RELEASE 의 genesis_head — 노드가 RELEASE 의 log_id 를 주장할 때만(다른 배포는 무핀)
+            _pins = release_pins()
+            if _pins.get("log_id") and str((self.meta or {}).get("log_id")) == _pins["log_id"]:
+                expect_genesis_head = _pins.get("genesis_head")
         """head 사슬·운영자 서명은 전량 엄격. 공동-서명(k-of-n)은 비동기 도착하므로
         ★공동-서명이 아직 부족한 **최신 연속 꼬리**는 위반이 아니라 `pending`(확정 미도달).
         블록체인 confirmation-depth 시맨틱 — 확정 prefix가 정합이면 ok(pending 별도 보고).
@@ -693,6 +745,11 @@ class Fl21Client:
             if not batch:
                 cos_complete = True
                 break
+            _tot = getattr(self, "_fetched_bytes", 0) + len(json.dumps(batch))          # ★[M-210] R3-F05-M1 — /cosigs 도 누적 총량 상한
+            self._fetched_bytes = _tot
+            if _tot > MAX_TOTAL_RESP:
+                self._fetched_bytes = 0
+                return {"ok": False, "why": f"누적 판독 총량 상한 {MAX_TOTAL_RESP} 초과(/cosigs) — 노드 응답 거부(fail-closed)"}
             for r in batch:      # ★D-2 병합 — 분리 서명자의 부분-서명 줄들을 합친다
                 m = cos.setdefault(r["seq"], {"head": r["head"], "sigs": {}})
                 if r["head"] == m["head"]:
@@ -746,8 +803,12 @@ class Fl21Client:
             _env = e.get("env") or {}
             if e.get("kind") == "REJECT":
                 continue
+            _pks = []
             if _env.get("typ") in ("JOIN", "REKEY"):
-                _pk = (_env.get("args") or {}).get("pk" if _env["typ"] == "JOIN" else "new_pk")
+                _pks = [(_env.get("args") or {}).get("pk" if _env["typ"] == "JOIN" else "new_pk")]
+            elif _env.get("typ") == "GENESIS_IMPORT":                                   # ★[M-210] R3-F05-M2 — 수입 주체 pk 도 검사
+                _pks = [(x or {}).get("pk") for x in ((_env.get("args") or {}).get("principals") or []) if isinstance(x, dict)]
+            for _pk in _pks:
                 try:
                     _weak = ed25519_weak_pk(bytes.fromhex(str(_pk)))
                 except ValueError:

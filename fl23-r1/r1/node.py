@@ -206,9 +206,14 @@ class Node:
         # ★[M-178] 수락-채널 v0 — 자문층(record-only · 요율-비연동 · 손상 = 빈 판)
         self.accept_p = os.path.join(data_dir, "accept.json")
         self.accepts = {}            # id → {rec, sig, id} · id = H(ref|p) = 교체-주소
+        self.accept_hwm = {}             # ★[M-210] rid → [최고 v, 만료+TTL] — 옛 판정 부활 차단(만료 경계 너머)
         if os.path.exists(self.accept_p):
             try:
-                self.accepts = json.load(open(self.accept_p, encoding="utf-8"))
+                _ld = json.load(open(self.accept_p, encoding="utf-8"))
+                if isinstance(_ld, dict) and "records" in _ld and "hwm" in _ld:   # ★[M-210] 신형(워터마크 동봉)
+                    self.accepts = _ld["records"]; self.accept_hwm = {k: list(v) for k, v in _ld["hwm"].items()}
+                else:
+                    self.accepts = _ld
             except (json.JSONDecodeError, OSError):
                 self.accepts = {}
         # ── ★D-1 키 실물화: 비밀은 소스가 아니라 data_dir(0600 · 첫 기동 시 생성) ──
@@ -247,6 +252,7 @@ class Node:
         self._op_key_next = okp + ".next"                       # ★[M-208] 회전 중 크래시 잔재 — _replay 뒤 정합 판정
         self._export_anchor_key(data_dir)       # 워커 좌석 키(0600 — 워커가 파일로 로드)
         self.jobs = {}               # ref → {job, anchor, holder, deadline, state, output}
+        self._open_by_anchor = None  # ★[M-210] anchor → 열린 잡(_sync_jobs 가 갱신)
         self._stats_cache = None     # ★D-13 — (log_len, stats)
         self._audit_cache = None     # ★F-B([M-143]) — (log_len, audit 결과)
         self._replay()
@@ -549,8 +555,9 @@ class Node:
             walk(env.get("args"))
             if env.get("typ") == "DELIVER":
                 rp = self.w.redeem_pending.get(str((env.get("args") or {}).get("ref")))
-                if rp and rp.get("note") is not None:
-                    cand.add(str(rp["note"]))
+                for _k in ("nid", "note"):                       # ★[M-210] R3-F08-2 — 키는 "nid"(구판 "note" 오기 = 매 DELIVER O(N) 복구)
+                    if rp and rp.get(_k) is not None:
+                        cand.add(str(rp[_k]))
         return cand
 
     def _note_delta(self, before_ids, cand, ctr_b):
@@ -849,9 +856,14 @@ class Node:
                 else:
                     j["state"] = "settled_or_returned"   # 시한-사고 경로(커널 정산)
         # 표시: 미결이며 기한 지난 잡(사고 예정 — 정보용)
-        for j in self.jobs.values():
+        idx = {}                                        # ★[M-210] R3-F11-2 — anchor → 열린 잡 색인(쓰기 시 갱신 · GET /jobs 는 O(해당 앵커))
+        for ref, j in self.jobs.items():
             if j["state"] == "open" and self.w.epoch > j["deadline"]:
                 j["late"] = True
+            if j["state"] == "open" and not j.get("delivered"):
+                idx.setdefault(j["anchor"], {})[ref] = j
+        self._open_by_anchor = idx
+        self._open_idx_len = len(self.jobs)
 
     # ── API 동작(전부 락 안) ──
     def meta(self):
@@ -887,8 +899,12 @@ class Node:
         key = (len(self.w.log), self.w.epoch)
         if self._stats_cache and self._stats_cache[0] == key:
             return self._stats_cache[1]
+        _now = time.monotonic()                        # ★[M-210] R3-F08-5 — 큰 원장에선 익명 GET 이 쓰기마다 O(원장) 재스캔을 강제하지 못하게 15초 스로틀(stale 표기)
+        if self._stats_cache and key[0] > 2000 and _now - getattr(self, "_stats_ts", 0) < 15:
+            c = dict(self._stats_cache[1]); c["stale"] = True; c["as_of_entries"] = self._stats_cache[0][0]
+            return c
         out = self._stats_scan()
-        self._stats_cache = (key, out)
+        self._stats_cache = (key, out); self._stats_ts = _now
         return out
 
     def _stats_scan(self):
@@ -936,7 +952,10 @@ class Node:
                 del lst[:-32]         # kind당 최근 32건
 
         canceled_refs = set()                    # ★[M-208] R4-24 — 커버+즉시-취소로 covered·prem_verified 를 무-원가 부양하던 변종
+        live_cov = {}                            # ★[M-210] R3-F10-2 — ref → (uw, prem) **살아있는** 커버(순서 회계: 취소는 그 시점의 커버만 되감고, 재-REDEEM 은 취소 표식을 지운다)
         for e in self.w.log:
+            if e.get("kind") == "REJECT":        # ★[M-210] R3-F10-1(CRITICAL) — 인증-거부 행(J-7)은 수용된 연산이 아니다: 색-전이·provenance 와 동형으로 건너뛴다
+                continue
             env = e["env"]
             legs = (env["args"]["legs"] if env["typ"] == "BLOCK"
                     else [env])
@@ -952,10 +971,18 @@ class Node:
                                                 "paid": 0})
                     b["covered"] += 1
                     b["prem"] += lg["args"].get("prem", 0)
+                    live_cov[str(lg["args"]["ref"])] = (u_, lg["args"].get("prem", 0))
+                    canceled_refs.discard(str(lg["args"]["ref"]))
                 elif lg["typ"] == "REDEEM_CANCEL":    # ★[M-208] R4-24(냉독 4 · F10-2) — 취소된 청구의 커버는 실적이 아니다
                     # ⚠️[M-209] R2-F10-A(CRITICAL 수리): 위 `b["prem"]` 줄이 [M-208] 패치로 이 분기에 잘못 들어와 UW 없는 취소 1건이
                     #   _stats_scan 을 UnboundLocalError 로 영구 파괴했다(/stats 400 · 인수 도구 전량 무력화) — 원위치 복구.
-                    canceled_refs.add(lg["args"].get("ref"))
+                    _cr = str(lg["args"].get("ref"))
+                    canceled_refs.add(_cr)
+                    _lc = live_cov.pop(_cr, None)     # ★[M-210] R3-F10-2/3 — 이 시점에 살아있던 커버(잡·원시 무관)만 되감는다
+                    if _lc is not None and _lc[0] in uw_book:
+                        uw_book[_lc[0]]["covered"] -= 1
+                        uw_book[_lc[0]]["prem"] -= _lc[1]
+                        uw_book[_lc[0]]["covered_canceled"] = uw_book[_lc[0]].get("covered_canceled", 0) + 1
                 elif lg["typ"] == "TICKMARK" and \
                         isinstance(lg.get("args"), dict) and \
                         lg["args"].get("kind") == "fl21.version":
@@ -1032,11 +1059,8 @@ class Node:
         for ref2, j2 in self.jobs.items():
             u2 = (j2.get("cover") or {}).get("uw") or ref_uw.get(ref2)
             f2 = j2.get("prem_verified")
-            if ref2 in canceled_refs:                # ★[M-208] R4-24 — 취소 커버 제외(covered 도 되감는다)
-                if u2 and u2 in uw_book:
-                    uw_book[u2]["covered"] -= 1
-                    uw_book[u2]["covered_canceled"] = uw_book[u2].get("covered_canceled", 0) + 1
-                continue
+            if ref2 in canceled_refs and ref2 not in live_cov:   # ★[M-208] R4-24 · ★[M-210] R3-F10-2 — 취소 뒤 재-인수되지 않은 잡의 결박-보험료만 제외
+                continue                                          #   (covered/prem 되감기는 위 로그-순서 회계가 이미 했다 — 이중 감산 금지)
             if u2 and f2:
                 pvsum[u2] = pvsum.get(u2, 0) + f2
         for u_, b in uw_book.items():
@@ -1109,6 +1133,7 @@ class Node:
         density = {"tx": tx_n,                       # ★RE-3 — 밀도 지표
                    "tx_per_epoch": round(tx_n / now, 3) if now else None,
                    "active_principals": self.w.reg.size() - 1,
+                   "unit": "base units (1 AU = unit_scale units)",   # ★[M-210] R3-F07-2 — 단위 명시(au_* 는 기본단위)
                    "au_circulating": sum(n["face"] for n in
                                          self.w.notes.values()
                                          if not n["owner"].startswith("@")),
@@ -1126,7 +1151,7 @@ class Node:
                              "F_uw": self.w.F_uw, "F_peak": self.w.F_peak,
                              "open_prem": prem_in},
                 "loss_layers": loss,
-                "composition": self._composition(canceled_refs),          # ★W-4b([M-201]) 구성-링크 v0 계기(record-only)
+                "composition": self._composition({r for r in canceled_refs if r not in live_cov}),   # ★W-4b([M-201]) · [M-210] 재-인수된 ref 는 취소 아님
                 "note": ("★대칭-시차 계수·버전-분절 — 잡-경로 한정"
                          "(원시 REDEEM은 t0 미상 = 즉시 계수) · "
                          "underwriters.prem = 자기-선언(비결박 — UW-1 한정어)")}
@@ -1218,6 +1243,13 @@ class Node:
                 continue
             if not _nm.match(_p):
                 raise Fl21Error(f"genesis_import: 주체명 규칙 위반 {_p!r} — 조회 불능 이름은 수입하지 않는다")
+        for _x in (snap.get("principals") or []):                   # ★[M-210] R3-F05-M2 — 수입 주체 pk 도 저-위수 거부
+            try:
+                _pk = bytes.fromhex(str((_x or {}).get("pk", ""))) if isinstance(_x, dict) else b""
+            except ValueError:
+                _pk = b""
+            if ed25519_weak_pk(_pk):
+                raise Fl21Error(f"genesis_import: 주체 {(_x or {}).get('p')!r} 의 pk 가 약한 키 — 수입 거부")
         want = _h.sha256(_canon(body)).hexdigest()
         if snap.get("snapshot_hash") not in (None, want):
             raise Fl21Error("genesis_import: snapshot_hash 불일치(파일 내부)")
@@ -1273,6 +1305,7 @@ class Node:
         if not isinstance(k, int) or isinstance(k, bool) or k < 1:
             raise Fl21Error("issue: k ≥ 1 정수")
         p = env.get("p")
+        self.w._verify_env(env)                       # ★[M-210] R3-F02-1/F08-1(HIGH) — 원장-비례 outstanding() 이전에 인증(EXIT·_guard_env 와 같은 불변식)
         cap = self.genesis_issue if p in GENESIS else self.join_issue
         out_now = self.outstanding(p)
         if out_now + k > cap:
@@ -1490,11 +1523,33 @@ class Node:
         return {"seq": entry["seq"], "head": entry["head"], "ref": ref,
                 "verify": detail}
 
+    def _verify_leg_at(self, env, expected_nonce):
+        """★[M-210] R3-F03-1 — 커널 _verify_env 동형이되 nonce 기대값만 시뮬레이션 값으로(같은 주체의 블록 내 둘째+ 다리)."""
+        w = self.w
+        p = env.get("p")
+        pk = w.reg.pk(p) if isinstance(p, str) else None
+        if pk is None:
+            raise Fl21Error(f"신원: 미지 주체 {p}(체인 밖)")
+        if p in w.exited:
+            raise Fl21Error(f"퇴장 신원 {p}은 발화 불가")
+        body = {k: env.get(k) for k in ("typ", "args", "p", "epoch")}
+        try:
+            Ed25519PublicKey.from_public_bytes(pk).verify(bytes.fromhex(env["sig"]), w._sig_msg(body, env["nonce"]))
+        except Exception:
+            raise Fl21Error(f"서명 검증 실패: {p} {env.get('typ')}") from None
+        if env.get("nonce") != expected_nonce:
+            raise Fl21Error(f"nonce 위반: {p}(블록 내 순차 nonce {expected_nonce} 기대)")
+        if env.get("epoch") > w.epoch:
+            raise Fl21Error("에포크 위반: 미래 봉투")
+        if w.epoch - env.get("epoch") > w.GEN.get("window_L", 3):
+            raise Fl21Error("에포크 위반: 창 밖(stale)")
+
     def block(self, legs):
         """★원자 다자-거래(커널 BLOCK — all-or-nothing): 각 다리는 당사자-서명 봉투,
         제출은 운영자 좌석(제출자 ≠ 다리 서명자 — 커널 규칙). 보험료↔커버의 원자 교환 등."""
         if not isinstance(legs, list) or not (1 <= len(legs) <= 8):
             raise Fl21Error("legs는 1~8개")
+        _sim_nonce = {}              # ★[M-210] R3-F03-1 — 커널 _apply_block 은 다리마다 nonce 를 전진시킨다: 같은 주체의 둘째+ 다리는 (n, n+1, …)
         for lg in legs:              # ★색-추적 가능 다리만 + 다리별 정책([M-103]·RD-7)
             if not isinstance(lg, dict) or lg.get("typ") not in BLOCK_LEG_TYPES:
                 raise Fl21Error(f"BLOCK 다리 타입은 {BLOCK_LEG_TYPES} 한정")
@@ -1503,7 +1558,11 @@ class Node:
             # **이후** 검증하므로, 위조-서명 다리는 이 선검증이 없으면 operator BLOCK 을 _snap 까지
             # 밀어넣고 실패시켜 재생-DoS(+ operator 슬롯 오염)를 냈다. 커널과 동형(_verify_env) —
             # 위조/nonce/창 다리를 _snap 이전에 값싸게 거부하고, 통과 다리의 서명자를 인증한다.
-            self.w._verify_env(lg)
+            if _sim_nonce.get(lg.get("p")) is None:
+                self.w._verify_env(lg)
+            else:                    # ★[M-210] R3-F03-1 — 같은 주체의 후속 다리: 시뮬레이션된 nonce 로 커널-동형 검증(구판은 여기서 합법 블록을 "nonce 위반"으로 봉쇄)
+                self._verify_leg_at(lg, _sim_nonce[lg.get("p")])
+            _sim_nonce[lg.get("p")] = (lg.get("nonce") if isinstance(lg.get("nonce"), int) else 0) + 1
             # ★[M-208] R4-5(냉독 4) — 다리의 **의미-실패**를 값싼 O(1) 커널-동형 선체크로 거부: 노드 선검증을 통과하고
             #   커널 _apply 에서 실패하는 다리(예: 미소유 노트 XFER)는 operator 제출이라 REJECT·nonce 소비가 없어 무계 재생되며,
             #   매 재생이 _ksubmit 의 O(노트) 색-스냅숏을 전역 락 안에서 강제했다(재현 1.08→1.98ms @55k 노트). 소유권은 _own 동형.
@@ -1516,10 +1575,30 @@ class Node:
                     raise Fl21Error(f"BLOCK 다리 XFER 선거부: 수취인 무효({_la.get('to')})")
                 if not self.w._own(str(_la.get("note")), _lp):
                     raise Fl21Error(f"BLOCK 다리 XFER 선거부: {_lp} 의 미소유 노트")
-            elif _lt == "REDEEM" and not self.w._own(str(_la.get("note")), _lp):
-                raise Fl21Error(f"BLOCK 다리 REDEEM 선거부: {_lp} 의 미소유 노트")
-            elif _lt == "UW" and str(_la.get("ref")) not in self.w.redeem_pending:
-                raise Fl21Error("BLOCK 다리 UW 선거부: 미지 상환 청구(ref)")
+            elif _lt == "REDEEM":
+                if not self.w._own(str(_la.get("note")), _lp):
+                    raise Fl21Error(f"BLOCK 다리 REDEEM 선거부: {_lp} 의 미소유 노트")
+                if _la.get("holder") != _lp or not self.w._real(str(_la.get("anchor"))):   # ★[M-210] R3-F03-3 — 커널 REDEEM 조건 동형(행위자 = holder · 앵커 실재)
+                    raise Fl21Error("BLOCK 다리 REDEEM 선거부: holder ≠ 행위자 또는 앵커 무효")
+            elif _lt == "UW":
+                _rp = self.w.redeem_pending.get(str(_la.get("ref")))
+                if _rp is None:
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 미지 상환 청구(ref)")
+                # ★[M-210] R3-F03-2 — 커널 UW _apply 의 값싼 조건들을 미러(행위자 = 인수자 · 자기-당사자 금지 · 단일 인수 · 담보 공백/중복/미소유 · 보험료 정수)
+                if _la.get("uw") != _lp:
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 행위자 = 인수자 여야 한다")
+                if _lp in (_rp.get("holder"), _rp.get("anchor")):
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 자기-당사자 인수 금지(법 ⑤)")
+                if str(_la.get("ref")) in self.w.uw_open:
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 이미 인수된 청구")
+                _cov = _la.get("cov_notes")
+                if not isinstance(_cov, list) or not _cov or len(_cov) > _LIST_MAX or len(set(map(str, _cov))) != len(_cov):
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 담보 노트 공백/중복")
+                if any(not self.w._own(str(n), _lp) for n in _cov):
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 미소유 담보 노트")
+                _pr = _la.get("prem")
+                if not isinstance(_pr, int) or isinstance(_pr, bool) or _pr < 0:
+                    raise Fl21Error("BLOCK 다리 UW 선거부: 보험료 비정수/음수")
             # ⚠️[M-198] 다리-주체 실패-슬롯 계수는 **두지 않는다**(냉독 라운드8 자체-재현으로
             # grief 확인): BLOCK 은 한 다리라도 실패하면 전체가 롤백되므로, 공격자가
             # [피해자 유효-다리 + 자기 실패-다리] 블록을 반복하면 피해자의 (p,nonce) 슬롯이
@@ -1610,10 +1689,16 @@ class Node:
         key = len(self.w.log)
         if self._audit_cache and self._audit_cache[0] == key:
             return self._audit_cache[1]
+        # ★[M-210] R3-F08-3 — 익명 GET 이 쓰기마다 O(원장) 재계산을 강제하던 자리: 재계산은 60초에 1회(전역) · 그 사이엔 마지막 결과를
+        #   stale 표기와 함께 서빙(원장은 60초 틱이라 지연 ≤ 1틱 · 「없는 것을 있는 것처럼」 만들지 않는다 — as_of 를 적는다)
+        _now = time.monotonic()
+        if self._audit_cache and key > 2000 and _now - getattr(self, "_audit_ts", 0) < 60:
+            c = dict(self._audit_cache[1]); c["stale"] = True; c["as_of_entries"] = self._audit_cache[0]; c["entries_now"] = key
+            return c
         a = self.w.audit()
         ok = a["ok"] and set(self.colors) == set(self.w.notes)   # ★색 전체성
         out = {"ok": ok, "entries": a.get("entries")}
-        self._audit_cache = (key, out)
+        self._audit_cache = (key, out); self._audit_ts = _now
         return out
 
     # ── ★호가 창(R2-a — [M-116] 발견층 · [시장-미시구조 §6]) ──
@@ -1691,6 +1776,15 @@ class Node:
             raise Fl21Error("relay: fetch 본문 아님")
         me = body["p"]
         now = self.w.epoch
+        # ★[M-210] R3-F09-2 — fetch 자격도 신선-서명: epoch(±RELAY_FRESH) 필수 + 창-내 중복 지문 거부(정적 bearer 재생 = 영구 배수 차단)
+        be = body.get("epoch")
+        if not (isinstance(be, int) and not isinstance(be, bool) and abs(now - be) <= self.RELAY_FRESH):
+            raise Fl21Error(f"relay: fetch 본문에 epoch 신선도(±{self.RELAY_FRESH}) 필수")
+        fp_f = hashlib.sha256(sig.encode()).hexdigest()
+        self.relay_fetch_seen = {h: e for h, e in getattr(self, "relay_fetch_seen", {}).items() if e > now - self.RELAY_FRESH * 2}
+        if fp_f in self.relay_fetch_seen:
+            raise Fl21Error("relay: fetch 재생(같은 서명 재사용 차단)")
+        self.relay_fetch_seen[fp_f] = now
         box = [m for m in self.relay.get(me, []) if m["expires"] > now]
         self.relay[me] = []
         return {"msgs": box, "epoch": now}
@@ -1794,6 +1888,7 @@ class Node:
     #   재게시 = 교체(번복은 새 의견이지 삭제가 아니다) ⓓ이행-후에만·매수자(holder)만.
     def _accept_gc(self):
         now = self.w.epoch
+        self.accept_hwm = {k: hw for k, hw in getattr(self, "accept_hwm", {}).items() if hw[1] > now}   # ★[M-210] 워터마크 GC
         dead = [i for i, r in self.accepts.items()
                 if r["rec"]["expires"] <= now]
         for i in dead:
@@ -1803,7 +1898,7 @@ class Node:
     def _accept_save(self):
         tmp = self.accept_p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(self.accepts, fh, ensure_ascii=False)
+            json.dump({"records": self.accepts, "hwm": self.accept_hwm}, fh, ensure_ascii=False)   # ★[M-210] 워터마크 동봉
         os.replace(tmp, self.accept_p)   # 자문층 — 원자 교체면 충분
 
     def accept_list(self):
@@ -1811,6 +1906,8 @@ class Node:
             self._accept_save()
         return {"epoch": self.w.epoch,
                 "records": sorted(self.accepts.values(), key=lambda r: r["id"]),
+                "hwm": sorted(({"ref": hw[2], "p": hw[3], "v": hw[0]} for hw in self.accept_hwm.values() if len(hw) >= 4),
+                              key=lambda h: (h["ref"], h["p"])),                  # ★[M-210] (ref,p) 고수위 v — 만료된 레코드의 워터마크(게시자는 이 위로 서명)
                 "note": ("수락-채널 v0 = record-only(요율-비연동 · 정산 무접촉) · "
                          "양측 파생 집계 = underwriter.py acceptance · "
                          "(ref,p)당 1건-교체")}
@@ -1845,6 +1942,9 @@ class Node:
         rid = hashlib.sha256(f"acpt|{ref}|{body['p']}".encode()
                              ).hexdigest()[:16]    # (ref, p) 교체-주소
         old = self.accepts.get(rid)
+        hw = self.accept_hwm.get(rid)                     # ★[M-210] R3-F09-1 — (ref,p) 최고 v 워터마크는 최신 레코드가 GC-만료된 뒤에도 산다
+        if old is None and hw is not None and v <= hw[0] and hw[1] > now:
+            raise Fl21Error(f"accept: 만료된 최신 판정보다 낮거나 같은 v={v}(워터마크 v={hw[0]}) — 옛 판정 부활 금지 · v>{hw[0]} 로 다시 서명")
         if old is not None:
             # ★[M-209] R2-F09 F-A — 판정 재생-되돌리기 봉쇄: 공개 GET /accept 에서 캡처한 옛 매수자-서명 레코드를
             #   제3자가 재게시하면 (ref,p) last-write-wins 로 최신 판정(rework)이 옛 판정(accept)으로 되돌아갔다.
@@ -1862,6 +1962,8 @@ class Node:
             if mine >= ACCEPT_PER_P:
                 raise Fl21Error(f"accept: 주체당 활성 {ACCEPT_PER_P}건")
         self.accepts[rid] = {"id": rid, "rec": body, "sig": sig}
+        _hw = self.accept_hwm.get(rid)
+        self.accept_hwm[rid] = [max(v, _hw[0] if _hw else 0), max(ex + ACCEPT_TTL_MAX, _hw[1] if _hw else 0), body["ref"], body["p"]]   # 최장 만료 + TTL 여유 · (ref,p) 동봉(GET 공개용)
         self._accept_save()
         return {"id": rid, "expires": ex}
 
@@ -2087,6 +2189,10 @@ class Handler(BaseHTTPRequestHandler):
                 p = self.path
                 if p == "/meta":
                     return self._send(200, nd.meta())
+                m = re.match(r"^/pk/([a-z0-9_-]+)$", p)   # ★[M-210] R3-F06-2 — 현행 공개키 조회(SDK rekey .next 재조정용 · 공개 정보)
+                if m:
+                    _pk = nd.w.reg.pk(m.group(1))
+                    return self._send(200, {"p": m.group(1), "pk": _pk.hex() if _pk else None})
                 if p == "/scope":                     # ★[M-209] R2-F12-8 — 문서가 가리키는 조회처(= /stats.scopes)
                     return self._send(200, {"scopes": nd.scopes})
                 if p == "/state":
@@ -2109,7 +2215,7 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     return self._send(200, {"nonce": nd.w.nonces.get(m.group(1), 0),
                                             "epoch": nd.w.epoch})
-                m = re.match(r"^/notes/([@a-z0-9_:-]+)(?:\?since=(\d+))?$", p)
+                m = re.match(r"^/notes/([@a-z0-9_:-]+)(?:\?since=(\d{1,18}))?$", p)
                 if m:
                     who = m.group(1)
                     since_n = int(m.group(2) or 0)
@@ -2123,11 +2229,11 @@ class Handler(BaseHTTPRequestHandler):
                         {"nid": str(a), "face": nd.w.notes[str(a)]["face"],
                          "color": nd.colors.get(str(a))}    # ★[M-103] 발행자(색)
                         for a in ids], **({"truncated": True, "next_since": ids[-1] + 1} if more else {})})
-                m = re.match(r"^/log\?since=(\d+)$", p)
+                m = re.match(r"^/log\?since=(\d{1,18})$", p)
                 if m:
                     s = int(m.group(1))
                     return self._send(200, {"entries": nd.w.log[s:s + 500]})
-                m = re.match(r"^/cosigs\?since=(\d+)$", p)
+                m = re.match(r"^/cosigs\?since=(\d{1,18})$", p)
                 if m:
                     s = int(m.group(1))
                     # ★N-3 — 병합-맵을 seq-정렬 서빙(행-단위 파일 절단의 페이지-경계
@@ -2139,9 +2245,9 @@ class Handler(BaseHTTPRequestHandler):
                 m = re.match(r"^/jobs\?anchor=([a-z0-9_-]+)$", p)
                 if m:
                     a = m.group(1)
-                    js = {r: j for r, j in nd.jobs.items()
-                          if j["anchor"] == a and j["state"] == "open"
-                          and not j.get("delivered")}
+                    if getattr(nd, "_open_by_anchor", None) is None or getattr(nd, "_open_idx_len", -1) != len(nd.jobs):
+                        nd._sync_jobs()                                   # 새 잡이 생겼으면 재구성(잡 생성 = 노트 소각 = 가격 있음)
+                    js = dict(nd._open_by_anchor.get(a, {}))            # ★[M-210] O(해당 앵커 열린 잡) — 전수 스캔(O(J)·전역 락) 제거
                     return self._send(200, {"jobs": js, "epoch": nd.w.epoch})
                 if p.startswith("/job/"):
                     ref = p[5:]
@@ -2156,6 +2262,8 @@ class Handler(BaseHTTPRequestHandler):
                     if ref in nd.ocommits:            # ★[M-164] 재추첨 공개 계수
                         cov["ocommits"] = nd.ocommits[ref]
                     return self._send(200, {"ref": ref, **j, **cov})
+            if p.split("?")[0] in ("/log", "/cosigs") or p.startswith("/notes/"):   # ★[M-210] R3-F12-9 — 필수 since= 누락은 404 가 아니라 400+code
+                return self._send(400, {"error": "since=<정수> 필수", "code": "bad_query"})
             return self._send(404, {"error": "미지 경로"})
         except Exception as e:                   # 경계 격리(A-4) — 노드 생존
             return self._send(400, {"error": f"{type(e).__name__}: {e}"[:200]})

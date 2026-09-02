@@ -26,6 +26,8 @@ announced ledger.
 from sdk import Fl21Client
 c = Fl21Client(NODE_URL, "verifier", "verifier.key")
 print(c.verify_chain())    # recompute head chain + operator signature + 2-of-3 co-signatures
+# ★[M-210] pinned by default: if the node claims this bundle's RELEASE log_id, genesis_head is compared against
+#   RELEASE_EN.md automatically (result carries the pin). Another deployment → pass expect_genesis_head=... yourself.
 ```
 
 `ok: true` = the confirmed prefix is intact (tampering, omission, and gaps are detected).
@@ -105,8 +107,15 @@ pure-stdlib and self-tested · on-chain submission is the operator's).
   entry (p = operator), **that entry still verifies under the old key; entries after it under the new key**. Participant
   envelopes follow the same rule (registered by JOIN/GENESIS_IMPORT, replaced by REKEY). `sdk.verify_chain`, `replay_full.py`
   and `kernel23.replay_verify` all implement it.
+- ★[M-210] **Weak keys**: a JOIN / REKEY / GENESIS_IMPORT that registers a low-order Ed25519 point (identity or the
+  other torsion points — under which pyca accepts a universal signature) is rejected by the node, and `sdk.verify_chain`
+  and `replay_full.py` fail closed if one ever appears in a served log (`kernel23.replay_verify` does not check this — it
+  is the node/verifier layer's rule).
 - **GENESIS_IMPORT** (first entry): the succession snapshot (`principals · notes · F · F_uw · exited`) — its `snapshot_hash` is bound
   in the args and conservation holds as `ext_in = Σface + F + F_uw`. A note's `issuer` seeds its color (the kernel does not interpret it).
+  ★Recipe (J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` with `sort_keys=True`,
+  `separators=(",", ":")`, `ensure_ascii=False` — the FL2.3 value `acf1f24e…` re-derives from the FL2.2 archive's final state
+  (anchor0 40,000 · F 0 · F_uw 0 · exited []).
 - **Archives**: the FL2.2 ledger (`archive/fl22/`) re-verifies with `fin_lean/lang22/kernel22.py`, FL2.1 with kernel21 — the
   generation is chosen by the `/meta.domain` prefix (`FL22-` / `FL23-`).
 
@@ -119,6 +128,7 @@ settlement waterfall, head binding, and operator signature (re-deriving fp0/log_
 a genesis-integrity check):
 
 ```bash
-python3 r1/replay_full.py --url https://NODE_URL
+python3 r1/replay_full.py --url https://NODE_URL          # ★[M-210] pins genesis_head from RELEASE when the node claims its log_id
+#   (output "genesis_pin": "release" | "flag" | null) · other deployments: --genesis-head <value>
 # expect: {"H7_FULL_REPLAY": true, "identity_rederived": true, ...}
 ```

@@ -48,17 +48,17 @@ def _get(url, path):
 def _sample_union(entries, ref, want, k_eff):
     """★[M-209] R2-F04-2 — 커밋-표본 합집합의 공개 재유도: 그 ref 의 모든 fl21.ocommit head 에 대해 PRF(head‖ref‖ctr) 인덱스를 합친다."""
     import hashlib
+    want = max(1, min(int(want), 100)); k_eff = max(1, min(int(k_eff), 16))   # ★[M-210] R3-F05-H1 — 노드-제어 n·k 무계 연산(행) 차단(스키마 상한과 동형)
     idxs = set()
     for e in entries:
         env = e.get("env") or {}
         a = env.get("args") or {}
         if env.get("typ") == "TICKMARK" and a.get("kind") == "fl21.ocommit" and a.get("ref") == ref and e.get("kind") != "REJECT":
-            seed = bytes.fromhex(e["head"]) + ref.encode(); picked, ctr = [], 0
-            while len(picked) < min(k_eff, want):
+            seed = bytes.fromhex(e["head"]) + ref.encode(); picked, ctr = set(), 0
+            while len(picked) < min(k_eff, want) and ctr < 4096:
                 v = int.from_bytes(hashlib.sha256(seed + ctr.to_bytes(4, "big")).digest(), "big") % want
                 ctr += 1
-                if v not in picked:
-                    picked.append(v)
+                picked.add(v)
             idxs.update(picked)
     return sorted(idxs)
 
@@ -121,6 +121,16 @@ def _main_inner():
         print(json.dumps({"H7_FULL_REPLAY": False, "why": "원장 0항 — 검증 대상 없음(라이브 원장이면 노드가 로그를 감춘 것)"},
                          ensure_ascii=False))
         return 1
+    # ★[M-210] R3-F07-1/F12-1 — 기본 핀: 번들 RELEASE 의 log_id 를 주장하는 노드면 RELEASE 의 genesis_head 를 자동 대조(핀 없는 검증 = 동일-정체성·다른-창세 임포스터 통과)
+    pin_src = "flag" if a.genesis_head else None
+    if not a.genesis_head:
+        try:
+            from sdk import release_pins as _rp
+            _pins = _rp()
+            if _pins.get("log_id") and str(meta.get("log_id")) == _pins["log_id"] and _pins.get("genesis_head"):
+                a.genesis_head = _pins["genesis_head"]; pin_src = "release"
+        except Exception:
+            pass
     # ★[M-209] R2-F07-1 — 창세 내용 고정: 대역-외 genesis_head 대조 · /meta.genesis_head 정합
     if a.genesis_head and str(entries[0].get("head")) != str(a.genesis_head):
         print(json.dumps({"H7_FULL_REPLAY": False, "why": f"genesis_head 불일치: 원장 {str(entries[0].get('head'))[:12]}… ≠ 기대 {a.genesis_head[:12]}…"}, ensure_ascii=False))
@@ -132,8 +142,12 @@ def _main_inner():
     from sdk import ed25519_weak_pk
     for e in entries:
         env = e.get("env") or {}
+        pks = []
         if e.get("kind") != "REJECT" and env.get("typ") in ("JOIN", "REKEY"):
-            pk = (env.get("args") or {}).get("pk" if env["typ"] == "JOIN" else "new_pk")
+            pks = [(env.get("args") or {}).get("pk" if env["typ"] == "JOIN" else "new_pk")]
+        elif e.get("kind") != "REJECT" and env.get("typ") == "GENESIS_IMPORT":          # ★[M-210] 수입 주체 pk 도
+            pks = [(x or {}).get("pk") for x in ((env.get("args") or {}).get("principals") or []) if isinstance(x, dict)]
+        for pk in pks:
             try:
                 weak = ed25519_weak_pk(bytes.fromhex(str(pk)))
             except ValueError:
@@ -156,6 +170,7 @@ def _main_inner():
     # ★[M-209] R2-F04-2 — 커밋-표본 합집합 공개 재유도(ref 별 · 표본-클래스 잡의 검사 인덱스 = 이 값이어야 한다)
     samples = {}
     try:
+      if r["ok"]:                                                     # ★[M-210] 리플레이 실패 뒤엔 표본 블록을 돌리지 않는다(연산-행 차단)
         for e in entries:
             env = e.get("env") or {}; a_ = env.get("args") or {}
             if env.get("typ") == "TICKMARK" and a_.get("kind") == "fl21.ocommit" and e.get("kind") != "REJECT":
@@ -163,13 +178,18 @@ def _main_inner():
         for ref in list(samples)[:64]:
             j = _get(url, f"/job/{ref}").get("job") or {}
             spec = j.get("job") or j
-            if isinstance(spec, dict) and spec.get("kind") == "sha256_chain_sampled" and isinstance(spec.get("n"), int):
-                want = -(-spec["n"] // 100_000)
+            if isinstance(spec, dict) and spec.get("kind") == "sha256_chain_sampled" and isinstance(spec.get("n"), int) \
+                    and 1 <= spec["n"] <= 5_000_000 and 1 <= int(spec.get("k", 2)) <= 16:                  # ★[M-210] 노드-제어 n·k 스키마 상한 밖 = 무시
+                import jobs as _JOBS                                   # ★[M-210] R3-F04-1 — 체크포인트 간격은 jobs.CKPT(50,000) 하나의 정본(구판 100,000 오기)
+                want = -(-spec["n"] // _JOBS.CKPT)
                 samples[ref] = _sample_union(entries, ref, want, int(spec.get("k", 2)))
+                chk = ((j.get("verify") or {}).get("checked")) if isinstance(j, dict) else None
+                if j.get("delivered") and isinstance(chk, list) and sorted(chk) != samples[ref]:
+                    mism.append({"ref": ref, "checked": sorted(chk), "sample_union": samples[ref]})   # ★공개 재유도 ≠ 노드 검사 = 실패
     except Exception as ex:
         samples = {"error": str(ex)[:80]}
     out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id and not mism),
-           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "balance_mismatch": mism,
+           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "genesis_pin": pin_src, "balance_mismatch": mism,
            "sample_union": samples, **r}
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if out["H7_FULL_REPLAY"] else 1

@@ -967,7 +967,10 @@ class _RoClient:
             self.url + path,
             headers={"User-Agent": "vlue-underwriter-ro/0.1"})
         with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read())
+            raw = r.read(32 * 1024 * 1024 + 1)                    # ★[M-210] R3-F11 — 클라이언트 응답 상한(전 진입점 동형)
+            if len(raw) > 32 * 1024 * 1024:
+                raise RuntimeError("응답 크기 상한 초과")
+            return json.loads(raw)
 
     def stats(self):
         return self._get("/stats")

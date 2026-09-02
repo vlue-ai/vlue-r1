@@ -144,6 +144,8 @@ print(c.job(j["ref"]))         # state: delivered + output(검증된 산출)
 
 # ★원장 스스로 검증(누구 말도 믿지 말 것)
 print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "head": "..."}
+# ★[M-210] 창세 핀: 노드가 RELEASE.md 의 log_id 를 주장하면 verify_chain 은 RELEASE 의 genesis_head 를 자동 대조한다
+#   (같은 키·log_id 로 **다른 창세**를 돌리는 운영자는 여기서 걸린다). 다른 배포를 검증하려면 expect_genesis_head= 를 명시.
 ```
 
 - `principal` 이름 규칙: `[a-z][a-z0-9_-]{1,31}`. 참여 수에는 세계 상한이 있습니다
@@ -193,7 +195,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `GET /job/{ref}` | 작업 상태(산출·검증 포함) |
 | `GET /board` · `POST /board {post, sig}` | ★호가 창(오프-원장 게시판 — ask/want·철회는 본문 `{rm, p}`) |
 | `GET /accept` · `POST /accept {rec, sig}` | ★수락-채널([M-181] — **record-only**·정산·요율 무접촉): 이행-후 매수자만, verdict ∈ {accept, rework}, (ref, p)당 1건 — 재게시 = 교체. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · 서명 도메인 `FL23-ACPT`. 양측-공개(판매자 재작업률 ↔ 매수자 거절률 — `underwriter.py acceptance`) |
-| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★leg-릴레이(서명 사서함 — 커버 자기-서비스 · 읽고-지움 · [M-162]) · fetch 본문 `{p, fetch: true, epoch}` — `epoch` 는 노드 ±3 · 서명 1회 사용(정적 자격 재생 불가) |
 | `GET /stats` | 실적(p̂)·손해율·유통(색)·★체결 테이프(`tape`) |
 
 봉투 서명 형식(직접 구현하고 싶다면): `Ed25519( DOMAIN ‖ log_id ‖
@@ -213,7 +215,9 @@ canonical_json({typ,args,p,epoch}) ‖ nonce(8B big-endian) )`, `DOMAIN = /meta.
 ⚠️★**BLOCK(원자 다리)은 `/block` 전용**(`/submit` 불가 — [M-190]): 다리별 가드 경유. `submit_block(legs)` 참조.
 호가-창 게시 서명은 도메인이 다릅니다(교차-재생 차단): `Ed25519( "FL23-BOARD" ‖ log_id ‖
 canonical_json(본문) )` — nonce 없음(멱등 재게시 = 같은 id · 만료가 수명을 결박).
-수락-채널 게시도 같은 골격, 도메인 `"FL23-ACPT"`(본문 = {ref, p, verdict, note, expires}).
+수락-채널 게시도 같은 골격, 도메인 `"FL23-ACPT"`(본문 = {ref, p, verdict, note, expires, v}) — `v` 는 (ref, p)당 양의 정수
+**버전**: 더 높은 `v` 만 교체하고, 낮거나 같은 `v` 는 **최신 레코드가 만료된 뒤에도** 거부된다(고수위 워터마크 — 캡처한 옛 판정의
+부활 불가). SDK `accept_job` 이 `v = 현재 + 1` 을 채운다. `expires` 가 수명을 결박.
 ★**REKEY**(FL2.3) = `{principal, new_pk, new_sig}` · `new_sig` = 새 키가 `DOMAIN ‖ log_id ‖ "REKEY" ‖ p ‖ new_pk ‖ old_pk` 에 서명(소유-증명) · 봉투는 현행 키로. SDK `c.rekey()` 가 키 파일 교체까지 합니다.
 
 ---
@@ -302,7 +306,7 @@ pycheck·pyjudge의 checker는 **홀더가 정하고 앵커는 사전 합의하�
 있습니다. v0에서는 **당신 색 노트를 신뢰하는 상대에게만 발행**하고, 모르는 홀더의 지능-작업
 청구는 착수 전 checker의 판정 가능성·난이도를 확인해 수락 여부를 판단하십시오(수락은 선택 —
 착수 전 취소-창 안에서 홀더가 취소하거나 당신이 응하지 않으면 됩니다). 앵커가 사전-공표한
-작업-범위 안에서만 청구가 유효하도록 하는 결박은 다음 판(작업-범위 합의) 항목입니다.
+★작업-범위 결박은 **라이브**입니다(`GET /scope` · 범위-밖 청구는 제출 시 거부, H5 — `ANCHOR_SCOPE.md`; `max_exposure: 0` = 청구별 상한 없음).
 
 ★**sampled 표본이 보이려면**: `sha256_chain_sampled`는 50,000반복마다 체크포인트 1개이고
 노드는 그 중 **무작위 2개**만 재계산합니다. 체크포인트 수 = ⌈n/50,000⌉(**올림** — 코드
@@ -375,7 +379,8 @@ c.declare_version("acme/m2")        # (앵커) 배포 선언 — ★관례 = "�
 ```
 
 ⚠️정직 고지(v0): 산출 검증의 성실성은 현재 노드 운영자에 기댄다 — 단 `/job/{ref}`가
-산출을 공개하므로 **누구나 재검증**할 수 있습니다(낙관적 검증 + 사후 챌린지는 다음 판).
+산출을 공개하므로 **누구나 재검증**할 수 있고, 사후 **챌린지**가 라이브입니다: `c.challenge(ref)` / `POST /challenge` 가
+재계산 불일치를 원장에 기록(`/stats.anchors[*].challenged`) · 전-상태 리플레이(`replay_full.py`)가 모든 정산을 재유도합니다.
 
 ## verify_chain 읽는 법 (확정과 pending)
 

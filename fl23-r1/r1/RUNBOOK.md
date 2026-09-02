@@ -78,6 +78,12 @@ python3 r1/worker.py --url http://127.0.0.1:8788 --key DIR/anchor0.key
   `operator.key` 원자 기록) — 절차·한계 = `deploy/KEY_ROTATION.md §6′`. 재기동 시 `operator.key` 가 있으면 그 키로 서명한다
   (`node_secret` 은 창세 시드 — 불변). 검증자는 `/meta.operator_pk0` 에서 시작해 로그의 REKEY 로 키를 따라온다.
 - ⚙️**400 본문**: `{error(한국어 법 문언), code(영문 안정 코드), reject_seq?}` — `reject_seq` 는 원장의 REJECT 항(인증-거부 기록).
+- ⚙️★**운영자 키 회전 절차(공개판 · [M-210])** — 사설 `KEY_ROTATION.md` 없이도 재현 가능한 전문: ① 노드 프로세스 안에서
+  `Node.rekey_operator()` 호출(전역 락) → ② 새 키를 `operator.key.next` 로 **먼저** fsync → ③ REKEY 봉투(구-키 서명 · `new_sig` = 새 키의
+  소유-증명) 제출 → ④ 서명 키 교체 → ⑤ `operator.key.next` → `operator.key` 원자 교체. 크래시 매트릭스(재기동 `_reconcile_operator_key`):
+  ②~③ 사이 = `.next` 폐기·구 키 유지 / ③~⑤ 사이 = 원장 REKEY 와 대조해 `.next` 승격 / `.next` 손상 + 미커밋 = 폐기 / `.next` 손상 + 커밋됨
+  = **명시적 기동 거부**(무음 브릭 없음 — 백업 키에서 복구). 검증자는 `/meta.operator_pk0` 에서 시작해 REKEY 로 키를 따라오므로 회전은
+  외부 공지 없이 검증된다. 참여자 SDK `c.rekey()` 도 같은 `.next` 선기록 순서(`/pk/<p>` 로 재조정).
 
 ## 비밀·키 (D-1 — 전부 data_dir · 0600 · 첫 기동 시 자동 생성)
 

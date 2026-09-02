@@ -912,6 +912,25 @@ def gate_TSAMPLED(port=8797):
         out["★누적: 확정 좌표 재-위조는 재추첨으로 못 빠져나간다"] = f"구간 {a_idx}" in str(ex) or "불일치" in str(ex)
     r3 = wk.deliver_job(j3["ref"], good3)
     out["★누적: 정직 산출은 합집합 검사 통과"] = "checked" in r3["verify"] and len(r3["verify"]["checked"]) >= len(union)
+    # ★[M-210] R3-F04-1 — 공개 재유도(replay_full sample_union)는 노드 checked 와 같아야 하고 도구가 스스로 대조해 닫는다
+    import subprocess as _sp, sys as _sys
+    _rp = _sp.run([_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_full.py"),
+                   "--url", f"http://127.0.0.1:{port}"], capture_output=True, text=True, timeout=120)
+    try:
+        _d = json.loads(_rp.stdout[_rp.stdout.index("{"):])
+    except Exception:
+        _d = {}
+    _su = _d.get("sample_union") or {}
+    out["★replay_full H7 true(표본 대조 포함)"] = _d.get("H7_FULL_REPLAY") is True and _d.get("balance_mismatch") == []
+    out["★sample_union = 노드 checked"] = (sorted(r3["verify"]["checked"]) == _su.get(j3["ref"])
+                                        and sorted(r2["verify"]["checked"]) == _su.get(j2["ref"]))
+    # ★[M-210] R3-F05-H1 — 공개 재유도 _sample_union 은 노드-제어 n·k 에 유계(want≤100·k≤16 · 집합) — 악의 /job 이 검증자를 세우지 못한다
+    import replay_full as _RF2
+    import time as _tm2
+    _ents = [{"env": {"typ": "TICKMARK", "args": {"kind": "fl21.ocommit", "ref": "rr"}}, "head": "ab" * 32, "kind": "OK"} for _ in range(3)]
+    _t0 = _tm2.time()
+    _su = _RF2._sample_union(_ents, "rr", 10 ** 9, 10 ** 7)
+    out["★sample_union 유계(<1s · ≤16)"] = (_tm2.time() - _t0) < 1.0 and len(_su) <= 16
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2454,6 +2473,36 @@ def gate_TACCEPT(port=8857):
             out["★v 없는 레코드 거부"] = False
         except Exception:
             out["★v 없는 레코드 거부"] = True
+    # ★[M-210] R3-F09-1 — 만료-경계 재생: 최신 판정(v 높음·짧은 ttl)이 GC-만료된 뒤 캡처한 옛 판정(v 낮음)을 재생 → 워터마크가 거부
+    j2r = j2["ref"]
+    old2 = next(r for r in by._get("/accept")["records"] if r["rec"]["ref"] == j2r)
+    by.accept_job(j2r, "accept", "final", ttl=1)          # v 전진 · 만료 = epoch+1
+    for _ in range(3):
+        nd.tick()
+    try:
+        ot._post("/accept", {"rec": old2["rec"], "sig": old2["sig"]})
+        out["★만료 뒤 옛 판정 부활 거부"] = False
+    except Exception as ex:
+        out["★만료 뒤 옛 판정 부활 거부"] = "워터마크" in str(ex) or "부활" in str(ex)
+    out["★만료 뒤 더 높은 v 는 통과"] = bool(by.accept_job(j2r, "rework", "again")["id"])
+    # ★[M-210] R3-F09-2 — 릴레이 fetch 는 신선-서명(epoch ±3 · 서명 1회): 같은 서명 재사용 → 거부 · epoch 없는 본문 → 거부
+    from sdk import canon as _cn2
+    fb = {"p": "acby", "fetch": True, "epoch": by._get("/state")["epoch"]}
+    fs = by.key.sign(by._d["relay"] + by.log_id + _cn2(fb)).hex()
+    out["fetch 1회 통과"] = isinstance(by._post("/relay/fetch", {"msg": fb, "sig": fs}), dict)
+    try:
+        by._post("/relay/fetch", {"msg": fb, "sig": fs})
+        out["★fetch 서명 재생 거부"] = False
+    except Exception as ex:
+        out["★fetch 서명 재생 거부"] = "재생" in str(ex)
+    fb0 = {"p": "acby", "fetch": True}
+    fs0 = by.key.sign(by._d["relay"] + by.log_id + _cn2(fb0)).hex()
+    try:
+        by._post("/relay/fetch", {"msg": fb0, "sig": fs0})
+        out["★epoch 없는 fetch 거부"] = False
+    except Exception as ex:
+        out["★epoch 없는 fetch 거부"] = "epoch" in str(ex)
+    out["SDK fetch_legs 정상"] = isinstance(by.fetch_legs(), (list, dict))
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2697,6 +2746,30 @@ def gate_TBLOCKGUARD(port=8833):
         except RuntimeError as ex:                       # 노드-층 거부(선거부 또는 _guard_env 색-일치) — 커널 도달 전
             out[f"★선거부 {key}"] = any(t in str(ex) for t in ("선거부", "색-일치", "미소유", "발행자"))
     out["★선거부 3종 = 원장 무성장"] = len(nd.w.log) == n1
+    # ★[M-210] R3-F03-1 — 같은 주체의 두 다리(커널 합법 · nonce n, n+1)는 /block 으로 성립해야 한다(구판 노드 선검증이 봉쇄하던 회귀)
+    n15 = max(aa.notes(), key=lambda x: x["face"])
+    aa.split(n15["nid"], [2, 3, n15["face"] - 5])
+    a2 = [n["nid"] for n in aa.notes() if n["face"] == 2][0]
+    a3 = [n["nid"] for n in aa.notes() if n["face"] == 3][0]
+    nn = aa._get("/nonce/aa")["nonce"]
+    l1 = aa.sign_env("XFER", {"frm": "aa", "to": "bb", "note": a2}, nonce=nn)
+    l2 = aa.sign_env("XFER", {"frm": "aa", "to": "bb", "note": a3}, nonce=nn + 1)
+    r2l = aa.submit_block([l1, l2])
+    out["★같은 주체 2다리 /block 성립"] = bool(r2l.get("seq")) and {a2, a3} <= {n["nid"] for n in bb.notes_of("aa")}
+    out["★2다리 뒤 nonce = +2"] = aa._get("/nonce/aa")["nonce"] == nn + 2
+    # ★[M-210] R3-F03-2/3 — UW·REDEEM 다리의 커널-조건 미러: 담보 공백 UW · holder≠행위자 REDEEM 은 선거부(원장 무성장 = 무기록 재생 없음)
+    holder._post("/submit", {"env": holder.sign_env("REDEEM", {"holder": "holder", "note": nid, "anchor": "bb"})})
+    ref_h = next(iter(nd.w.redeem_pending))
+    n2 = len(nd.w.log)
+    for lg, key in ((subm.make_leg("UW", {"uw": "subm", "ref": ref_h, "cov_notes": [], "prem": 0}), "UW 담보 공백"),
+                    (subm.make_leg("UW", {"uw": "bb", "ref": ref_h, "cov_notes": [a2], "prem": 0}), "UW 행위자≠인수자"),
+                    (aa.make_leg("REDEEM", {"holder": "bb", "note": [n["nid"] for n in aa.notes()][0], "anchor": "bb"}), "REDEEM holder≠행위자")):
+        try:
+            (subm if key.startswith("UW") else aa).submit_block([lg])
+            out[f"★선거부 {key}"] = False
+        except RuntimeError as ex:
+            out[f"★선거부 {key}"] = "선거부" in str(ex) or "색-일치" in str(ex)
+    out["★UW/REDEEM 미러 선거부 = 원장 무성장"] = len(nd.w.log) == n2
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2891,6 +2964,9 @@ def gate_TENTRYFORM(port=8838):
 
         def do_GET(self):
             pth = self.path
+            if MODE["m"] == "big400":                          # ★[M-210] R3-F11-1 — 4xx + 거대 본문(오류-경로 OOM 레버)
+                big = b"A" * (40 * 1024 * 1024); self.send_response(400)
+                self.send_header("Content-Length", str(len(big))); self.end_headers(); self.wfile.write(big); return
             if pth == "/meta":
                 body = meta
             elif pth.startswith("/state"):
@@ -2959,6 +3035,14 @@ def gate_TENTRYFORM(port=8838):
             out["★cosigner 비-단조 페이지 = 중단"] = False
         except RuntimeError as ex:
             out["★cosigner 비-단조 페이지 = 중단"] = "비-단조" in str(ex) or "비정형" in str(ex)
+        MODE["m"] = "big400"
+        import time as _tm, resource as _rs
+        _t0 = _tm.monotonic(); _m0 = _rs.getrusage(_rs.RUSAGE_SELF).ru_maxrss
+        try:
+            v._req("GET", "/anything")
+            out["★SDK 오류-경로 거대 본문 = 상한 뒤 RuntimeError"] = False
+        except RuntimeError as ex:
+            out["★SDK 오류-경로 거대 본문 = 상한 뒤 RuntimeError"] = "HTTP 400" in str(ex) and _tm.monotonic() - _t0 < 25
         MODE["m"] = "honest"
         cs2 = _CS.Cosigner(murl, "cosign9", kp, state_path=os.path.join(data, "cs9.state"))
         n_signed = cs2.run_once()                              # 정직 서빙 = 전량 서명(이력 기록)
@@ -3156,6 +3240,18 @@ def gate_TREPLAYCAP(port=8842):
     r2 = atk.split(mine2["nid"], [1, mine2["face"] - 1])
     out["★REJECT 예산: 예산 소진 뒤에도 정직 op 통과"] = isinstance(r2, dict) and "seq" in r2
     out["원장 무오염(예산 뒤)"] = nd.audit()["ok"] is True
+    # ★[M-210] R3-F10-1(CRITICAL) — /stats 는 REJECT 행을 수용된 연산으로 세지 않는다: 거부된 DELIVER·UW(유령 인수자)는 계기에 0 영향
+    st0 = nd.stats()
+    rj0 = sum(1 for e in nd.w.log if e.get("kind") == "REJECT")
+    for _ in range(3):
+        post(victim.sign_env("DELIVER", {"anchor": "vv", "ref": "0000000000000000"}))
+    post(victim.sign_env("UW", {"uw": "ghost_uw", "ref": "0000000000000000", "cov_notes": [vn], "prem": 999999}))
+    rj1 = sum(1 for e in nd.w.log if e.get("kind") == "REJECT")
+    st1 = nd.stats()
+    out["★거부 행이 실제로 기록됨(시험 유효)"] = rj1 > rj0
+    out["★REJECT DELIVER = anchors 무영향"] = sum(seg.get("delivered", 0) for seg in st1["anchors"].get("vv", {}).get("segments", {}).values()) == \
+        sum(seg.get("delivered", 0) for seg in st0["anchors"].get("vv", {}).get("segments", {}).values())
+    out["★REJECT UW = 유령 인수자 없음"] = "ghost_uw" not in st1.get("underwriters", {})
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3539,6 +3635,16 @@ def gate_TIMPORT23(port=8846):
     out["★/meta.genesis_head = seq0 head"] = _m.get("genesis_head") == nd.w.log[0]["head"]
     out["★/meta.snapshot_hash 노출"] = isinstance(_m.get("snapshot_hash"), str) and len(_m["snapshot_hash"]) == 64
     out["★/scope 조회"] = isinstance(c._get("/scope").get("scopes"), dict)
+    # ★[M-210] R3-F05-M2/F06-1 — 수입 주체 pk 가 저-위수(항등점)면 수입 거부(JOIN/REKEY 와 같은 약한-키 규칙)
+    import tempfile as _tf2
+    _wk = {"principals": [{"p": "mallory", "pk": "01" + "00" * 31}], "notes": [], "F": 0, "F_uw": 0, "exited": []}
+    _fp = os.path.join(_tf2.mkdtemp(), "weak_snap.json")
+    json.dump(_wk, open(_fp, "w"))
+    try:
+        nd._genesis_import(_fp)
+        out["★수입 약한 키 거부"] = False
+    except Exception as ex:
+        out["★수입 약한 키 거부"] = "약한 키" in str(ex)
     srv.shutdown(); srv.server_close()
     nd2, srv2, _ = _serve(port + 50, data=data, genesis_import=ip)   # 재기동 = 리플레이(수입은 재실행되지 않는다)
     out["★재기동 리플레이 동일"] = nd2.w.log[-1]["head"] == head and nd2.audit()["ok"] is True and nd2.colors.get(imp[0]) == "z1"

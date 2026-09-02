@@ -107,7 +107,10 @@ def encode_response(request_hash: bytes, response: int, response_uri: str,
 
 def _get(url, path):
     with urllib.request.urlopen(url.rstrip("/") + path, timeout=30) as r:
-        return json.loads(r.read())
+        raw = r.read(32 * 1024 * 1024 + 1)                        # ★[M-210] 응답 상한(전 진입점 동형)
+        if len(raw) > 32 * 1024 * 1024:
+            raise RuntimeError("응답 크기 상한 초과")
+        return json.loads(raw)
 
 
 def _party_guard(job, meta, self_demo):

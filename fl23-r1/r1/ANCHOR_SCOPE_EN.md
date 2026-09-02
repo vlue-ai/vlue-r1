@@ -44,6 +44,7 @@ announced as segments via `declare_version`.
 
 - **Out-of-scope claims are rejected at submission** — anchor0 declares its scope
   on-ledger (`/scope`, H5), so non-consented claims cannot even be filed; anything beyond
+  (`/scope.max_exposure: 0` means **no per-claim cap** — not "zero exposure accepted"; `max_T` is the deadline ceiling.)
   the declared scope settles as a deadline accident and should be read as out-of-scope in
   record interpretation.
 - Judgment (#4) is best-effort in v0 — **misjudgment risk is an underwriting matter, not

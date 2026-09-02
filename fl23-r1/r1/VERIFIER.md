@@ -22,6 +22,8 @@
 from sdk import Fl21Client
 c = Fl21Client(NODE_URL, "verifier", "verifier.key")
 print(c.verify_chain())    # head 사슬 재계산 + 운영자 서명 + 공동-서명 2-of-3
+# ★[M-210] 기본 핀: 노드가 이 번들 RELEASE 의 log_id 를 주장하면 genesis_head 를 RELEASE.md 와 자동 대조한다.
+#   다른 배포를 검증하려면 expect_genesis_head=... 를 직접 넘긴다.
 ```
 
 `ok:true` = 확정 prefix의 무결(변조·누락·구멍 검출). `pending` = 아직 공동-서명이 도착
@@ -90,8 +92,13 @@ ERC-8004 지목-검증자 뒤에 앉혀 이행-정산 → 100 · 시한-사고 �
 - **키-일정**: 운영자 head_sig 검증의 시작점은 `/meta.operator_pk0`(창세 키 · 불변). `REKEY` 항(p = operator)을 만나면 **그 항까지는
   구-키, 다음 항부터 신-키**. 참여자 봉투도 같다(JOIN·GENESIS_IMPORT 로 등록 → REKEY 로 교체). `sdk.verify_chain`·`replay_full.py`·
   `kernel23.replay_verify` 전부 이 규칙.
+- ★[M-210] **약한 키**: 저-위수 Ed25519 점(항등점 등 — pyca 가 만능서명을 받아들이는 토션 점)을 등록하는 JOIN·REKEY·GENESIS_IMPORT 는
+  노드가 거부하고, 서빙된 로그에 하나라도 나타나면 `sdk.verify_chain`·`replay_full.py` 는 fail-closed(`kernel23.replay_verify` 는 이 검사를
+  하지 않는다 — 노드/검증기 층의 규칙).
 - **GENESIS_IMPORT**(첫 엔트리): 승계 스냅샷(`principals·notes·F·F_uw·exited`) — `snapshot_hash` 가 args 에 결박되고 `ext_in =
   Σface + F + F_uw` 로 보존식이 선다. 노트의 `issuer` 는 색 시드(커널은 해석하지 않는다).
+  ★레시피(J-11): `snapshot_hash = sha256(canonical_json({principals, notes, F, F_uw, exited}))` — `sort_keys=True` ·
+  `separators=(",", ":")` · `ensure_ascii=False`. FL2.3 값 `acf1f24e…` 는 FL2.2 아카이브 최종 상태(anchor0 40,000 · F 0 · F_uw 0 · exited [])에서 재유도된다.
 - **아카이브**: FL2.2 원장(`archive/fl22/`)은 `fin_lean/lang22/kernel22.py` 로, FL2.1 은 kernel21 로 — 세대는 `/meta.domain`(또는
   아카이브 meta)의 접두(`FL22-`/`FL23-`)로 고른다.
 
@@ -103,6 +110,6 @@ ERC-8004 지목-검증자 뒤에 앉혀 이행-정산 → 100 · 시한-사고 �
 창세-무결 검사 겸):
 
 ```bash
-python3 r1/replay_full.py --url https://NODE_URL
-# 기대: {"H7_FULL_REPLAY": true, "identity_rederived": true, ...}
+python3 r1/replay_full.py --url https://NODE_URL          # ★[M-210] 노드가 RELEASE 의 log_id 를 주장하면 genesis_head 자동 핀
+# 기대: {"H7_FULL_REPLAY": true, "identity_rederived": true, "genesis_pin": "release", ...} · 다른 배포: --genesis-head <값>
 ```

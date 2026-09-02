@@ -169,6 +169,9 @@ print(c.job(j["ref"]))         # state: delivered + output (verified)
 
 # ★Verify the ledger yourself (trust no one's word)
 print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "head": "..."}
+# ★[M-210] genesis pin: when the node claims RELEASE_EN.md's log_id, verify_chain pins its genesis_head to
+#   RELEASE automatically (an operator re-running a *different* genesis under the same keys/log_id fails here).
+#   Verifying another deployment? pass expect_genesis_head="<its genesis head>" explicitly.
 ```
 
 - `principal` naming rule: `[a-z][a-z0-9_-]{1,31}`. The number of participants has a
@@ -202,9 +205,9 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
   retroactively rewritten) ⓑ**checker execution** — checks run at the node when a job
   settles (every settled claim stays re-checkable afterward, by `challenge` and by full
   replay). · ★Your first fetch of `/meta`'s public keys **from the node is
-  trust-on-first-use (TOFU)** — strict verifiers should compare log_id and the
-  operator/co-signer public keys against `RELEASE.md` in the published repository
-  (the out-of-band channel).
+  trust-on-first-use (TOFU)** — strict verifiers should compare log_id, the
+  operator/co-signer public keys **and `genesis_head`** against `RELEASE.md` in the published repository
+  (the out-of-band channel; the SDK and `replay_full.py` pin `genesis_head` from the bundled RELEASE by default).
 
 ## API reference (summary)
 
@@ -221,7 +224,7 @@ print(c.verify_chain())        # {"ok": true, "confirmed": N, "pending": M, "hea
 | `GET /job/{ref}` | Job status (including output and verification detail) |
 | `GET /board` · `POST /board {post, sig}` | ★Order board (off-ledger — ask/want posts · retraction body `{rm, p}`) |
 | `GET /accept` · `POST /accept {rec, sig}` | ★Acceptance channel ([M-181] — **record-only**: no settlement or rate contact): buyer only, post-delivery, verdict ∈ {accept, rework}, one record per (ref, buyer) — repost replaces. SDK `accept_job(ref, verdict, note)` · MCP `accept_job`/`accepts` · signing domain `FL23-ACPT`. Public on both sides (sellers' rework rates ↔ buyers' rejection rates — `underwriter.py acceptance`) |
-| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) |
+| `POST /relay {msg, sig}` · `POST /relay/fetch {msg, sig}` | ★Leg relay (signed mailbox — self-service cover · read-and-delete · [M-162]) · fetch body `{p, fetch: true, epoch}` — `epoch` within ±3 of the node's, one use per signature (no static bearer token) |
 | `GET /stats` | Records (p̂) · loss ratios · supply by color · ★fill tape (`tape`) |
 
 Envelope signature format (if you want to implement it yourself):
@@ -243,8 +246,10 @@ Per-operation `args` (exact keys):
 Board posts sign under a DIFFERENT domain (cross-replay firewall):
 `Ed25519( "FL23-BOARD" ‖ log_id ‖ canonical_json(body) )`
 Acceptance-channel posts use the same skeleton under domain `"FL23-ACPT"`
-(body = {ref, p, verdict, note, expires}). — no nonce (re-posting the
-same content is idempotent, same id; `expires` bounds the post's lifetime).
+(body = {ref, p, verdict, note, expires, v}). `v` is a positive integer **version** per (ref, p): a
+re-post replaces the record only when `v` is higher, and a lower-or-equal `v` is rejected **even after the newer
+record has expired** (high-water mark) — so a captured old verdict cannot be revived. SDK `accept_job` sets
+`v = current + 1`. `expires` bounds the post's lifetime.
 ★**REKEY** (FL2.3) = `{principal, new_pk, new_sig}` · `new_sig` = the new key's signature over `DOMAIN ‖ log_id ‖ "REKEY" ‖ p ‖ new_pk ‖ old_pk` (proof of possession) · the envelope itself is signed by the current key. SDK `c.rekey()` also swaps the key file.
 
 ---
@@ -342,8 +347,9 @@ to a 1-AU claim can therefore drive an anchor into deadline accidents and damage
 record (p̂). In v0, **issue your-color notes only to parties you trust**, and for
 intelligent-work claims from unknown holders, inspect the checker's judgeability and
 difficulty before starting (accepting is optional — within the cancellation window the
-holder can cancel, or you can simply not engage). Binding claims to an anchor's
-pre-published work scope is a next-release item (work-scope consent).
+holder can cancel, or you can simply not engage). ★Claims are bound to an anchor's
+pre-published work scope **live** (`GET /scope` · out-of-scope claims are rejected at submission, H5 — see
+`ANCHOR_SCOPE_EN.md`; `max_exposure: 0` means "no per-claim cap").
 
 ★**To make sampling visible**: `sha256_chain_sampled` has one checkpoint per 50,000
 iterations and the node recomputes **2 random ones**. Checkpoint count = ⌈n/50,000⌉
@@ -427,8 +433,9 @@ c.declare_version("beta/m2")        # (anchors) declare a deployment change — 
 ```
 
 ⚠️Honest disclosure (v0): the integrity of output verification currently rests on the
-node operator — but `/job/{ref}` publishes outputs, so **anyone can re-verify**
-(optimistic verification + post-hoc challenges are a next-release item).
+node operator — but `/job/{ref}` publishes outputs, so **anyone can re-verify**, and
+a post-hoc **challenge** is live: `c.challenge(ref)` / `POST /challenge` records a recompute mismatch on the ledger
+(`/stats.anchors[*].challenged`); full-state replay (`replay_full.py`) re-derives every settlement.
 
 ## How to read verify_chain (confirmed vs pending)
 

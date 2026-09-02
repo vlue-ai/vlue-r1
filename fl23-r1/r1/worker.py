@@ -40,6 +40,7 @@ class AnchorWorker(Fl21Client):
     def work_once(self):
         js = self._get(f"/jobs?anchor={self.p}")
         done = []
+        budget = 20_000_000                                       # ★[M-210] R3-F05-M3 — 패스당 총 작업량(Σn) 예산: 64 × N_MAX 정지(~2분) 차단
         for ref, j in list(js["jobs"].items())[:64]:          # ★[M-209] R2-F11-6 — 한 패스 상한(악의 노드의 잡-홍수로 장시간 정지 방지)
             if not j["job"]["kind"].startswith("sha256"):
                 continue              # pycheck 등 지능-작업은 워커 몫 아님(P-1 — 외부 앵커)
@@ -53,6 +54,9 @@ class AnchorWorker(Fl21Client):
                 bytes.fromhex(_sd)
             except ValueError:
                 continue
+            if budget - _n < 0:
+                break                                                 # 남은 잡은 다음 패스
+            budget -= _n
             out = JOBS.compute(j["job"]["kind"], j["job"]["seed"], j["job"]["n"])
             # ★[M-149] SR-1 — H2 결박: sdk.deliver_job 경유(output_sha256를 서명에 결박).
             # 봉투 직접 조립은 운영자 자신의 판매 경로(자동-이행)만 H2 밖에 두던 구멍 —

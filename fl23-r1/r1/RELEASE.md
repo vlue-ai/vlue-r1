@@ -32,7 +32,7 @@ AU = 프로토콜 회계 단위(법정통화·증권·투자상품·보험상품
 | operator_pk | `175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd` — ★FL2.3: 이 값 = `/meta.operator_pk0`(창세 키 = 검증 시작점 · 번들 매니페스트 서명 키) · REKEY 뒤엔 `/meta.operator_pk`(현행)가 달라진다(키-일정은 로그-파생) |
 | anchor0_pk (창세 좌석) | `cd0aff94664e9509763179eeeff6628138fb58adb2c556bebf73e2b93d649d3e` |
 | cosigner pks (2-of-3) | cosign1 `cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3`(노드 호스트) · cosign2 `3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214`(★분리 — GitHub Actions 서명자 · 30분 주기 = 확정 비동기·pending 정상) · cosign3 `bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad`(콜드 예비 — 비가동) |
-| bridge_ref (세대 계보) | `3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd` — **FL2.2 프로덕션 원장 최종 head**(FL2.2 log_id `e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e` · 전량 아카이브 = 공개 리포 `archive/fl22/` · kernel22 로 영원히 재검증) | ★정직([M-209]): 이 head(seq 10,899)는 운영자 + cosign1(노드 호스트) 서명만 있고 **마지막 2-of-3 확정 head 는 seq 10,762 `005a5035…`** — 꼬리 137항은 전부 운영자 TICK(잔고 무변)이라 승계 상태는 동일하다(`archive/fl22/README`).
+|  bridge_ref (세대 계보) | `3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd` — **FL2.2 프로덕션 원장 최종 head**(FL2.2 log_id `e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e` · 전량 아카이브 = 공개 리포 `archive/fl22/` · kernel22 로 영원히 재검증) · ★정직([M-209]): 이 head(seq 10,899)는 운영자 + cosign1(노드 호스트) 서명만 있고 **마지막 2-of-3 확정 head 는 seq 10,762 `005a5035…`** — 꼬리 137항은 전부 운영자 TICK(잔고 무변)이라 승계 상태는 동일하다(`archive/fl22/README`). |
 | ★genesis_head (seq 0 head) | `5a387eea3aecf6ed86f94f77dc32fb39cacabafeb97e15459c641c3f8a1ebb49` — GENESIS_IMPORT 항의 head(정체성 log_id·fp0 는 창세 **내용**을 약속하지 않으므로 이 값이 「어느 창세인가」를 고정한다 · 냉독 4 F07) |
 | ★snapshot_hash (창세 수입) | `acf1f24e71ba37daaf9d6ac9db0949063bf42f91cf3eab4b25f05876f3361844` — FL2.2 아카이브 최종 상태(anchor0 40,000 · F 0 · F_uw 0 · exited 0)를 J-11 형태로 정규화한 해시 · `archive/fl22` 리플레이로 재유도 가능 |
 | GEN | identity_budget 128 · redeem_T 4 · redeem_T_max 10080(잡별-T 상한 — 1주@60s) · fq_mult 1 · β_min 1/2 · uw_phi 1/2 · prem_floor 0 · unit_scale 1000(1 AU = 1,000단위) · ★**notes_per_owner_max 512**(FL2.3 J-6 — 소유자별 유통-노트 상한 · 자발 민트 한정) |
@@ -50,7 +50,7 @@ FL2.0 파일럿 → FL2.1 파일럿(`bridge_ref 2d0132…`) → **FL2.1 프로�
 |---|---|---|
 | J-5 증분 상태 | 커밋이 O(변경)(저널·버킷 root·소유자 색인) — write 비용이 노트 수에 무관(실측 200k/100 노트 = 0.93×) | 규모가 커져도 응답이 같다 · `state_root` 정의가 바뀌었다(세대) |
 | J-6 상태-상한 | 소유자별 유통-노트 ≤ 512(자발 민트) — 조각내기 팽창 차단 · 배상·잔돈 민트는 면제 | 상한이면 `note_cap`(MERGE 로 회수) |
-| J-7 인증-거부 기록 | 서명·nonce 유효한 봉투의 거부 = 원장 **REJECT 항**(상태 불변 · nonce 소비) | 같은 봉투 재생 불가 · 400 본문에 `code`·`reject_seq` · 검증자는 REJECT 재유도를 확인 | ★[M-208] **기록 예산**: 주체당 REJECT 기록 16건/60에포크 창 — 초과분은 세이브포인트로 되감겨 **무기록 400**(`code: reject_budget` · nonce 미소비 · 정직 op 는 통과).
+|  J-7 인증-거부 기록 | 서명·nonce 유효한 봉투의 거부 = 원장 **REJECT 항**(상태 불변 · nonce 소비) | 같은 봉투 재생 불가 · 400 본문에 `code`·`reject_seq` · 검증자는 REJECT 재유도를 확인 · ★[M-208] **기록 예산**: 주체당 REJECT 기록 16건/60에포크 창 — 초과분은 세이브포인트로 되감겨 **무기록 400**(`code: reject_budget` · nonce 미소비 · 정직 op 는 통과). |
 | J-4 REKEY | 참여자·운영자 키 선-회전(새 키 소유-증명) | 검증 시작점 = `/meta.operator_pk0` · 이후 키는 로그가 준다 |
 | J-8 스키마 | op 별 필수 필드·형태 상한이 법 | 형태 오류 = 무기록 거부 · 확장 필드(spec_sha256 등)는 여전히 불투명 |
 | J-3 생존-상한 | identity_budget 은 생존 인원(EXIT 가 슬롯 반환) · 이름 재사용 불가 | — |

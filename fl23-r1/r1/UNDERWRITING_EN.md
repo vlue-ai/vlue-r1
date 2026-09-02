@@ -48,7 +48,7 @@ collateral-escrow mechanism — not regulated insurance (`NOTICE_EN.md`).
 - ★**Track record = asset**: your history is ledger-derived at
   `/stats.underwriters` and portable via `/attest` · ★since [M-164] a **bound
   premium** rides along: premiums settled atomically (/block) are captured from the
-  live notes pre-commit and served as `prem_verified` / `loss_ratio_verified` — a
+  live notes pre-commit and served as `prem_verified` / `loss_ratio_verified` — ★a **bound face**, not "payment by an independent counterparty" (payer- and color-agnostic; a self-IOU qualifies — see §Honesty) — a
   forge-proof loss-ratio denominator, separate from self-declared prem (UW-1); the
   more you settle atomically, the stronger your résumé — a **forgery-proof underwriting
   résumé**. "History is the money" applies to underwriters too.
