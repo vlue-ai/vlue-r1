@@ -1,0 +1,48 @@
+{
+ "label": "fl22-r1",
+ "domain": "FL22-v0.1",
+ "log_id": "e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e",
+ "fp0": "40481c49bc08f962f8f87c12b17676105bf42e7377c595c22fd3ba64013ca517",
+ "operator_pk": "657d1b88beae764d8630e9c56346388232b2705423ed2bbfdc7b9a9324266747",
+ "genesis_pks": {
+  "anchor0": "d4546da400b77f467b168a802ca0f0def6d57be7154d6d58bded32e041c2bdb8"
+ },
+ "cosigners": {
+  "cosign1": "cd32021c7795fee38b70548b08478ff8f81ee652dc7eb6285148a104595d94c3",
+  "cosign2": "3707d38bddcc028280f3e0d2e815259539aa542ff94ae652c3cb2cdde14f4214",
+  "cosign3": "bc5d31505cff434f7c6132fa067edc1cd169f53e73f96ec3bda04712082a0bad"
+ },
+ "cosign_k": 2,
+ "gen": {
+  "identity_budget": 128,
+  "window_L": 3,
+  "qual_price": 40,
+  "room_c": 32,
+  "room_phi": 2,
+  "redeem_T": 4,
+  "beta_min_num": 1,
+  "beta_min_den": 2,
+  "uw_phi_num": 1,
+  "uw_phi_den": 2,
+  "prem_floor_num": 0,
+  "prem_floor_den": 1,
+  "fq_mult": 1,
+  "fq_base": 12,
+  "redeem_T_max": 10080
+ },
+ "genesis": [
+  "anchor0"
+ ],
+ "model": "free-banking-v0",
+ "join_issue": 20000,
+ "bootstrap_cap": 8000,
+ "unit_scale": 1000,
+ "bridge_ref": "42b4f7dab9be7175790247c9013c076e68a91ddf5632aa05637c7639f89fbdb5",
+ "job_kinds": [
+  "sha256_chain",
+  "sha256_chain_sampled",
+  "pycheck",
+  "pyjudge",
+  "ed25519_verify"
+ ]
+}

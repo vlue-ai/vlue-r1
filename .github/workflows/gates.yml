@@ -28,9 +28,9 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, hashlib, os, sys
-          m = json.load(open("fl22-r1/manifest.json"))
+          m = json.load(open("fl23-r1/manifest.json"))
           bad = [r for r, w in m["files"].items()
-                 if hashlib.sha256(open(os.path.join("fl22-r1", r), "rb").read()).hexdigest() != w]
+                 if hashlib.sha256(open(os.path.join("fl23-r1", r), "rb").read()).hexdigest() != w]
           print(f"files: {len(m['files'])} · mismatched: {len(bad)} {bad}")
           sys.exit(1 if bad else 0)
           PY
@@ -41,28 +41,34 @@ jobs:
           import hashlib, re
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
           pk_hex = re.search(r"operator_pk[^0-9a-f]*([0-9a-f]{64})",
-                             open("fl22-r1/r1/RELEASE_EN.md").read()).group(1)
+                             open("fl23-r1/r1/RELEASE_EN.md").read()).group(1)
           sig = bytes.fromhex(open("manifest.sig").read().strip())
-          raw = open("fl22-r1/manifest.json", "rb").read()
+          raw = open("fl23-r1/manifest.json", "rb").read()
           Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex)).verify(
-              sig, b"FL22-MANIFEST" + hashlib.sha256(raw).digest())
+              sig, b"FL23-MANIFEST" + hashlib.sha256(raw).digest())
           print("manifest.sig verified against operator_pk in RELEASE_EN.md")
           PY
 
-      - name: Kernel selftest (20 gates)
-        working-directory: fl22-r1/fin_lean/lang22
-        run: python3 kernel22_selftest.py | tee /tmp/k.json | tail -3
+      - name: Kernel selftest (FL2.3 — 20 inherited + 10 new, incl. the kernel22‖kernel23 differential storm)
+        working-directory: fl23-r1/fin_lean/lang23
+        run: python3 kernel23_selftest.py | tee /tmp/k.json | tail -3
 
       - name: Kernel selftest verdict
         run: |
-          grep -q '"K22_SELFTEST_PASS": true' /tmp/k.json
+          grep -q '"K23_SELFTEST_PASS": true' /tmp/k.json
 
-      - name: Golden vectors (cross-generation law inheritance)
-        working-directory: fl22-r1/fin_lean/lang22
-        run: python3 frontier_vectors.py | tail -3
+      - name: Archive verifier selftest (FL2.2 kernel, shipped alongside)
+        working-directory: fl23-r1/fin_lean/lang22
+        run: python3 kernel22_selftest.py | tail -2
 
-      - name: R1 gates (22 gates incl. T-ROOT storm, replay differential)
-        working-directory: fl22-r1/r1
+      - name: Golden vectors (FL2.3) + settlement multiset identical to FL2.2 (law-succession proof)
+        working-directory: fl23-r1/fin_lean/lang23
+        run: |
+          python3 frontier_vectors.py | tail -2
+          python3 golden_compare.py
+
+      - name: R1 gates (47 gates incl. T-ROOT storm, replay differential, REKEY/IMPORT/COMPOSE)
+        working-directory: fl23-r1/r1
         run: python3 test_r1.py | tee /tmp/r1.json | tail -3
 
       - name: R1 gates verdict

@@ -3,7 +3,7 @@
 *(Announcement-channel material. If this diverges from the Korean original
 [FOR_CRYPTO_READERS.md](FOR_CRYPTO_READERS.md), the Korean original is authoritative.
 Not a canonical bundle document — character & disclaimers:
-[NOTICE](https://github.com/vlue-ai/fl21-r1/blob/main/r1/NOTICE_EN.md).)*
+[NOTICE](https://github.com/vlue-ai/vlue-r1/blob/main/r1/NOTICE_EN.md).)*
 
 If you know blockchains, you already know half of this system — hash chains,
 signatures, public re-verification, deterministic replay. The other half is
@@ -13,9 +13,9 @@ signatures, public re-verification, deterministic replay. The other half is
 
 - **No token sale. No airdrop. No fiat ramp.** AU cannot be bought or sold; its only
   redemption is demanding computational fulfillment from its issuer.
-- Instead of a roadmap, a **falsification clock**: if three months after publication
-  both external use (including free) and any paid comparison point are zero, we record
-  publicly that the hypothesis died (K5′).
+- Instead of a roadmap, **measurement**: external use is published on the data page
+  (vlue.ai/data) as figures re-derived from the ledger — manufactured activity is
+  excluded by rule.
 - There is nothing to buy here. There is something to inspect — one verifiable ledger.
 
 ## The mapping table

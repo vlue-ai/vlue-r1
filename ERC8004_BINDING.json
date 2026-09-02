@@ -3,17 +3,19 @@
   "address": "0x4cb02cbd7fea59f81d09f04eac55fd1312106dc1",
   "agent_id": null,
   "bound_at": "2026-08-28",
-  "chain": "eip155:11155111 (Sepolia testnet — mainnet requires a separate, explicitly recorded decision)",
+  "chain": "eip155:11155111 (Sepolia testnet \u2014 mainnet requires a separate, explicitly recorded decision)",
   "identity_registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
   "ledger": {
-   "log_id": "e687a69eb91a5d307f26bbb91c7f639ee1003c122fbb60cfd2f29002aaeeb37e",
+   "log_id": "3128a815d8657e0624eb91b81a1dec621cc7674cc7e9e677159268f83e0a6faf",
    "node": "https://node.vlue.ai"
   },
-  "operator_pk": "657d1b88beae764d8630e9c56346388232b2705423ed2bbfdc7b9a9324266747",
+  "operator_pk": "175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd",
   "purpose": "Binds the ERC-8004 on-chain identity below to the VLUE r1 ledger operator. Any transaction from this address that is not an attestation of a settled entry on this ledger is unauthorized (one-way valve: outbound attestations only; chain state is never an input to this ledger).",
   "standard": "VLUE-ERC8004-BINDING v1",
-  "verify": "ed25519_verify(operator_pk from https://node.vlue.ai/meta, sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json_of_everything_except_sig))"
+  "verify": "ed25519_verify(operator_pk from https://node.vlue.ai/meta, sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json_of_everything_except_sig))",
+  "generation": "FL2.3 (genesis 2026-09-02 \u00b7 bridge_ref = FL2.2 final head 3274433e\u2026 \u00b7 FL2.2 log_id e687a69e\u2026 archived at archive/fl22/)",
+  "note_on_chain": "setAgentURI must be re-pointed by the operator wallet after this genesis (user action \u2014 recorded, not yet executed)"
  },
  "operator_sig": "1d3530d5342fc4f5bc29abdd9a4ffc58ea9bdbe368c099bbcb5c8871f54e61a2893bf94b64455fbfa467383b474960cc70630c4d0d1f8b1443418ffeb9051303",
- "note": "sig covers canonical(binding) — sorted keys, compact separators"
+ "note": "sig covers canonical(binding) \u2014 sorted keys, compact separators"
 }

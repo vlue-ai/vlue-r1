@@ -33,11 +33,11 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "fl22-r1", "fin_lean", "lang22"))
-sys.path.insert(0, os.path.join(HERE, "..", "fl22-r1", "r1"))
+sys.path.insert(0, os.path.join(HERE, "..", "fl23-r1", "fin_lean", "lang23"))
+sys.path.insert(0, os.path.join(HERE, "..", "fl23-r1", "r1"))
 
 import node as NODE                                                # noqa: E402
-from kernel22 import World                                         # noqa: E402
+from kernel23 import World                                         # noqa: E402
 from sdk import Fl21Client, spec_sha256, output_sha256             # noqa: E402
 
 AU = 1000
