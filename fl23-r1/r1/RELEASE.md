@@ -26,7 +26,7 @@ AU = 프로토콜 회계 단위(법정통화·증권·투자상품·보험상품
 
 | 항목 | 값 |
 |---|---|
-| 커널 | `fin_lean/lang23/kernel23.py` — **FL2.3 v0.1**(sha256 = manifest.json `kernel_sha256` · FL2.2 정산법 문언-동일 승계[골든 9 멀티셋 동일 = 기계-증명] + 델타 8) · 아카이브 검증자 `fin_lean/lang22/kernel22.py` 동봉(`kernel22_sha256`) |
+| 커널 | `fin_lean/lang23/kernel23.py` — **FL2.3 v0.2**(sha256 = manifest.json `kernel_sha256` · FL2.2 정산법 문언-동일 승계[골든 9 멀티셋 동일 = 기계-증명] + 델타 8 · ★v0.2 [M-217] = 성능 패치[`exited` 집합 색인]만 — 정산법·스키마·root 공식 **의미 불변**: 동봉 `kdiff_check.py` 가 v0.1 이 기록한 원장 두 개[커버리지 56항 · 프로덕션 1,106항]를 현행 커널로 전량 리플레이해 매 항 head·state_root **바이트 동일**을 재유도한다[T-KDIFF]) · 아카이브 검증자 `fin_lean/lang22/kernel22.py` 동봉(`kernel22_sha256`) |
 | log_id | `3128a815d8657e0624eb91b81a1dec621cc7674cc7e9e677159268f83e0a6faf` |
 | fp0 (창세 지문) | `994c73da8ceb854adbd40a602e0fa2253bd5c2c0057037e58fbaff9d1fa45cea` |
 | operator_pk | `175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd` — ★FL2.3: 이 값 = `/meta.operator_pk0`(창세 키 = 검증 시작점 · 번들 매니페스트 서명 키) · REKEY 뒤엔 `/meta.operator_pk`(현행)가 달라진다(키-일정은 로그-파생) |

@@ -89,6 +89,24 @@ def gate_TSIG():
     v = c.verify_chain()
     out["★위조 봉투 검출(운영자-위조 사용자 행위)"] = \
         v["ok"] is False and "봉투" in str(v.get("why"))
+    # ★[M-217] T-KDIFF — 커널 성능 패치(v0.2: exited 집합 색인)의 의미 불변 차등 리플레이: 이전 커널이 기록한
+    # 고정 원장(커버리지 픽스처 56항 + 프로덕션 스냅샷 1,106항)을 현재 커널의 공개 세계로 전량 리플레이 →
+    # 매 항 head·state_root 바이트 동일 · 전량 root == 증분 root · 맵 다이제스트 == sha256(canon) ·
+    # exited 색인 == 리스트 · 불변식. 어긋나면 패치는 「의미 변경」 = 반입 불가(FL2.4 재창세 후보로 격하).
+    import kdiff_check as _KD
+    _kd = [_KD.check(f) for f in _KD.fixture_paths()]      # 모노레포 results/ · 번들 동봉 두 배치 모두
+    out["★T-KDIFF 차등 리플레이 바이트 동일(픽스처+프로덕션)"] = all(r["pass"] for r in _kd)
+    out["T-KDIFF 맵 다이제스트 == canon"] = all(r.get("map_digest_eq_canon") is True for r in _kd)
+    out["T-KDIFF 전량 root == 증분 root"] = all(r.get("full_root_eq_incremental") is True for r in _kd)
+    out["T-KDIFF 프로덕션 항 ≥ 1000"] = any(r["entries"] >= 1000 for r in _kd)
+    # 색인은 파생·리스트가 정본: 프리미티브 밖 직접 append(길이 변화)는 길이 가드가 재구성한다 ·
+    # 롤백 뒤 색인 == 리스트 · 해싱은 리스트만 본다(색인은 root 에 관여 0 → 의미 불변의 구조적 근거)
+    wx = World(master_seed=11, label="kdiff", genesis_agents=("k1",))
+    wx.submit(wx.sign_env("k1", "TICKMARK", {}))
+    wx.exited.append("ghost")                         # 경로 밖 직접 기입(색인 미갱신)
+    out["T-KDIFF 색인 길이-가드 자기치유"] = wx._is_exited("ghost") is True and wx._exited_set == set(wx.exited)
+    wx.exited.pop(); wx._is_exited("k1")
+    out["T-KDIFF 색인 root 무관"] = wx._exited_set == set(wx.exited) and wx.state_root() == wx._root_full()
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out

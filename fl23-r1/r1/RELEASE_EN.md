@@ -31,7 +31,7 @@ URL**. After connecting, compare `/meta` against this table (rung 0).
 
 | Item | Value |
 |---|---|
-| Kernel | `fin_lean/lang23/kernel23.py` — **FL2.3 v0.1** (sha256 = manifest.json `kernel_sha256` · FL2.2 settlement law inherited verbatim [golden 9 multiset-identical = machine proof] + 8 deltas) · archive verifier `fin_lean/lang22/kernel22.py` shipped alongside (`kernel22_sha256`) |
+| Kernel | `fin_lean/lang23/kernel23.py` — **FL2.3 v0.2** (sha256 = manifest.json `kernel_sha256` · FL2.2 settlement law inherited verbatim [golden 9 multiset-identical = machine proof] + 8 deltas · ★v0.2 [M-217] = a performance patch only [`exited` set index] — settlement law, schema and root formula **semantically unchanged**: the shipped `kdiff_check.py` replays two ledgers recorded by v0.1 [coverage fixture 56 entries · production snapshot 1,106 entries] through the current kernel and re-derives every head and state_root **byte-identically** [T-KDIFF]) · archive verifier `fin_lean/lang22/kernel22.py` shipped alongside (`kernel22_sha256`) |
 | log_id | `3128a815d8657e0624eb91b81a1dec621cc7674cc7e9e677159268f83e0a6faf` |
 | fp0 (genesis fingerprint) | `994c73da8ceb854adbd40a602e0fa2253bd5c2c0057037e58fbaff9d1fa45cea` |
 | operator_pk | `175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd` — ★FL2.3: this value = `/meta.operator_pk0` (the genesis key = your verification starting point and the bundle's manifest-signing key); after a REKEY, `/meta.operator_pk` (current) differs and the key schedule is derived from the log |

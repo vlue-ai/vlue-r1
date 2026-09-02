@@ -245,6 +245,7 @@ class World:
         self.redeem_pending = {}
         self.uw_open = {}
         self.exited = []
+        self._exited_set = set()      # ★v0.2 — exited 멤버십 O(1) 색인(리스트가 해싱·순서 정본 · 색인은 파생)
         self.F = 0
         self.F_uw = 0
         self.F_peak = 0
@@ -340,12 +341,22 @@ class World:
         self._jpush(("lappend", name))
         getattr(self, name).append(v)
         self._mdig[name] = None
+        if name == "exited":
+            self._exited_set.add(v)
 
     def _lpop0(self, name):
         v = getattr(self, name).pop(0)
         self._jpush(("lpop0", name, v))
         self._mdig[name] = None
+        if name == "exited":
+            self._exited_set = set(self.exited)
         return v
+
+    def _is_exited(self, p):
+        """★v0.2 — exited 멤버십 O(1)(집합 색인) · 길이가 어긋나면 리스트에서 재구성(정본 = 리스트)."""
+        if len(self._exited_set) != len(self.exited):
+            self._exited_set = set(self.exited)
+        return p in self._exited_set
 
     def _sset(self, name, v):
         self._jpush(("scalar", name, getattr(self, name)))
@@ -381,9 +392,13 @@ class World:
             elif kind == "lappend":
                 getattr(self, rec[1]).pop()
                 self._mdig[rec[1]] = None
+                if rec[1] == "exited":
+                    self._exited_set = set(self.exited)
             elif kind == "lpop0":
                 getattr(self, rec[1]).insert(0, rec[2])
                 self._mdig[rec[1]] = None
+                if rec[1] == "exited":
+                    self._exited_set = set(self.exited)
             elif kind == "scalar":
                 setattr(self, rec[1], rec[2])
             elif kind == "reg":
@@ -426,7 +441,7 @@ class World:
         return n is not None and n["owner"] == a
 
     def _real(self, a):
-        return self.reg.pk(a) is not None and a not in self.exited
+        return self.reg.pk(a) is not None and not self._is_exited(a)
 
     def _consume(self, ids, a, exact):
         if len(set(ids)) != len(ids):
@@ -813,7 +828,7 @@ class World:
         pk = self.reg.pk(p)
         if pk is None:
             raise Fl23Error(f"신원: 미지 주체 {p}(체인 밖)")
-        if p in self.exited and env["typ"] not in ("REQUEST", "TICK", "FORCE"):
+        if self._is_exited(p) and env["typ"] not in ("REQUEST", "TICK", "FORCE"):
             raise Fl23Error(f"퇴장 신원 {p}은 발화 불가")
         try:
             Ed25519PublicKey.from_public_bytes(pk).verify(
@@ -989,7 +1004,7 @@ class World:
                 raise Fl23Error(f"EXIT: 잔여 노트 {self.bal(a)}")
             if any(rp["holder"] == a for rp in self.redeem_pending.values()):
                 raise Fl23Error("EXIT: 미결 상환(holder) — 회수 불가 방지")
-            if a in self.exited:
+            if self._is_exited(a):
                 raise Fl23Error("EXIT: 이미 퇴장")
             self._lappend("exited", a)
         elif typ == "EXT_IN":
@@ -1084,7 +1099,7 @@ class World:
                 raise Fl23Error("CLOSE: 미지 방")
             if self.room_owner.get(rid) != owner or p != owner:
                 raise Fl23Error("CLOSE: 소유권 불일치")
-            if self.reg.pk(perf) is None or perf in self.exited:
+            if self.reg.pk(perf) is None or self._is_exited(perf):
                 raise Fl23Error("CLOSE: 수임자 무효")
             for nid in self.locked_rooms[rid]:
                 self._note_owner(nid, perf)

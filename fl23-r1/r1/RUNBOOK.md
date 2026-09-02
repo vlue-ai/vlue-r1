@@ -152,3 +152,14 @@ pycheck는 협조적-이행자 한정) · ✅D-9 패키징(`package.py` — 번�
 | ⑩ | cosigner | `--state <새 경로>`(옛 `.heads/.fork` 보관) · ops 워크플로 state 경로 |
 | ⑪ | 검증 | `verify_chain()` → `genesis_pin: release · release_identity: match` · `replay_full --url` → `genesis_pin: release` · 아카이브 `archive_verify` 재유도 |
 | ⑫ | 결정 원장 | DECISIONS/NOW/docs 갱신 · 게이트 48 전량 · 배터리 · dry |
+
+### ★커널 성능 패치 규율 (세대 내 · [M-217] · 「해시 동결」→「의미 동결 + 차등 리플레이 게이트」)
+
+세대 전환(위 12 지점)은 **의미 변경**에만 필요하다. 정산법·스키마·REJECT 규칙·`state_root` 공식을 건드리지 않는 **성능 패치**는 세대 안에서 반입할 수 있되,
+「의미 불변」을 기계로 증명해야 한다 — 증명 3종이 전부 녹색이어야 반입: ① `kernel23_selftest.py` 30 ② `golden_compare.py` 골든 9 멀티셋 동일 ③ **T-KDIFF**
+`kdiff_check.py` = 이전 커널이 기록한 원장 두 개(커버리지 픽스처 `results/kdiff_fixture_v01.json` — `kdiff_fixture.py` 가 생성 · 프로덕션 스냅샷
+`results/kdiff_live_fl23_<날짜>.json` — 라이브 `/log` 전량 + `/meta` GET)를 현행 커널로 전량 리플레이해 **매 항 head·state_root 바이트 동일**(게이트 T-SIG 안에 편입).
+절차: 패치 → 3종 → 직접 라운드(롤백·`from_public`·캐시 무효화 경로) → 게이트 48·배터리·dry → **프로덕션 스냅샷 픽스처를 롤 직전 상태로 갱신**(패치 전 커널의 기록) →
+`package.py`(픽스처 results/ 밖 동봉) → 롤 → `publish.sh`(manifest `kernel_sha256` 재서명) → 라이브 `replay_full --url` 의 head 가 롤 전과 같은지 확인 → RELEASE
+커널 행에 판(v0.n)·근거 표기. 실측 규칙: 캐시 계열 패치는 **저널 프리미티브 밖 직접 기입 경로**(예: REJECT 의 nonce 소비)를 전부 grep 하고 셀프테스트 `audit` 로 잡는다
+— v0.2 개발 중 조각 캐시가 이 경로에서 낡아 root 를 틀리게 했고(셀프테스트가 차단), 실측이 더 느려 폐기됐다. **의미 변경(root 공식·다이제스트 구조·정산 상수)은 이 절에 해당하지 않는다 → 위 12 지점(FL2.4).**

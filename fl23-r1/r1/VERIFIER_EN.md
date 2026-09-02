@@ -125,6 +125,14 @@ pure-stdlib and self-tested · on-chain submission is the operator's).
   color engine (the archive README ships the color file) · owners holding > 512 notes MERGE before retirement (imported mints obey J-6).
 - **Archives**: the FL2.2 ledger (`archive/fl22/`) replays in full with `fin_lean/lang22/kernel22.py`; FL2.1 (`archive/fl21/`) re-verifies down to the head chain and signatures only (kernel21 has no seed-free replay API — last 2-of-3 confirmed seq 3,164 · 60-entry TICK tail) — the
   generation is chosen by the `/meta.domain` prefix (`FL22-` / `FL23-`).
+- ★[M-217] **Kernel performance-patch discipline (within a generation · from v0.2)**: the generation rule is not "kernel hash frozen"
+  but **"kernel semantics frozen + a differential-replay gate"**. If the kernel hash changed inside a generation, the patch must not have
+  touched the settlement law, the schema, the REJECT rules or the `state_root` formula — and the verifier re-derives that proof directly:
+  `python3 fin_lean/lang23/kdiff_check.py` replays the two shipped fixtures (`kdiff_fixture_v01.json` = a coverage ledger recorded by the
+  previous kernel · `kdiff_live_fl23_<date>.json` = a production snapshot recorded by the previous kernel) through the current kernel's
+  public world and checks **every head and state_root byte-identical · full root == incremental root · map digests == sha256(canon) ·
+  invariants** (`T_KDIFF_PASS: true`). If anything differs, that file is not an FL2.3 kernel (a semantic change = a new FL2.4 genesis).
+  Live comparison stays `replay_full.py --url` — ledger heads before and after a performance patch must be identical.
 
 ## ★Full public state replay (H7 — since FL2.2 · the top trust rung)
 
