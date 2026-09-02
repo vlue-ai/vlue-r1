@@ -34,7 +34,7 @@ except ImportError:                     # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
 srv = _Server(
-    name="fl21-r1",
+    name="fl23-r1",
     instructions=(
         "FL2.1-R1: a settlement ledger with verification built in. Unit (AU) = one "
         "verified machine-fulfillment. ★All amount fields (face, price, prem, k) are "

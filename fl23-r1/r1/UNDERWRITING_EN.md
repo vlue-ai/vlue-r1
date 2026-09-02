@@ -381,7 +381,7 @@ propagate backwards** — translate with this table when reading them.
 
 | Tier | Meaning | If wrong | Members |
 |---|---|---|---|
-| **L Law** | Fixed in the kernel genesis — **everyone sees the same value** | The system is still **honest** (same rules for all); merely inefficient | `beta_min` 1/2 · `redeem_T` 4 · `uw_phi` 1/2 · `identity_budget` 16 · `window_L` 3 · `qual_price` 40 · `unit_scale` 1000 · 60s epoch · per-job T cap 10080 |
+| **L Law** | Fixed in the kernel genesis — **everyone sees the same value** | The system is still **honest** (same rules for all); merely inefficient | `beta_min` 1/2 · `redeem_T` 4 · `uw_phi` 1/2 · `identity_budget` 128 · `window_L` 3 · `qual_price` 40 · `unit_scale` 1000 · 60s epoch · per-job T cap 10080 |
 | **P Policy** | Set and published by the dial's owner | The loss falls on **whoever set it** (they stake their own capital) | `max_exposure` · `min_rate_bp` · `per_anchor` · `family_herf_max` · `max_concurrent` · `loading_pct` · `family_cap` · `trust_lambda` · `prov_lambda` · `carry_bp` |
 | **E Estimated** | ★**A factual claim about the world** | ★**Someone else gets hurt** — and **nobody can tell** that it is wrong | **λ · κ · d · τ · g/P · ρ_Φ · δ · w\*** |
 
@@ -461,7 +461,7 @@ this section is its summary).
   An underwriter who posts **its own IOUs** as collateral pays compensation in its own promise, and the burned IOUs are re-issuable within the revolving limit —
   a "second-loss position" is **not enforced by law**. Buyers should inspect the collateral color before closing a cover (`/notes/@uw:<ref>` now returns the escrow's color · [M-208]);
   the value of collateral is the trust exchange-rate of its color (A-2).
-- **Premiums have a color too.** A premium paid in the claim anchor's own color is worth 0 if that anchor absconds — `auto_fill` can reject that color via the policy `prem_reject_anchor_color` (off by default — the dominant issuer's color is the ordinary premium path; `prem_colors` allow-list optional)
+- **Premiums have a color too.** A premium paid in the claim anchor's own color is worth 0 if that anchor absconds — `auto_fill` can reject **both the claim anchor's color and the payer's (buyer's) own color** via the policy `prem_reject_anchor_color` (off by default — the dominant issuer's color is the ordinary premium path; [M-209] R2-F10-B; `prem_colors` allow-list optional)
   and prices with the same ctx (δ·carry) as `scan` ([M-208] R4-22·23).
 - **Settlement change is re-issued in the owner's own color** (collateral remainder · seized change — the A-2 rule). An underwriter who posted foreign-color assets bears the cost of that
   change turning into its own liability — documented, but rate v2 does not price it (registered · color-preserving change is a generation item).

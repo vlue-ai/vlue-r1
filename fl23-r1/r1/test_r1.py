@@ -1520,6 +1520,18 @@ def gate_TBOARD(port=8811, port2=8812):
     out["체결 테이프"] = any(f["face"] == 1 and f["anchor"] == "anchor0"
                              for f in tp.get("sha256_chain", []))
     # 재기동 존속(자문층 파일) — 같은 데이터로 다른 포트
+    # ★[M-209] R2-F09-B — 철회된 게시의 재생-부활 금지(묘비): 소유자 철회 뒤 캡처한 같은 게시 재게시 → 거부
+    _pb = {"side": "ask", "kind": "sha256_chain", "title": "tomb test", "detail": "", "price": 2, "p": "seller",
+           "expires": c._get("/state")["epoch"] + 100}
+    _sg = c.key.sign(c._d["board"] + c.log_id + canon(_pb)).hex()
+    _r1 = c._post("/board", {"post": _pb, "sig": _sg})
+    c.retract_post(_r1["id"])
+    try:
+        c._post("/board", {"post": _pb, "sig": _sg})
+        out["★철회 게시 재생 = 거부"] = False
+    except Exception as ex:
+        out["★철회 게시 재생 = 거부"] = "철회" in str(ex)
+    out["★철회 게시 부활 없음"] = _r1["id"] not in {r["id"] for r in c.board()["asks"]}
     srv.shutdown()
     nd2, srv2, _ = _serve(port2, data=data)
     c2 = Fl21Client(f"http://127.0.0.1:{port2}", "seller",
@@ -2417,6 +2429,31 @@ def gate_TACCEPT(port=8857):
     except Exception:
         out["만료 검증"] = True
     out["audit"] = by._get("/audit")["ok"]
+    # ★[M-209] R2-F09-A — 판정 재생-되돌리기: 캡처한 옛 레코드를 새 판정 뒤 재게시 → 거부 · 현재 판정 유지 · v 없는 레코드 거부
+    recs = [r for r in by._get("/accept")["records"] if r["rec"]["p"] == "acby"]
+    if recs:
+        old = recs[0]
+        ref_o = old["rec"]["ref"]
+        cur_v = old["rec"].get("v", 0)
+        out["★accept v 존재"] = cur_v >= 1
+        nv = "rework" if old["rec"]["verdict"] == "accept" else "accept"
+        by.accept_job(ref_o, nv, "changed")
+        now_rec = next(r for r in by._get("/accept")["records"] if r["rec"]["p"] == "acby" and r["rec"]["ref"] == ref_o)
+        out["★accept 교체 = v 전진"] = now_rec["rec"]["v"] == cur_v + 1 and now_rec["rec"]["verdict"] == nv
+        try:
+            ot._post("/accept", {"rec": old["rec"], "sig": old["sig"]})     # 제3자가 캡처한 옛 서명 재생
+            out["★옛 판정 재생 거부"] = False
+        except Exception as ex:
+            out["★옛 판정 재생 거부"] = "되돌리기" in str(ex) or "버전" in str(ex)
+        again = next(r for r in by._get("/accept")["records"] if r["rec"]["p"] == "acby" and r["rec"]["ref"] == ref_o)
+        out["★재생 뒤 최신 판정 유지"] = again["rec"]["verdict"] == nv
+        nov = {k: v for k, v in old["rec"].items() if k != "v"}
+        sg = by.key.sign(by._d["accept"] + by.log_id + canon(nov)).hex()
+        try:
+            by._post("/accept", {"rec": nov, "sig": sg})
+            out["★v 없는 레코드 거부"] = False
+        except Exception:
+            out["★v 없는 레코드 거부"] = True
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -2648,6 +2685,18 @@ def gate_TBLOCKGUARD(port=8833):
         except RuntimeError as ex:
             out["★미소유 다리 선거부"] = "선거부" in str(ex) or "미소유" in str(ex)
     out["★미소유 다리 재생 = 원장 무성장"] = len(nd.w.log) == n0
+    # ★[M-209] R2-F03-1 — 다리 선체크 커널-동형 확장: REDEEM 미소유 · XFER 수취인 무효 · frm≠p 전부 선거부(원장 무성장)
+    n1 = len(nd.w.log)
+    vn2 = victim.notes()[0]["nid"]
+    for lg, key in ((aa.make_leg("REDEEM", {"holder": "aa", "note": vn2, "anchor": "bb"}), "REDEEM 미소유"),
+                    (aa.make_leg("XFER", {"frm": "aa", "to": "nobody_zz", "note": xnid}), "XFER 수취인 무효"),
+                    (aa.make_leg("XFER", {"frm": "bb", "to": "aa", "note": xnid}), "XFER frm≠p")):
+        try:
+            aa.submit_block([lg])
+            out[f"★선거부 {key}"] = False
+        except RuntimeError as ex:                       # 노드-층 거부(선거부 또는 _guard_env 색-일치) — 커널 도달 전
+            out[f"★선거부 {key}"] = any(t in str(ex) for t in ("선거부", "색-일치", "미소유", "발행자"))
+    out["★선거부 3종 = 원장 무성장"] = len(nd.w.log) == n1
     srv.shutdown()
     out["pass"] = all(v is True for v in out.values())
     return out
@@ -3100,6 +3149,7 @@ def gate_TREPLAYCAP(port=8842):
     n_before = len(nd.w.log)
     nonce_b = atk._get(f"/nonce/atk")["nonce"]
     c17, m17 = post(atk.sign_env("SPLIT", {"owner": "atk", "note": vn, "parts": [1, 1]}))
+    out["★REJECT 예산: 400 code = reject_budget"] = '"code": "reject_budget"' in str(m17)   # ★[M-209] R2-F01-1
     out["★REJECT 예산: 17번째 거부 = 무기록 400"] = (c17 == 400 and "예산" in str(m17) and len(nd.w.log) == n_before
                                                  and atk._get("/nonce/atk")["nonce"] == nonce_b)
     mine2 = max(atk.notes(), key=lambda x: x["face"])          # face ≥ 2 인 노트(앞 교정-op 가 face-1 노트를 만들었다)
@@ -3408,6 +3458,22 @@ def gate_TREKEY23(port=8845):
     n2 = max(c2.notes(), key=lambda x: x["face"])          # face ≥ 2 인 노트로 SPLIT
     out["회전 후 사용자 op 수리"] = isinstance(c2.split(n2["nid"], [1, n2["face"] - 1]), dict)
     out["audit"] = nd.audit()["ok"] is True
+    # ★[M-209] R2-F06-1 — 항등점(저-위수) 공개키는 JOIN·REKEY 진입에서 거부(만능서명 위조 주체 차단) · 검증기도 fail-closed
+    _idp = "01" + "00" * 31
+    try:
+        c._post("/join", {"principal": "weakid", "pk": _idp})
+        out["★항등점 pk JOIN 거부"] = False
+    except Exception as ex:
+        out["★항등점 pk JOIN 거부"] = "약한 키" in str(ex)
+    _univ = "01" + "00" * 31 + "00" * 32
+    try:
+        c2._post("/submit", {"env": c2.sign_env("REKEY", {"principal": "rk", "new_pk": _idp, "new_sig": _univ})})
+        out["★항등점 REKEY 거부"] = False
+    except Exception as ex:
+        out["★항등점 REKEY 거부"] = "약한 키" in str(ex)
+    from sdk import ed25519_weak_pk as _wk
+    out["★약한-키 판별(항등점 True · 실키 False)"] = _wk(bytes.fromhex(_idp)) is True and _wk(bytes.fromhex(c2.pk_hex())) is False \
+        and _wk(bytes.fromhex("ec" + "ff" * 30 + "7f")) is True
     srv.shutdown()
     # ★[M-208] R4-10(냉독 4 · F06-F2) — 회전 뒤 재기동: 정상 = 통과 · operator.key 유실 = **명시 기동 거부**(침묵 브릭 아님) ·
     #   회전-중 크래시 잔재(.next · 원장에 없는 키) = 폐기 후 정상 기동.
@@ -3468,6 +3534,11 @@ def gate_TIMPORT23(port=8846):
     pub = World.from_public(pks, meta["label"], tuple(meta["genesis"]), gen=dict(meta["gen"]), bridge_ref=meta.get("bridge_ref"))
     out["★H7 from_public(수입 포함) ok"] = pub.replay_verify(_all_log(c))["ok"] is True
     head = nd.w.log[-1]["head"]
+    # ★[M-209] R2-F07-1 — /meta 가 창세 내용을 고정하는 값(genesis_head·snapshot_hash)을 노출하고 첫 항과 정합 · /scope 조회
+    _m = c._get("/meta")
+    out["★/meta.genesis_head = seq0 head"] = _m.get("genesis_head") == nd.w.log[0]["head"]
+    out["★/meta.snapshot_hash 노출"] = isinstance(_m.get("snapshot_hash"), str) and len(_m["snapshot_hash"]) == 64
+    out["★/scope 조회"] = isinstance(c._get("/scope").get("scopes"), dict)
     srv.shutdown(); srv.server_close()
     nd2, srv2, _ = _serve(port + 50, data=data, genesis_import=ip)   # 재기동 = 리플레이(수입은 재실행되지 않는다)
     out["★재기동 리플레이 동일"] = nd2.w.log[-1]["head"] == head and nd2.audit()["ok"] is True and nd2.colors.get(imp[0]) == "z1"

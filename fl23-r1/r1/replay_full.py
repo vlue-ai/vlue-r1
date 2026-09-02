@@ -29,10 +29,38 @@ def _kernel_for(domain):
 UA = "vlue-replay/0.1 (+https://vlue.ai)"   # ★[M-144] 기본 urllib UA는 WAF 봇 차단 대상
 
 
+MAX_RESP = 32 * 1024 * 1024                  # ★[M-209] R2-F11-1 — 응답 1건 상한(sdk 와 동형 · 악의 노드 OOM 레버 차단)
+_TOTAL = {"bytes": 0, "cap": 2 * 1024 * 1024 * 1024}   # 누적 총량(기본 2GB · --max-total-mb)
+
+
 def _get(url, path):
     req = urllib.request.Request(url + path, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+        raw = r.read(MAX_RESP + 1)
+        if len(raw) > MAX_RESP:
+            raise SystemExit(json.dumps({"H7_FULL_REPLAY": False, "why": f"응답 크기 상한 {MAX_RESP} 초과(fail-closed)"}))
+        _TOTAL["bytes"] += len(raw)
+        if _TOTAL["bytes"] > _TOTAL["cap"]:
+            raise SystemExit(json.dumps({"H7_FULL_REPLAY": False, "why": f"누적 판독 총량 상한 {_TOTAL['cap']} 초과(fail-closed)"}))
+        return json.loads(raw)
+
+
+def _sample_union(entries, ref, want, k_eff):
+    """★[M-209] R2-F04-2 — 커밋-표본 합집합의 공개 재유도: 그 ref 의 모든 fl21.ocommit head 에 대해 PRF(head‖ref‖ctr) 인덱스를 합친다."""
+    import hashlib
+    idxs = set()
+    for e in entries:
+        env = e.get("env") or {}
+        a = env.get("args") or {}
+        if env.get("typ") == "TICKMARK" and a.get("kind") == "fl21.ocommit" and a.get("ref") == ref and e.get("kind") != "REJECT":
+            seed = bytes.fromhex(e["head"]) + ref.encode(); picked, ctr = [], 0
+            while len(picked) < min(k_eff, want):
+                v = int.from_bytes(hashlib.sha256(seed + ctr.to_bytes(4, "big")).digest(), "big") % want
+                ctr += 1
+                if v not in picked:
+                    picked.append(v)
+            idxs.update(picked)
+    return sorted(idxs)
 
 
 def main():
@@ -53,8 +81,11 @@ def _main_inner():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     ap.add_argument("--batches", type=int, default=10_000)
+    ap.add_argument("--genesis-head", default=None, help="★[M-209] 대역-외 창세 head(RELEASE) — 첫 항 head 와 대조(같은 정체성의 다른 창세 거부)")
+    ap.add_argument("--max-total-mb", type=int, default=2048, help="누적 판독 총량 상한(MB)")
     a = ap.parse_args()
     url = a.url.rstrip("/")
+    _TOTAL["cap"] = int(a.max_total_mb) * 1024 * 1024
     meta = _get(url, "/meta")
     pks = {"operator": meta.get("operator_pk0") or meta["operator_pk"], **(meta.get("genesis_pks") or {})}   # ★J-4 창세 키(REKEY 뒤엔 current ≠ genesis)
     World = _kernel_for(meta.get("domain", "FL23"))
@@ -90,6 +121,26 @@ def _main_inner():
         print(json.dumps({"H7_FULL_REPLAY": False, "why": "원장 0항 — 검증 대상 없음(라이브 원장이면 노드가 로그를 감춘 것)"},
                          ensure_ascii=False))
         return 1
+    # ★[M-209] R2-F07-1 — 창세 내용 고정: 대역-외 genesis_head 대조 · /meta.genesis_head 정합
+    if a.genesis_head and str(entries[0].get("head")) != str(a.genesis_head):
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": f"genesis_head 불일치: 원장 {str(entries[0].get('head'))[:12]}… ≠ 기대 {a.genesis_head[:12]}…"}, ensure_ascii=False))
+        return 1
+    if meta.get("genesis_head") is not None and str(meta["genesis_head"]) != str(entries[0].get("head")):
+        print(json.dumps({"H7_FULL_REPLAY": False, "why": "노드 /meta.genesis_head ≠ 서빙된 첫 항 head"}, ensure_ascii=False))
+        return 1
+    # ★[M-209] R2-F06-1 — JOIN/REKEY 저-위수 키 = 위조 가능 주체(fail-closed)
+    from sdk import ed25519_weak_pk
+    for e in entries:
+        env = e.get("env") or {}
+        if e.get("kind") != "REJECT" and env.get("typ") in ("JOIN", "REKEY"):
+            pk = (env.get("args") or {}).get("pk" if env["typ"] == "JOIN" else "new_pk")
+            try:
+                weak = ed25519_weak_pk(bytes.fromhex(str(pk)))
+            except ValueError:
+                weak = True
+            if weak:
+                print(json.dumps({"H7_FULL_REPLAY": False, "why": f"약한 키 등록 seq {e.get('seq')}({env['typ']})"}, ensure_ascii=False))
+                return 1
     r = w.replay_verify(entries)
     # ★[M-208] R4-17(냉독 4 · F12) — 파생-상태 대조: 노드가 주장하는 /balance 가 재실행 잔고와 다르면 거짓 노드(fail-closed)
     mism = []
@@ -102,8 +153,24 @@ def _main_inner():
                 mism.append({"p": pnm, "node": bal, "replayed": w.bal(pnm)})
     except Exception as ex:                              # 대조 불가 = 실패로 기록(침묵 통과 금지)
         mism.append({"error": str(ex)[:80]})
+    # ★[M-209] R2-F04-2 — 커밋-표본 합집합 공개 재유도(ref 별 · 표본-클래스 잡의 검사 인덱스 = 이 값이어야 한다)
+    samples = {}
+    try:
+        for e in entries:
+            env = e.get("env") or {}; a_ = env.get("args") or {}
+            if env.get("typ") == "TICKMARK" and a_.get("kind") == "fl21.ocommit" and e.get("kind") != "REJECT":
+                samples.setdefault(a_.get("ref"), None)
+        for ref in list(samples)[:64]:
+            j = _get(url, f"/job/{ref}").get("job") or {}
+            spec = j.get("job") or j
+            if isinstance(spec, dict) and spec.get("kind") == "sha256_chain_sampled" and isinstance(spec.get("n"), int):
+                want = -(-spec["n"] // 100_000)
+                samples[ref] = _sample_union(entries, ref, want, int(spec.get("k", 2)))
+    except Exception as ex:
+        samples = {"error": str(ex)[:80]}
     out = {"H7_FULL_REPLAY": bool(r["ok"] and ok_id and not mism),
-           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "balance_mismatch": mism, **r}
+           "identity_rederived": ok_id, "genesis_head": entries[0].get("head"), "balance_mismatch": mism,
+           "sample_union": samples, **r}
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0 if out["H7_FULL_REPLAY"] else 1
 

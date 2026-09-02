@@ -40,11 +40,18 @@ class AnchorWorker(Fl21Client):
     def work_once(self):
         js = self._get(f"/jobs?anchor={self.p}")
         done = []
-        for ref, j in js["jobs"].items():
+        for ref, j in list(js["jobs"].items())[:64]:          # ★[M-209] R2-F11-6 — 한 패스 상한(악의 노드의 잡-홍수로 장시간 정지 방지)
             if not j["job"]["kind"].startswith("sha256"):
                 continue              # pycheck 등 지능-작업은 워커 몫 아님(P-1 — 외부 앵커)
             _n = j["job"].get("n")
             if not isinstance(_n, int) or not (1 <= _n <= JOBS.N_MAX):   # ★[M-208] R4-19 — 악의 노드의 무계 n(정지) 거부
+                continue
+            _sd = j["job"].get("seed")
+            try:                                                          # ★[M-209] R2-F05-3 — 비정형 seed(홀수 hex 등) = 건너뜀(크래시 아님)
+                if not isinstance(_sd, str) or len(_sd) % 2 or not (1 <= len(_sd) <= 128):
+                    raise ValueError
+                bytes.fromhex(_sd)
+            except ValueError:
                 continue
             out = JOBS.compute(j["job"]["kind"], j["job"]["seed"], j["job"]["n"])
             # ★[M-149] SR-1 — H2 결박: sdk.deliver_job 경유(output_sha256를 서명에 결박).

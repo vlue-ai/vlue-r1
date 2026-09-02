@@ -367,10 +367,10 @@ def auto_fill(c, policy=None):
             # ★[M-208] R4-22(냉독 4 · F10-4) — 보험료의 **색**을 본다: 청구 앵커 자기-색 보험료는 그 앵커가 부재하면 0 이 된다
             #   (보험료로 인수자를 무-원가 파괴 · 재현 R6). 기본 정책 = 앵커-색 거부 · 허용 색 목록(prem_colors)이 있으면 그 안만.
             _col = (_nt or {}).get("color")
-            if policy.get("prem_reject_anchor_color") and _col is not None and _col == aj:
+            if policy.get("prem_reject_anchor_color") and _col is not None and _col in (aj, xfer["args"].get("frm")):   # ★[M-209] R2-F10-B: 지불자 자기-색도
                 # 기본 끔: 주 발행자(anchor0)의 색으로 보험료를 내는 것이 통상 경로라 기본 거부는 정상 체결을 막는다(T-COVER) —
                 # 앵커가 주 발행자가 아닐 때 켜라(보험료 가치 ↔ 커버 지급이 같은 부재에 상관 = F10-4 의 그리핑 벡터).
-                skipped.append(f"{ref[:8]} 보험료 색 = 청구 앵커({aj}) — 부재 시 0 가치(정책 prem_reject_anchor_color)")
+                skipped.append(f"{ref[:8]} 보험료 색 {_col} = 청구 앵커 또는 지불자 자기-색 — 부재 시 0 가치(정책 prem_reject_anchor_color)")
                 continue
             _allow = policy.get("prem_colors")
             if _allow and _col not in _allow:

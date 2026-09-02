@@ -31,6 +31,51 @@ ACCEPT_DOMAIN = b"FL23-ACPT"                 # ★[M-178] 수락-채널(record-o
 # 읽힌다) ⓑ★실전 필수 — 기본값 `Python-urllib/*`는 CDN·WAF의 봇 차단에 걸린다(실측:
 # node.vlue.ai 이관 직후 SDK만 403 error 1010 · curl·브라우저는 200). 에이전트 경제의
 # 정문이 「기계라서」 닫히면 K5′는 수요 0을 거짓 기록한다.
+# ★[M-209] R2-F06-1 — Ed25519 저-위수(항등점 등) 공개키 판별(노드 node.py 와 동형 · 검증기도 JOIN/REKEY 에 실린 키를 거른다)
+_ED_P = 2 ** 255 - 19
+_ED_D = (-121665 * pow(121666, -1, _ED_P)) % _ED_P
+
+
+def _ed_decode(b):
+    y = int.from_bytes(b, "little"); sign = y >> 255; y &= (1 << 255) - 1
+    if y >= _ED_P:
+        return None
+    y2 = y * y % _ED_P; u = (y2 - 1) % _ED_P; v = (_ED_D * y2 + 1) % _ED_P
+    x2 = u * pow(v, -1, _ED_P) % _ED_P
+    x = pow(x2, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - x2) % _ED_P:
+        x = x * pow(2, (_ED_P - 1) // 4, _ED_P) % _ED_P
+    if (x * x - x2) % _ED_P:
+        return None
+    if x == 0 and sign:
+        return None
+    if (x & 1) != sign:
+        x = _ED_P - x
+    return (x, y)
+
+
+def _ed_add(P, Q):
+    x1, y1 = P; x2, y2 = Q
+    k = _ED_D * x1 * x2 % _ED_P * y1 % _ED_P * y2 % _ED_P
+    return ((x1 * y2 + x2 * y1) * pow(1 + k, -1, _ED_P) % _ED_P,
+            (y1 * y2 + x1 * x2) * pow(1 - k, -1, _ED_P) % _ED_P)
+
+
+def ed25519_weak_pk(pk_bytes):
+    """True = 약한 키(길이 이상 · 비-정규 · 곡선 밖 · 저-위수[8P = O]) — 그 키의 서명은 소유-증명이 아니다."""
+    if not isinstance(pk_bytes, (bytes, bytearray)) or len(pk_bytes) != 32:
+        return True
+    P = _ed_decode(bytes(pk_bytes))
+    if P is None:
+        return True
+    Q = P
+    for _ in range(3):
+        Q = _ed_add(Q, Q)
+    return Q == (0, 1)
+
+
+MAX_TOTAL_RESP = 256 * 1024 * 1024           # ★[M-209] R2-F11-2 — verify_chain 이 누적 판독하는 총량 상한(페이지 반복으로 메모리 무계 방지)
+
 MAX_RESP = 32 * 1024 * 1024                  # ★[M-208] 응답 본문 상한(32MB — /log 500항 × 16KB 봉투 상한 = 8MB 여유)
 USER_AGENT = "vlue-sdk/0.1 (+https://vlue.ai)"
 
@@ -479,9 +524,14 @@ class Fl21Client:
         """이행-후 산출에 수락/재작업 의견을 서명-공표(그 청구의 매수자만).
         (ref, 나)당 1건 — 재게시 = 교체(번복은 새 의견). ⚠️record-only: 정산·요율
         무접촉 — 내 거절-비율도 같은 채널에 공개된다(양측 대칭)."""
+        # ★[M-209] v = (ref, 나) 판정 버전 — 기존 레코드가 있으면 +1(교체는 전진만 · 캡처된 옛 서명의 재생-되돌리기 차단)
+        cur = next((r for r in (self._get("/accept").get("records") or self._get("/accept").get("accepts") or [])
+                    if isinstance(r, dict) and (r.get("rec") or {}).get("ref") == str(ref) and (r.get("rec") or {}).get("p") == self.p), None) \
+            if isinstance(self._get("/accept"), dict) else None
+        v = int(((cur or {}).get("rec") or {}).get("v", 0)) + 1
         body = {"ref": str(ref), "p": self.p, "verdict": str(verdict),
                 "note": str(note),
-                "expires": self._get("/state")["epoch"] + int(ttl)}
+                "expires": self._get("/state")["epoch"] + int(ttl), "v": v}
         sig = self.key.sign(self._d["accept"] + self.log_id + canon(body)).hex()
         return self._post("/accept", {"rec": body, "sig": sig})
 
@@ -587,7 +637,7 @@ class Fl21Client:
             return {"ok": False, "why": "서명 위조"}
 
     # ── 라이트 검증(A-6 · R-6 봉합): 확정 높이까지 엄격 검증 + 미서명 최신 꼬리는 pending ──
-    def verify_chain(self, since=0, limit_batches=200):
+    def verify_chain(self, since=0, limit_batches=200, expect_genesis_head=None):
         """head 사슬·운영자 서명은 전량 엄격. 공동-서명(k-of-n)은 비동기 도착하므로
         ★공동-서명이 아직 부족한 **최신 연속 꼬리**는 위반이 아니라 `pending`(확정 미도달).
         블록체인 confirmation-depth 시맨틱 — 확정 prefix가 정합이면 ok(pending 별도 보고).
@@ -601,12 +651,12 @@ class Fl21Client:
         비정형을 서빙해도 크래시(트레이스백) 대신 ok:false 를 돌려준다. 정당한 ok:false
         반환은 예외가 아니라 return 이라 이 래퍼를 그대로 통과한다."""
         try:
-            return self._verify_chain_inner(since, limit_batches)
+            return self._verify_chain_inner(since, limit_batches, expect_genesis_head)
         except Exception as e:
             return {"ok": False,
                     "why": f"검증 예외(악의 노드의 비정형 서빙 추정): {type(e).__name__}"}
 
-    def _verify_chain_inner(self, since=0, limit_batches=200):
+    def _verify_chain_inner(self, since=0, limit_batches=200, expect_genesis_head=None):
         meta = self.meta
         # ★FL2.3 J-4 — 시작점은 **창세** operator 키(operator_pk0) · 이후 REKEY 항이 키-일정을 준다(로그-파생)
         op_pk = Ed25519PublicKey.from_public_bytes(
@@ -660,6 +710,11 @@ class Fl21Client:
                 log_complete = True
                 break
             entries += page
+            _tot = getattr(self, "_fetched_bytes", 0) + len(json.dumps(page))
+            self._fetched_bytes = _tot
+            if _tot > MAX_TOTAL_RESP:                                                        # ★[M-209] R2-F11-2 — 누적 총량 상한
+                self._fetched_bytes = 0
+                return {"ok": False, "why": f"누적 판독 총량 상한 {MAX_TOTAL_RESP} 초과 — 노드 응답 거부(fail-closed)"}
             if not isinstance(page[-1].get("seq"), int) or page[-1]["seq"] + 1 <= s:
                 return {"ok": False, "why": "/log 페이지 비-전진(악의 노드 — 왕복 증폭 차단)"}       # ★[M-208] R4-14
             s = page[-1]["seq"] + 1
@@ -677,6 +732,28 @@ class Fl21Client:
             return {"ok": False, "why": "원장 0항 — 라이브 원장의 원천-철회이거나 빈 노드(검증 대상 없음 = ok 아님)"}
         if since == 0 and entries and not (entries[0].get("seq") == 0 and entries[0].get("prev") == "genesis"):
             return {"ok": False, "why": f"창세 앵커 부재: 첫 항 seq {entries[0].get('seq')} prev {str(entries[0].get('prev'))[:12]} — 전위-절단"}
+        self._fetched_bytes = 0
+        # ★[M-209] R2-F07-1 — 창세 **내용** 고정: 대역-외 genesis_head(RELEASE)를 주면 첫 항 head 와 대조 · 노드 /meta.genesis_head 와도 정합해야 한다
+        if since == 0 and entries:
+            _gh = str(entries[0].get("head"))
+            if expect_genesis_head is not None and _gh != str(expect_genesis_head):
+                return {"ok": False, "why": f"genesis_head 불일치: 원장 {_gh[:12]}… ≠ 기대 {str(expect_genesis_head)[:12]}… — 같은 정체성의 다른 창세"}
+            _mg = (self.meta or {}).get("genesis_head")
+            if _mg is not None and str(_mg) != _gh:
+                return {"ok": False, "why": "노드 /meta.genesis_head 가 서빙된 첫 항과 다르다"}
+        # ★[M-209] R2-F06-1 — JOIN/REKEY 로 등록된 키가 저-위수면 그 주체의 봉투는 누구나 위조 가능: 검증 거부(fail-closed)
+        for e in entries:
+            _env = e.get("env") or {}
+            if e.get("kind") == "REJECT":
+                continue
+            if _env.get("typ") in ("JOIN", "REKEY"):
+                _pk = (_env.get("args") or {}).get("pk" if _env["typ"] == "JOIN" else "new_pk")
+                try:
+                    _weak = ed25519_weak_pk(bytes.fromhex(str(_pk)))
+                except ValueError:
+                    _weak = True
+                if _weak:
+                    return {"ok": False, "why": f"약한 키 등록 seq {e.get('seq')}({_env['typ']}) — 저-위수 공개키는 소유-증명이 아니다(위조 가능 주체)"}
         try:
             claimed = int(self._get("/state").get("seq"))
         except Exception:

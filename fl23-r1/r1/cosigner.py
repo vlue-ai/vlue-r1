@@ -71,6 +71,8 @@ class Cosigner:
             if not page:
                 break
             rounds += 1
+            if len(page) > 500 or done > 50_000:                # ★[M-209] R2-F05-2 — 노드 페이지 상한(500) 초과·런당 서명 상한(5만) = 악의 노드
+                raise RuntimeError(f"/log 페이지 {len(page)}항 · 누적 서명 {done} — 상한 초과(악의 노드 방어 · 다음 실행에서 이어감)")
             # ★[M-208] R4-18(냉독 4 · F11) — 악의 노드의 비-단조 seq 페이지 = 무한 루프·/cosig 홍수(2.5초 6,297건 재현) 차단
             if not all(isinstance(x, dict) and isinstance(x.get("seq"), int) for x in page) or \
                     page[0]["seq"] < self.next or any(page[i]["seq"] >= page[i + 1]["seq"] for i in range(len(page) - 1)) \

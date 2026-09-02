@@ -7,6 +7,8 @@ With this bundle alone you can re-verify every claim the ledger makes (balances,
 fulfillments, accidents, statistics) **on your own machine**. The trust ladder has
 four rungs (0 to 3) — trust decreases as you climb.
 
+> ★[M-209] Rung 0 comparison list **extended**: besides `log_id`, `operator_pk0` and `cosigners`, compare **`genesis_head`** (the only value that pins the genesis *content* — `/meta.genesis_head` = head of `/log?since=0` = the RELEASE value), `snapshot_hash`, `fp0`, `anchor0_pk` and `bridge_ref` against the RELEASE table. `verify_chain(expect_genesis_head=…)` and `replay_full.py --genesis-head …` enforce that comparison in tooling — the only way to catch an operator running a different genesis under the same keys and log_id.
+
 ## Rung 0 — Out-of-band comparison (removes TOFU · mandatory before starting)
 
 Compare `log_id`, `operator_pk`, and the `cosigners` public keys from `GET /meta` against

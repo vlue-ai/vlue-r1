@@ -67,7 +67,7 @@ jobs:
           python3 frontier_vectors.py | tail -2
           python3 golden_compare.py
 
-      - name: R1 gates (47 gates incl. T-ROOT storm, replay differential, REKEY/IMPORT/COMPOSE)
+      - name: R1 gates (48 gates incl. T-ROOT storm, replay differential, REKEY/IMPORT/COMPOSE)
         working-directory: fl23-r1/r1
         run: python3 test_r1.py | tee /tmp/r1.json | tail -3
 

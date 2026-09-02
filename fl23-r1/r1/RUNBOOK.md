@@ -4,7 +4,7 @@
 
 ```bash
 python3 r1/node.py --data /var/fl21 --port 8788 \
-  --bridge-ref 2d013222891d2997b62aa7bc0369769b4dbe0a4e7feece6c8cffdd6d7799f356 \
+  --bridge-ref 3274433e7d57a9aaaca42c9c44919bd9f71be2d6dc190d7f56685f28f480cdfd  # ★[M-209] 정본 = RELEASE bridge_ref(전임 세대 최종 head) — 예시는 FL2.2→FL2.3 값 \
   --auto-tick 60 --rate-limit 50
 ```
 

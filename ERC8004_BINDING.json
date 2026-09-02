@@ -12,11 +12,11 @@
   "operator_pk": "175399ae2c7d52d869eac0d709c619b00174c02785120ad0746ec8a54c68a4bd",
   "purpose": "Binds the ERC-8004 on-chain identity below to the VLUE r1 ledger operator. Any transaction from this address that is not an attestation of a settled entry on this ledger is unauthorized (one-way valve: outbound attestations only; chain state is never an input to this ledger).",
   "standard": "VLUE-ERC8004-BINDING v1",
-  "verify": "ed25519_verify(operator_pk from https://node.vlue.ai/meta, sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json_of_everything_except_sig))",
+  "verify": "ed25519_verify(operator_pk0 (= the FL2.3 genesis key: /meta.operator_pk0 and the RELEASE table; NOT the rotating /meta.operator_pk), sig, b'VLUE-ERC8004-BINDING' + sha256(canonical_json(binding))) where canonical_json = json.dumps(binding, sort_keys=True, separators=(',',':'), ensure_ascii=False) over the `binding` object only",
   "generation": "FL2.3 (genesis 2026-09-02 · bridge_ref = FL2.2 final head 3274433e… · FL2.2 log_id e687a69e… archived at archive/fl22/)",
   "note_on_chain": "setAgentURI must be re-pointed by the operator wallet after the 2026-09-02 genesis (user action — the bound address has never sent a transaction; on-chain nonce 0 as of 2026-09-02).",
   "genesis_head": "5a387eea3aecf6ed86f94f77dc32fb39cacabafeb97e15459c641c3f8a1ebb49"
  },
- "operator_sig": "6103b83b5dab8ffa9d12044b581742c85b61c7e0d65d076a2715212fb6d1bc6cda0410ff2a30ac9a48ad0cd12ece78963d91c3107cc13d6c2b8153a31ff15f09",
- "note": "sig covers canonical(binding) — sorted keys, compact separators, ensure_ascii=False · re-signed 2026-09-02 for the FL2.3 identity (cold-read 4 F12-3: the previous sig was over FL2.2 values)"
+ "operator_sig": "0fbe13522965f8d8f9097f8e59c47d582374c1f942145e86d13549c18d011157407fedd35db21c923c08cb754e6c9d6520f5f59fa08458925c9b9e2e6f91a70c",
+ "note": "sig covers canonical(binding) — sorted keys, compact separators, ensure_ascii=False · re-signed 2026-09-02 (cold-read 4 R2: verify recipe text corrected to operator_pk0 / binding-only)"
 }
